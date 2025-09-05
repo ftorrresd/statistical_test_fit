@@ -13,7 +13,9 @@ from ROOT import (
 
 from bkg_model import BkgModel, BkgPdfFamily
 
-COLORS = cycle([1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+def get_ROOT_colors():
+    return cycle([1, 2, 3, 4, 5, 6, 7, 8, 9])
 
 
 def shade_blind_region(bl_lo, bl_hi, ymin, ymax, color=kGray, alpha=0.35):
@@ -65,8 +67,9 @@ def make_plots(
         RooFit.Name("bkg_sidebands"),
     )
 
+    ROOT_COLORS = get_ROOT_colors()
     for test_bkg_pdf in test_bkg_pdfs:
-        c = next(COLORS)
+        c = next(ROOT_COLORS)
         test_bkg_pdf.model.plotOn(
             frame,
             RooFit.Range("left,middle,right"),
