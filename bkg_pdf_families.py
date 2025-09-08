@@ -8,4 +8,4 @@ class BkgPdfFamily(Enum):
     BERNSTEIN = "bernstein"
 
     def __str__(self):
-        return self.value
+        return self.value.capitalize().replace("_", " ")

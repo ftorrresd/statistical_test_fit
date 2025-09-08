@@ -2,6 +2,8 @@
 
 ## Setup
 
+One should first setup [Combined](https://cms-analysis.github.io/HiggsAnalysis-CombinedLimit/latest/).
+
 ```
 source /cvmfs/cms.cern.ch/cmsset_default.sh
 export SCRAM_ARCH=el9_amd64_gcc13

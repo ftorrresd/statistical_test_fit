@@ -1,12 +1,14 @@
 import argparse
 import os
 import sys
+from typing import Optional, Union
 
 from ROOT import (
     RooAddPdf,  # type: ignore
     RooArgList,  # type: ignore
     RooArgSet,  # type: ignore
     RooChebychev,  # type: ignore
+    RooExpPoly,  # type: ignore
     RooGenericPdf,  # type: ignore
     RooBernstein,  # type: ignore
     RooFit,  # type: ignore
@@ -53,11 +55,14 @@ def build_background_cheb(x, cheb_coeffs, name="background_chebychev"):
         RooRealVar(f"c{i}", f"Chebychev c{i}", float(v), -1.0, 1.0)
         for i, v in enumerate(cheb_coeffs, start=1)
     ]
+
     coeff_list = RooArgList()
     for v in coeff_vars:
         coeff_list.add(v)
+
     bkg = RooChebychev(name, "Chebychev background", x, coeff_list)
     bkg._keepalive = {"coeff_vars": coeff_vars, "coeff_list": coeff_list}
+
     return bkg
 
 
@@ -103,7 +108,6 @@ def build_background_power_law(
 
     # build formula: @0 is x, then a0,b0,a1,b1,...
     # term i uses indices (1+2*i) for a_i and (2+2*i) for b_i
-
     formula = ""
     if len(exponents) == 1:
         formula = "pow(x, -a0)"
@@ -133,6 +137,31 @@ def build_background_power_law(
         args.add(a_vars[i])
 
     pdf = RooGenericPdf(name, title, formula, args)
+    pdf._keepalive = {"a_vars": a_vars, "args": args}
+
+    return pdf
+
+
+def build_background_exponential(
+    x,
+    coeffs,
+    name="background_exponential",
+    title="Exponential background",
+    coeffs_bounds=(-1000000000000.0, 0.0),
+):
+    if not (len(coeffs) >= 1):
+        raise ValueError("At least one coeffs should be provided")
+
+    # parameters
+    a_vars = []
+    for i, v in enumerate(coeffs):
+        a_vars.append(RooRealVar(f"a{i}", f"a{i}", float(v), *coeffs_bounds))
+
+    args = RooArgList(x)
+    for i in range(len(coeffs)):
+        args.add(a_vars[i])
+
+    pdf = RooExpPoly(name, title, x, args)
     pdf._keepalive = {"a_vars": a_vars, "args": args}
 
     return pdf
@@ -257,32 +286,48 @@ def main():
     for family in BkgPdfFamily:
         test_bkg_pdfs[family] = []
 
-    # Chebychev
-    for i in range(1, 6):
-        test_bkg_pdfs[BkgPdfFamily.CHEBYCHEV].append(
-            BkgModel(
-                model=build_background_cheb(x, [0] * i),
-                pdf_family=BkgPdfFamily.CHEBYCHEV,
-            )
-        )
+    def build_background_models(
+        pdf_family: BkgPdfFamily,
+        n_coeffs: int = 6,
+        min_n_coeffs: int = 1,
+        initial_coeff=None,
+    ):
+        model_builder = None
 
-    # Bernstein
-    for i in range(1, 6):
-        test_bkg_pdfs[BkgPdfFamily.BERNSTEIN].append(
-            BkgModel(
-                model=build_background_bernstein(x, [0] * i),
-                pdf_family=BkgPdfFamily.BERNSTEIN,
-            )
-        )
+        if pdf_family == BkgPdfFamily.CHEBYCHEV:
+            model_builder = build_background_cheb
 
-    # Power Law
-    for i in range(1, 6):
-        test_bkg_pdfs[BkgPdfFamily.POWER_LAW].append(
-            BkgModel(
-                model=build_background_power_law(x, [0] * i),
-                pdf_family=BkgPdfFamily.POWER_LAW,
+        if pdf_family == BkgPdfFamily.BERNSTEIN:
+            model_builder = build_background_bernstein
+
+        if pdf_family == BkgPdfFamily.POWER_LAW:
+            model_builder = build_background_power_law
+
+        if pdf_family == BkgPdfFamily.EXPONENTIAL:
+            model_builder = build_background_exponential
+
+        if model_builder == None:
+            raise ValueError("Invalid PDF Family")
+
+        if initial_coeff == None:
+            initial_coeff = 0.0
+
+        for i in range(min_n_coeffs, n_coeffs):
+            test_bkg_pdfs[pdf_family].append(
+                BkgModel(
+                    model=model_builder(
+                        x,
+                        [initial_coeff] * i,
+                    ),
+                    pdf_family=pdf_family,
+                )
             )
-        )
+
+    # build the many bkg models
+    build_background_models(BkgPdfFamily.CHEBYCHEV)
+    build_background_models(BkgPdfFamily.BERNSTEIN)
+    build_background_models(BkgPdfFamily.POWER_LAW)
+    # build_background_models(BkgPdfFamily.EXPONENTIAL, initial_coeff=-150_000)
 
     for family in BkgPdfFamily:
         print()
@@ -293,6 +338,9 @@ def main():
         print("##############################################")
         print()
         for test_bkg_pdf in test_bkg_pdfs[family]:
+            # if test_bkg_pdf.pdf_family == BkgPdfFamily.EXPONENTIAL:
+            #     test_bkg_pdf.model.Print("all")
+
             test_bkg_pdf.fit_res = test_bkg_pdf.model.fitTo(
                 data_full,  # we can pass the full dataset...
                 RooFit.Range(
