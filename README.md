@@ -6,7 +6,7 @@ One should first setup [Combined](https://cms-analysis.github.io/HiggsAnalysis-C
 
 ```
 source /cvmfs/cms.cern.ch/cmsset_default.sh
-export SCRAM_ARCH=el9_amd64_gcc13
+export SCRAM_ARCH=el9_amd64_gcc12
 cmsrel CMSSW_14_1_0_pre4
 cd CMSSW_14_1_0_pre4/src
 cmsenv
