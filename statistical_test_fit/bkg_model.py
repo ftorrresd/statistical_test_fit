@@ -1,11 +1,14 @@
 from dataclasses import dataclass
+import tempfile
+import os
 from typing import Any, Optional
 
-from ROOT import (
+from ROOT import (  # type: ignore
     RooArgSet,  # type: ignore
     RooChebychev,  # type: ignore
     RooRealVar,  # type: ignore
     RooArgList,  # type: ignore
+    RooProdPdf,  # type: ignore
     RooExpPoly,  # type: ignore
     RooGenericPdf,  # type: ignore
     RooBernstein,  # type: ignore
@@ -40,8 +43,8 @@ class BkgModel:
         return hash((self.pdf_family, self.chi_square_res, self.n_params, self.NLL))
 
     def __str__(self) -> str:
+        self.model.Print()
         string_repr = []
-        string_repr.append("=======")
         string_repr.append(f"Polinomial family: {self.pdf_family}")
         string_repr.append(f"N params: {self.n_params}")
         if self.fit_res is not None:
@@ -57,7 +60,6 @@ class BkgModel:
 
             string_repr.append(f"Chi2 test results: {self.chi_square_res}")
             string_repr.append(f"NLL: {self.NLL}")
-        string_repr.append("=======")
 
         return "\n".join(string_repr)
 
@@ -121,6 +123,39 @@ def build_background_cheb(x, cheb_coeffs, name="background_chebychev"):
 
     bkg = RooChebychev(name, "Chebychev background", x, coeff_list)
     bkg._keepalive = {"coeff_vars": coeff_vars, "coeff_list": coeff_list}
+
+    return bkg
+
+
+def build_background_cheb_2d(x, y, cheb_coeffs, name="background_chebychev_2d"):
+    coeff_vars_x = [
+        RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
+        for i, v in enumerate([0.3], start=1)
+    ]
+    coeff_list_x = RooArgList()
+    for v in coeff_vars_x:
+        coeff_list_x.add(v)
+    bkg_x = RooChebychev(f"{name}_x", "Chebychev background 2D - x", x, coeff_list_x)
+
+    coeff_vars_y = [
+        RooRealVar(f"c{i}", f"Chebychev c{i}", float(v), -1.0, 1.0)
+        for i, v in enumerate(cheb_coeffs, start=1)
+    ]
+    coeff_list_y = RooArgList()
+    for v in coeff_vars_y:
+        coeff_list_y.add(v)
+    bkg_y = RooChebychev(f"{name}_y", "Chebychev background 2D - y", y, coeff_list_y)
+
+    bkg = RooProdPdf("model", "Chebychev background 2D", RooArgList(bkg_x, bkg_y))
+
+    bkg._keepalive = {
+        "coeff_vars_x": coeff_vars_x,
+        "coeff_vars_y": coeff_vars_y,
+        "coeff_list_x": coeff_list_x,
+        "coeff_list_y": coeff_list_y,
+        "bkg_x": bkg_x,
+        "bkg_y": bkg_y,
+    }
 
     return bkg
 
@@ -261,6 +296,52 @@ def build_background_models(
             BkgModel(
                 model=model_builder(
                     x,
+                    [initial_coeff] * i,
+                ),
+                pdf_family=pdf_family,
+            )
+        )
+
+    return test_bkg_pdfs
+
+
+def build_background_models_2d(
+    pdf_family: BkgPdfFamily,
+    x,
+    y,
+    n_coeffs: int = 6,
+    min_n_coeffs: int = 1,
+    initial_coeff=None,
+):
+    test_bkg_pdfs = {}
+    test_bkg_pdfs[pdf_family] = []
+
+    model_builder = None
+
+    if pdf_family == BkgPdfFamily.CHEBYCHEV:
+        model_builder = build_background_cheb_2d
+
+    # if pdf_family == BkgPdfFamily.BERNSTEIN:
+    #     model_builder = build_background_bernstein
+    #
+    # if pdf_family == BkgPdfFamily.POWER_LAW:
+    #     model_builder = build_background_power_law
+    #
+    # if pdf_family == BkgPdfFamily.EXPONENTIAL:
+    #     model_builder = build_background_exponential
+
+    if model_builder == None:
+        raise ValueError("Invalid PDF Family")
+
+    if initial_coeff == None:
+        initial_coeff = 0.0
+
+    for i in range(min_n_coeffs, n_coeffs):
+        test_bkg_pdfs[pdf_family].append(
+            BkgModel(
+                model=model_builder(
+                    x,
+                    y,
                     [initial_coeff] * i,
                 ),
                 pdf_family=pdf_family,

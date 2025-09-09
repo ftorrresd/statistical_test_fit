@@ -5,6 +5,7 @@ from ROOT import (  # type: ignore
     RooArgSet,  # type: ignore
     RooFit,  # type: ignore
     RooRandom,  # type: ignore
+    RooProdPdf,  # type: ignore
     RooRealVar,  # type: ignore
     RooGaussian,  # type: ignore
     RooAddPdf,  # type: ignore
@@ -14,32 +15,51 @@ from ROOT import (  # type: ignore
 from .bkg_model import (
     BkgModel,
     compute_winner_and_start_indexes,
-    build_background_cheb,
-    build_background_models,
+    build_background_cheb_2d,
+    build_background_models_2d,
 )
 from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
 from .make_plots import make_plots_2d
 
 
-def build_signal(x, mean, sigma, name: str):
-    mu = RooRealVar(
-        "mu",
-        "signal mean",
-        mean,
-        x.getMin() + 0.05 * (x.getMax() - x.getMin()),
-        x.getMax() - 0.05 * (x.getMax() - x.getMin()),
+def build_signal(x, y, mean_x, sigma_x, mean_y, sigma_y, name: str):
+    mu_x = RooRealVar(
+        "mu_x",
+        "signal mean - x",
+        mean_x,
+        x.getMin(),
+        x.getMax(),
     )
-    sig = RooRealVar(
-        "sigma",
-        "signal sigma",
-        sigma,
-        0.02 * (x.getMax() - x.getMin()),
-        0.5 * (x.getMax() - x.getMin()),
+    sig_x = RooRealVar(
+        "sigma_x", "signal sigma - x", sigma_x, sigma_x * (0.7), sigma_x * (1.3)
     )
-    gaus = RooGaussian(name, "Gaussian signal", x, mu, sig)
-    gaus._keepalive = {"mu": mu, "sig": sig}
-    return gaus
+    gaus_x = RooGaussian(f"{name}_x", "Gaussian signal - x", x, mu_x, sig_x)
+
+    mu_y = RooRealVar(
+        "mu_y",
+        "signal mean - x",
+        mean_y,
+        y.getMin(),
+        y.getMax(),
+    )
+    sig_y = RooRealVar(
+        "sigma_y", "signal sigma - x", sigma_y, sigma_y * (0.7), sigma_y * (1.3)
+    )
+    gaus_y = RooGaussian(f"{name}_y", "Gaussian signal - y", y, mu_y, sig_y)
+
+    sig = RooProdPdf(f"{name}_model", "Gaussian signal 2D", RooArgList(gaus_x, gaus_y))
+
+    sig._keepalive = {
+        "gaus_x": gaus_x,
+        "gaus_y": gaus_y,
+        "mu_x": mu_x,
+        "sig_x": sig_x,
+        "mu_y": mu_y,
+        "sig_y": sig_y,
+    }
+
+    return sig
 
 
 def build_gen_model_unextended(
@@ -70,6 +90,9 @@ def build_gen_model_unextended(
 
 def run_fit_2d(args: Namespace):
     # Limits
+    m_mumu_lower = 8.0
+    m_mumu_upper = 12.0
+
     left_lower = 70.0
     left_upper = 80.0
 
@@ -85,7 +108,10 @@ def run_fit_2d(args: Namespace):
     outprefix = "bkg_only"
 
     # Observable
-    x = RooRealVar("x", "Observable x", left_lower, right_upper)
+    m_mumu = RooRealVar("m_mumu", "m_mumu", m_mumu_lower, m_mumu_upper)
+    m_mumugamma = RooRealVar("m_mumugamma", "m_mumugamma", left_lower, right_upper)
+
+    observables = RooArgSet(m_mumu, m_mumugamma)
 
     # Background pdf
     cheb_coeffs = [float(v.strip()) for v in args.cheb.split(",") if v.strip() != ""]
@@ -93,13 +119,13 @@ def run_fit_2d(args: Namespace):
         print("Provide at least one Chebychev coefficient via --cheb", file=sys.stderr)
         sys.exit(1)
     bkg_pdf = BkgModel(
-        model=build_background_cheb(x, cheb_coeffs),
+        model=build_background_cheb_2d(m_mumu, m_mumugamma, cheb_coeffs),
         pdf_family=BkgPdfFamily.CHEBYCHEV,
     )
 
     # Generation model (S+B, unextended)
-    z_model = build_signal(x, 91.0, 2.0, "z_signal")
-    higgs_model = build_signal(x, 125.0, 0.3, "h_signal")
+    z_model = build_signal(m_mumu, m_mumugamma, 10.0, 0.2, 91.0, 2.0, "z_signal")
+    higgs_model = build_signal(m_mumu, m_mumugamma, 10.0, 0.02, 125.0, 0.3, "h_signal")
     gen_model = build_gen_model_unextended(
         z_model,
         higgs_model,
@@ -115,18 +141,26 @@ def run_fit_2d(args: Namespace):
         print("INFO: No seed was provided.")
 
     # Generate exactly N events (UNEXTENDED)
-    data_full = gen_model.generate(RooArgSet(x), int(args.events))
+    data_full = gen_model.generate(observables, int(args.events))
     print(
         f"Generated dataset with {data_full.numEntries()} events (true z_fsig={z_sigfrac:.3f} and true h_fsig={h_sigfrac:.3f})"
     )
 
     # Named ranges for sidebands
-    x.setRange("left", left_lower, left_upper)
-    x.setRange("middle", middle_lower, middle_upper)
-    x.setRange("right", right_lower, right_upper)
+    m_mumugamma.setRange("left", left_lower, left_upper)
+    m_mumugamma.setRange("middle", middle_lower, middle_upper)
+    m_mumugamma.setRange("right", right_lower, right_upper)
+
+    # Must also define non-overlapping ranges on X when using the same names
+    x1 = m_mumu_lower
+    x2 = m_mumu_lower + (m_mumu_upper - m_mumu_lower) / 3.0
+    x3 = m_mumu_lower + 2 * (m_mumu_upper - m_mumu_lower) / 3.0
+    x4 = m_mumu_upper
+
+    print(f"m_mumu ranges: {x1}, {x2}, {x3}, {x4} ")
 
     # Sideband-only dataset (useful for plotting)
-    cut_expr = f"((x<{left_upper}) || (x>{right_lower}) || ((x>{middle_lower}) && (x<{middle_upper})))"
+    cut_expr = f"((m_mumugamma<{left_upper}) || (m_mumugamma>{right_lower}) || ((m_mumugamma>{middle_lower}) && (m_mumugamma<{middle_upper})))"
     data_sb = data_full.reduce(RooFit.Cut(cut_expr))
     print(f"Sideband entries: {data_sb.numEntries()} (out of {data_full.numEntries()})")
 
@@ -139,9 +173,11 @@ def run_fit_2d(args: Namespace):
         test_bkg_pdfs[family] = []
 
     # build the many bkg models
-    test_bkg_pdfs |= build_background_models(BkgPdfFamily.CHEBYCHEV, x)
-    test_bkg_pdfs |= build_background_models(BkgPdfFamily.BERNSTEIN, x)
-    test_bkg_pdfs |= build_background_models(BkgPdfFamily.POWER_LAW, x)
+    test_bkg_pdfs |= build_background_models_2d(
+        BkgPdfFamily.CHEBYCHEV, m_mumu, m_mumugamma
+    )
+    # test_bkg_pdfs |= build_background_models(BkgPdfFamily.BERNSTEIN, x)
+    # test_bkg_pdfs |= build_background_models(BkgPdfFamily.POWER_LAW, x)
     # test_bkg_pdfs|=build_background_models(BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000)
 
     for family in BkgPdfFamily:
@@ -153,14 +189,8 @@ def run_fit_2d(args: Namespace):
         print("##############################################")
         print()
         for test_bkg_pdf in test_bkg_pdfs[family]:
-            # if test_bkg_pdf.pdf_family == BkgPdfFamily.EXPONENTIAL:
-            #     test_bkg_pdf.model.Print("all")
-
             test_bkg_pdf.fit_res = test_bkg_pdf.model.fitTo(
-                data_full,  # we can pass the full dataset...
-                RooFit.Range(
-                    "left,middle,right"
-                ),  # ...but restrict the likelihood to sidebands
+                data_sb,
                 RooFit.Save(True),
                 RooFit.PrintLevel(-1),
                 RooFit.Verbose(False),
@@ -169,16 +199,16 @@ def run_fit_2d(args: Namespace):
 
             test_bkg_pdf.chi_square_res = ChiSquareResult.compute_chi_square_2d(
                 test_bkg_pdf.model,
-                data_full,
-                x,
+                data_sb,
+                m_mumu,
+                m_mumugamma,
                 outprefix=f"test_bkg_pdf_{test_bkg_pdf.n_params}",
                 pdf_family=family,
                 nbins=args.nbins,
             )
 
             test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(
-                data_full,
-                RooFit.Range("left,middle,right"),
+                data_sb,
             ).getVal()
 
         print("\n\n=== Test Background-only fit (sidebands) ===")
@@ -194,7 +224,8 @@ def run_fit_2d(args: Namespace):
 
         # Plots
         plot_file_name = make_plots_2d(
-            x,
+            m_mumu,
+            m_mumugamma,
             data_full,
             data_sb,
             bkg_pdf,
@@ -215,17 +246,18 @@ def run_fit_2d(args: Namespace):
 
         # Optional: estimate expected background count in the blinded window (from fitted pdf)
         # Compute integral of background over blind window, normalized over full x.
-        x.setRange("blind_left", left_upper, middle_lower)
-        x.setRange("blind_right", middle_upper, right_lower)
+        m_mumugamma.setRange("blind_left", left_upper, middle_lower)
+        m_mumugamma.setRange("blind_right", middle_upper, right_lower)
 
         # For an expected count, scale by the number of observed sideband events with
         # the pdf’s fraction in blind vs sideband ranges.
         i_blind = bkg_pdf.model.createIntegral(
-            RooArgSet(x), RooFit.Range("blind_left,blind_right")
+            RooArgSet(m_mumugamma), RooFit.Range("blind_left,blind_right")
         ).getVal()
 
         i_full = bkg_pdf.model.createIntegral(
-            RooArgSet(x), RooFit.Range("left,blind_left,middle,blind_right,right")
+            RooArgSet(m_mumugamma),
+            RooFit.Range("left,blind_left,middle,blind_right,right"),
         ).getVal()
 
         frac_blind = i_blind / i_full if i_full > 0 else 0.0

@@ -94,6 +94,7 @@ class ChiSquareResult:
         model,
         data,
         x,
+        y,
         outprefix,
         pdf_family: BkgPdfFamily,
         region_name="left,middle,right",
@@ -124,13 +125,14 @@ class ChiSquareResult:
         # Data: only points inside the region (binned into nbins)
         data.plotOn(
             frame,
-            RooFit.CutRange(region_name),
+            # RooFit.CutRange(region_name),
             RooFit.Binning(nbins),
             RooFit.Name(data_name),
         )
 
         # PDF: evaluated only in the region, but normalized over norm_range
-        nData = data.sumEntries("", region_name)
+        # nData = data.sumEntries("", region_name)
+        nData = data.sumEntries("")
         model.plotOn(
             frame,
             RooFit.Normalization(nData, RooAbsReal.NumEvent),

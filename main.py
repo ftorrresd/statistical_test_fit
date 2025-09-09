@@ -49,7 +49,7 @@ def main():
         "--events", type=int, default=10000, help="N events to generate (unextended)"
     )
     parser.add_argument(
-        "--cheb", type=str, default="0.10,-0.05", help="Chebychev coeffs c1,c2,..."
+        "--cheb", type=str, default="-0.2,0.2,-0.1", help="Chebychev coeffs c1,c2,..."
     )
     parser.add_argument("-s", "--seed", type=int)
     parser.add_argument("--nbins", type=int, default=60)
@@ -62,11 +62,8 @@ def main():
     os.system("mkdir -p plots/fit_2d")
     os.system(r'find plots -type f ! -name ".gitkeep" -delete')
 
-    try:
-        gSystem.Load("libRooFit")
-        gSystem.Load("libHiggsAnalysisCombinedLimit")
-    except Exception:
-        pass
+    gSystem.Load("libRooFit")
+    gSystem.Load("libHiggsAnalysisCombinedLimit")
 
     if args.fits_to_run == FitToRun.ONEDIM or args.fits_to_run == FitToRun.ALL:
         run_fit_1d(args)

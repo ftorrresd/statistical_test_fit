@@ -167,6 +167,7 @@ def make_plots_1d(
 
 def make_plots_2d(
     x,
+    y,
     data_full,
     data_sb,
     bkg_pdf: BkgModel,

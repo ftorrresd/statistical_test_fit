@@ -30,5 +30,5 @@ cd statistical_test_fit
 ## Usage
 
 ```
-python3 main.py --cheb="-0.2,0.2,-0.1"
+python3 main.py"
 ```
