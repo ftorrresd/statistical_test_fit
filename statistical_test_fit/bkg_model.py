@@ -12,8 +12,8 @@ from ROOT import (
     TMath,  # type: ignore
 )
 
-from bkg_pdf_families import BkgPdfFamily
-from chi2_test import ChiSquareResult
+from .bkg_pdf_families import BkgPdfFamily
+from .chi2_test import ChiSquareResult
 
 
 @dataclass
