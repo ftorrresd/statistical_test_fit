@@ -2,7 +2,7 @@
 
 ## Setup
 
-One should first setup [Combined](https://cms-analysis.github.io/HiggsAnalysis-CombinedLimit/latest/).
+One should first setup [Combine](https://cms-analysis.github.io/HiggsAnalysis-CombinedLimit/latest/).
 
 ```
 source /cvmfs/cms.cern.ch/cmsset_default.sh
@@ -30,5 +30,5 @@ cd statistical_test_fit
 ## Usage
 
 ```
-python3 main.py"
+python3 main.py
 ```

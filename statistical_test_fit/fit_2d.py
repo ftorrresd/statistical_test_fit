@@ -2,25 +2,25 @@ import sys
 from argparse import Namespace
 
 from ROOT import (  # type: ignore
-    RooArgSet,  # type: ignore
-    RooFit,  # type: ignore
-    RooRandom,  # type: ignore
-    RooProdPdf,  # type: ignore
-    RooRealVar,  # type: ignore
-    RooGaussian,  # type: ignore
     RooAddPdf,  # type: ignore
     RooArgList,  # type: ignore
+    RooArgSet,  # type: ignore
+    RooFit,  # type: ignore
+    RooGaussian,  # type: ignore
+    RooProdPdf,  # type: ignore
+    RooRandom,  # type: ignore
+    RooRealVar,  # type: ignore
 )
 
 from .bkg_model import (
     BkgModel,
-    compute_winner_and_start_indexes,
     build_background_cheb_2d,
     build_background_models_2d,
+    compute_winner_and_start_indexes,
 )
 from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
-from .make_plots import make_plots_2d
+from .make_plots import ProjDim, make_plots_2d
 
 
 def build_signal(x, y, mean_x, sigma_x, mean_y, sigma_y, name: str):
@@ -151,14 +151,6 @@ def run_fit_2d(args: Namespace):
     m_mumugamma.setRange("middle", middle_lower, middle_upper)
     m_mumugamma.setRange("right", right_lower, right_upper)
 
-    # Must also define non-overlapping ranges on X when using the same names
-    x1 = m_mumu_lower
-    x2 = m_mumu_lower + (m_mumu_upper - m_mumu_lower) / 3.0
-    x3 = m_mumu_lower + 2 * (m_mumu_upper - m_mumu_lower) / 3.0
-    x4 = m_mumu_upper
-
-    print(f"m_mumu ranges: {x1}, {x2}, {x3}, {x4} ")
-
     # Sideband-only dataset (useful for plotting)
     cut_expr = f"((m_mumugamma<{left_upper}) || (m_mumugamma>{right_lower}) || ((m_mumugamma>{middle_lower}) && (m_mumugamma<{middle_upper})))"
     data_sb = data_full.reduce(RooFit.Cut(cut_expr))
@@ -174,95 +166,127 @@ def run_fit_2d(args: Namespace):
 
     # build the many bkg models
     test_bkg_pdfs |= build_background_models_2d(
-        BkgPdfFamily.CHEBYCHEV, m_mumu, m_mumugamma
+        BkgPdfFamily.CHEBYCHEV,
+        m_mumu,
+        m_mumugamma,
+        # min_n_coeffs=1,
+        # n_coeffs=2,
     )
     # test_bkg_pdfs |= build_background_models(BkgPdfFamily.BERNSTEIN, x)
     # test_bkg_pdfs |= build_background_models(BkgPdfFamily.POWER_LAW, x)
     # test_bkg_pdfs|=build_background_models(BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000)
 
     for family in BkgPdfFamily:
-        print()
-        print("##############################################")
-        print("##############################################")
-        print(f"################## {str(family).upper()} ########################")
-        print("##############################################")
-        print("##############################################")
-        print()
-        for test_bkg_pdf in test_bkg_pdfs[family]:
-            test_bkg_pdf.fit_res = test_bkg_pdf.model.fitTo(
-                data_sb,
-                RooFit.Save(True),
-                RooFit.PrintLevel(-1),
-                RooFit.Verbose(False),
-                RooFit.Minimizer("Minuit2", "Migrad"),
-            )
+        if len(test_bkg_pdfs[family]) > 0:
+            print()
+            print("##############################################")
+            print("##############################################")
+            print(f"################## {str(family).upper()} ########################")
+            print("##############################################")
+            print("##############################################")
+            print()
+            for test_bkg_pdf in test_bkg_pdfs[family]:
+                test_bkg_pdf.fit_res = test_bkg_pdf.model.fitTo(
+                    # data_sb,
+                    data_full,
+                    RooFit.Range(
+                        "left,middle,right"
+                    ),  # ...but restrict the likelihood to sidebands
+                    RooFit.Save(True),
+                    RooFit.PrintLevel(-1),
+                    RooFit.Verbose(False),
+                    RooFit.Minimizer("Minuit2", "Migrad"),
+                )
 
-            test_bkg_pdf.chi_square_res = ChiSquareResult.compute_chi_square_2d(
-                test_bkg_pdf.model,
-                data_sb,
+                test_bkg_pdf.chi_square_res = ChiSquareResult.compute_chi_square_2d(
+                    test_bkg_pdf.model,
+                    data_sb,
+                    m_mumu,
+                    m_mumugamma,
+                    outprefix=f"test_bkg_pdf_{test_bkg_pdf.n_params}",
+                    pdf_family=family,
+                    nbins=args.nbins,
+                )
+
+                test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(
+                    data_sb,
+                ).getVal()
+
+            print("\n\n=== Test Background-only fit (sidebands) ===")
+            for i, test_bkg_pdf in enumerate(test_bkg_pdfs[family]):
+                assert test_bkg_pdf.is_complete()
+                if i != 0:
+                    print("")
+
+                print(test_bkg_pdf)
+
+            # compute winner function
+            start, winner = compute_winner_and_start_indexes(test_bkg_pdfs[family])
+
+            # Plots
+            plot_file_name = make_plots_2d(
+                ProjDim.Y,
                 m_mumu,
                 m_mumugamma,
-                outprefix=f"test_bkg_pdf_{test_bkg_pdf.n_params}",
-                pdf_family=family,
-                nbins=args.nbins,
-            )
-
-            test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(
+                data_full,
                 data_sb,
+                bkg_pdf,
+                test_bkg_pdfs[family],
+                family,
+                left_lower,
+                left_upper,
+                middle_lower,
+                middle_upper,
+                right_lower,
+                right_upper,
+                f"{outprefix}_{family}",
+                nbins=args.nbins,
+                start=start,
+                winner=winner,
+            )
+            print(f"\nPlot saved to: {plot_file_name}")
+
+            plot_file_name = make_plots_2d(
+                ProjDim.X,
+                m_mumu,
+                m_mumugamma,
+                data_full,
+                data_sb,
+                bkg_pdf,
+                test_bkg_pdfs[family],
+                family,
+                left_lower,
+                left_upper,
+                middle_lower,
+                middle_upper,
+                right_lower,
+                right_upper,
+                f"{outprefix}_{family}",
+                nbins=args.nbins,
+                start=start,
+                winner=winner,
+            )
+            print(f"\nPlot saved to: {plot_file_name}")
+
+            # Optional: estimate expected background count in the blinded window (from fitted pdf)
+            # Compute integral of background over blind window, normalized over full x.
+            m_mumugamma.setRange("blind_left", left_upper, middle_lower)
+            m_mumugamma.setRange("blind_right", middle_upper, right_lower)
+
+            # For an expected count, scale by the number of observed sideband events with
+            # the pdf’s fraction in blind vs sideband ranges.
+            i_blind = bkg_pdf.model.createIntegral(
+                RooArgSet(m_mumugamma), RooFit.Range("blind_left,blind_right")
             ).getVal()
 
-        print("\n\n=== Test Background-only fit (sidebands) ===")
-        for i, test_bkg_pdf in enumerate(test_bkg_pdfs[family]):
-            assert test_bkg_pdf.is_complete()
-            if i != 0:
-                print("")
+            i_full = bkg_pdf.model.createIntegral(
+                RooArgSet(m_mumugamma),
+                RooFit.Range("left,blind_left,middle,blind_right,right"),
+            ).getVal()
 
-            print(test_bkg_pdf)
-
-        # compute winner function
-        start, winner = compute_winner_and_start_indexes(test_bkg_pdfs[family])
-
-        # Plots
-        plot_file_name = make_plots_2d(
-            m_mumu,
-            m_mumugamma,
-            data_full,
-            data_sb,
-            bkg_pdf,
-            test_bkg_pdfs[family],
-            family,
-            left_lower,
-            left_upper,
-            middle_lower,
-            middle_upper,
-            right_lower,
-            right_upper,
-            f"{outprefix}_{family}",
-            nbins=args.nbins,
-            start=start,
-            winner=winner,
-        )
-        print(f"\nPlot saved to: {plot_file_name}")
-
-        # Optional: estimate expected background count in the blinded window (from fitted pdf)
-        # Compute integral of background over blind window, normalized over full x.
-        m_mumugamma.setRange("blind_left", left_upper, middle_lower)
-        m_mumugamma.setRange("blind_right", middle_upper, right_lower)
-
-        # For an expected count, scale by the number of observed sideband events with
-        # the pdf’s fraction in blind vs sideband ranges.
-        i_blind = bkg_pdf.model.createIntegral(
-            RooArgSet(m_mumugamma), RooFit.Range("blind_left,blind_right")
-        ).getVal()
-
-        i_full = bkg_pdf.model.createIntegral(
-            RooArgSet(m_mumugamma),
-            RooFit.Range("left,blind_left,middle,blind_right,right"),
-        ).getVal()
-
-        frac_blind = i_blind / i_full if i_full > 0 else 0.0
-        n_est = frac_blind * data_full.numEntries()
-        print(
-            f"\nBackground estimate in blind window (from fitted pdf): "
-            f"N_bkg(blind) ≈ {n_est:.1f} (fraction={frac_blind:.4f})"
-        )
+            frac_blind = i_blind / i_full if i_full > 0 else 0.0
+            n_est = frac_blind * data_full.numEntries()
+            print(
+                f"\nBackground estimate in blind window (from fitted pdf): "
+                f"N_bkg(blind) ≈ {n_est:.1f} (fraction={frac_blind:.4f})"
+            )

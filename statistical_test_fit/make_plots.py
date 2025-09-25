@@ -1,3 +1,4 @@
+from enum import Enum
 from itertools import cycle
 from typing import Optional
 
@@ -57,8 +58,8 @@ def make_plots_1d(
     )
 
     # Plot only sideband data points
-    data_full.plotOn(frame, RooFit.Name("data_sb"))
-    # data_sb.plotOn(frame, RooFit.Name("data_sb"))
+    # data_full.plotOn(frame, RooFit.Name("data_sb"))
+    data_sb.plotOn(frame, RooFit.Name("data_sb"))
 
     # Draw fitted background on sidebands only (solid), normalized to sidebands
     bkg_pdf.model.plotOn(
@@ -160,12 +161,19 @@ def make_plots_1d(
     pull_frame.Draw()
 
     plot_file_name = f"plots/fit_1d/{outprefix}.pdf"
+
     can.SaveAs(plot_file_name)
 
     return plot_file_name
 
 
+class ProjDim(Enum):
+    X = "x"
+    Y = "y"
+
+
 def make_plots_2d(
+    proj_dim: ProjDim,
     x,
     y,
     data_full,
@@ -190,14 +198,20 @@ def make_plots_2d(
     x.setRange("right", right_lower, right_upper)
 
     # Frame
-    frame = x.frame(
-        RooFit.Bins(nbins),
-        RooFit.Title(""),
-    )
+    if proj_dim == ProjDim.Y:
+        frame = y.frame(
+            RooFit.Bins(nbins),
+            RooFit.Title(""),
+        )
+    else:
+        frame = x.frame(
+            RooFit.Bins(nbins),
+            RooFit.Title(""),
+        )
 
     # Plot only sideband data points
-    data_full.plotOn(frame, RooFit.Name("data_sb"))
-    # data_sb.plotOn(frame, RooFit.Name("data_sb"))
+    # data_full.plotOn(frame, RooFit.Name("data_sb"))
+    data_sb.plotOn(frame, RooFit.Name("data_sb"))
 
     # Draw fitted background on sidebands only (solid), normalized to sidebands
     bkg_pdf.model.plotOn(
@@ -298,7 +312,10 @@ def make_plots_2d(
     pull_frame.GetYaxis().SetRangeUser(-5, 5)
     pull_frame.Draw()
 
-    plot_file_name = f"plots/fit_2d/{outprefix}.pdf"
+    if proj_dim == ProjDim.X:
+        plot_file_name = f"plots/fit_2d/mumu_{outprefix}.pdf"
+    else:
+        plot_file_name = f"plots/fit_2d/mumugamma_{outprefix}.pdf"
     can.SaveAs(plot_file_name)
 
     return plot_file_name

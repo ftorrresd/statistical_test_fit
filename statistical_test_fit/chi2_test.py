@@ -118,7 +118,7 @@ class ChiSquareResult:
             nfloatpars = _count_float_pars(model, x)
 
         # Build a frame and plot only the region of interest
-        frame = x.frame(RooFit.Bins(nbins), RooFit.Title(f"GOF in {region_name}"))
+        frame = y.frame(RooFit.Bins(nbins), RooFit.Title(f"GOF on Y"))
         data_name = f"data_{region_name}"
         curve_name = f"pdf_{region_name}"
 
@@ -135,6 +135,7 @@ class ChiSquareResult:
         nData = data.sumEntries("")
         model.plotOn(
             frame,
+            # RooFit.ProjWData(RooArgSet(x), data),
             RooFit.Normalization(nData, RooAbsReal.NumEvent),
             RooFit.Name(curve_name),
         )
@@ -157,6 +158,39 @@ class ChiSquareResult:
         can = TCanvas("c", "c", 820, 920)
         frame.Draw()
 
-        can.SaveAs(f"plots/fit_2d/control_{outprefix}_{pdf_family}.pdf")
+        can.SaveAs(f"plots/fit_2d/control_mumugamma_{outprefix}_{pdf_family}.pdf")
 
-        return ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)
+        res = ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)
+
+        # plot on X
+
+        # Build a frame and plot only the region of interest
+        frame = x.frame(RooFit.Bins(nbins), RooFit.Title(f"GOF on X"))
+        data_name = f"data_{region_name}"
+        curve_name = f"pdf_{region_name}"
+
+        # Data: only points inside the region (binned into nbins)
+        data.plotOn(
+            frame,
+            # RooFit.CutRange(region_name),
+            RooFit.Binning(nbins),
+            RooFit.Name(data_name),
+        )
+
+        # PDF: evaluated only in the region, but normalized over norm_range
+        # nData = data.sumEntries("", region_name)
+        nData = data.sumEntries("")
+        model.plotOn(
+            frame,
+            # RooFit.ProjWData(RooArgSet(x), data),
+            RooFit.Normalization(nData, RooAbsReal.NumEvent),
+            RooFit.Name(curve_name),
+        )
+
+        can = TCanvas("c_x", "c_x", 820, 920)
+        frame.Draw()
+
+        can.SaveAs(f"plots/fit_2d/control_mumu_{outprefix}_{pdf_family}.pdf")
+
+        res = ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)
+        return res

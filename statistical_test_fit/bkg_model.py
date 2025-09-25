@@ -1,17 +1,18 @@
-from dataclasses import dataclass
-import tempfile
 import os
+import random
+import tempfile
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from ROOT import (  # type: ignore
-    RooArgSet,  # type: ignore
-    RooChebychev,  # type: ignore
-    RooRealVar,  # type: ignore
     RooArgList,  # type: ignore
-    RooProdPdf,  # type: ignore
+    RooArgSet,  # type: ignore
+    RooBernstein,  # type: ignore
+    RooChebychev,  # type: ignore
     RooExpPoly,  # type: ignore
     RooGenericPdf,  # type: ignore
-    RooBernstein,  # type: ignore
+    RooProdPdf,  # type: ignore
+    RooRealVar,  # type: ignore
     TMath,  # type: ignore
 )
 
@@ -130,7 +131,8 @@ def build_background_cheb(x, cheb_coeffs, name="background_chebychev"):
 def build_background_cheb_2d(x, y, cheb_coeffs, name="background_chebychev_2d"):
     coeff_vars_x = [
         RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
-        for i, v in enumerate([0.3], start=1)
+        # for i, v in enumerate([0.3], start=1)
+        for i, v in enumerate([random.uniform(-1, 1)], start=1)
     ]
     coeff_list_x = RooArgList()
     for v in coeff_vars_x:

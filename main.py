@@ -1,6 +1,6 @@
 import argparse
-from enum import Enum
 import os
+from enum import Enum
 
 from ROOT import (  # type: ignore
     RooFit,  # type: ignore
