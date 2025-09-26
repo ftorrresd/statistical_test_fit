@@ -1,4 +1,5 @@
 import sys
+import os
 from argparse import Namespace
 
 from ROOT import (  # type: ignore
@@ -22,7 +23,7 @@ from .bkg_model import (
 )
 from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
-from .make_plots import ProjDim, make_plots_2d
+from .make_plots import DataType, ProjDim, make_plots_2d
 
 
 def build_signal(x, y, mean_x, sigma_x, mean_y, sigma_y, name: str):
@@ -111,7 +112,12 @@ def run_fit_2d(args: Namespace):
 
     # Observable
     m_mumu = RooRealVar("m_mumu", "m_mumu", m_mumu_lower, m_mumu_upper)
+    m_mumu.SetTitle("m_{#mu#mu}")  # LaTeX-style title
+    m_mumu.setUnit("GeV")  # physical unit
+
     m_mumugamma = RooRealVar("m_mumugamma", "m_mumugamma", left_lower, right_upper)
+    m_mumugamma.SetTitle("m_{#mu#mu#gamma}")  # LaTeX-style title
+    m_mumugamma.setUnit("GeV")  # physical unit
 
     observables = RooArgSet(m_mumu, m_mumugamma)
 
@@ -178,8 +184,20 @@ def run_fit_2d(args: Namespace):
         # min_n_coeffs=1,
         # n_coeffs=2,
     )
-    # test_bkg_pdfs |= build_background_models(BkgPdfFamily.BERNSTEIN, x)
-    # test_bkg_pdfs |= build_background_models(BkgPdfFamily.POWER_LAW, x)
+    test_bkg_pdfs |= build_background_models_2d(
+        BkgPdfFamily.BERNSTEIN,
+        m_mumu,
+        m_mumugamma,
+        # min_n_coeffs=1,
+        # n_coeffs=2,
+    )
+    test_bkg_pdfs |= build_background_models_2d(
+        BkgPdfFamily.POWER_LAW,
+        m_mumu,
+        m_mumugamma,
+        # min_n_coeffs=1,
+        # n_coeffs=2,
+    )
     # test_bkg_pdfs|=build_background_models(BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000)
 
     for family in BkgPdfFamily:
@@ -215,25 +233,16 @@ def run_fit_2d(args: Namespace):
                 )
 
                 test_bkg_pdf.fit_res = eff_pdf.fitTo(
-                    # data_full,
                     data_sb,
-                    # RooFit.Range("LEFT,MIDDLE,RIGHT"),
-                    # RooFit.NormRange("RIGHT"),
-                    # data_sb,
-                    # RooFit.Range("full"),
-                    # RooFit.NormRange(
-                    #     "full"
-                    # ),  # ensure normalization is over the full box
-                    # data_full,
-                    # RooFit.Range(
-                    #     "left,middle,right"
-                    # ),  # ...but restrict the likelihood to sidebands
                     RooFit.Save(True),
                     RooFit.PrintLevel(-1),
                     RooFit.Verbose(False),
                     RooFit.Minimizer("Minuit2", "Migrad"),
                 )
 
+                os.system(
+                    f"mkdir -p plots/fit_2d/control/{str(test_bkg_pdf.pdf_family).replace(' ', '_')}"
+                )
                 test_bkg_pdf.chi_square_res = ChiSquareResult.compute_chi_square_2d(
                     test_bkg_pdf.model,
                     data_sb,
@@ -244,9 +253,8 @@ def run_fit_2d(args: Namespace):
                     nbins=args.nbins,
                 )
 
-                test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(
-                    data_sb,
-                ).getVal()
+                # test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(data_sb).getVal()
+                test_bkg_pdf.NLL = eff_pdf.createNLL(data_sb).getVal()
 
             print("\n\n=== Test Background-only fit (sidebands) ===")
             for i, test_bkg_pdf in enumerate(test_bkg_pdfs[family]):
@@ -277,6 +285,7 @@ def run_fit_2d(args: Namespace):
                 right_upper,
                 f"{outprefix}_{family}",
                 nbins=args.nbins,
+                data_type=DataType.PSEUDO,
                 start=start,
                 winner=winner,
             )
@@ -299,6 +308,7 @@ def run_fit_2d(args: Namespace):
                 right_upper,
                 f"{outprefix}_{family}",
                 nbins=args.nbins,
+                data_type=DataType.PSEUDO,
                 start=start,
                 winner=winner,
             )

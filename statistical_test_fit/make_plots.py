@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import Enum, auto
 from itertools import cycle
 from typing import Optional
 
@@ -17,7 +17,7 @@ from .bkg_model import BkgModel, BkgPdfFamily
 
 
 def get_ROOT_colors():
-    return cycle([1, 2, 3, 4, 5, 6, 7, 8, 9])
+    return cycle([1, 2, 3, 5, 6, 7, 8, 9])
 
 
 def shade_blind_region(bl_lo, bl_hi, ymin, ymax, color=kGray, alpha=0.35):
@@ -46,11 +46,6 @@ def make_plots_1d(
     start: Optional[int],
     winner: Optional[int],
 ) -> str:
-    # Named ranges for sidebands
-    x.setRange("left", left_lower, left_upper)
-    x.setRange("middle", middle_lower, middle_upper)
-    x.setRange("right", right_lower, right_upper)
-
     # Frame
     frame = x.frame(
         RooFit.Bins(nbins),
@@ -64,7 +59,7 @@ def make_plots_1d(
     # Draw fitted background on sidebands only (solid), normalized to sidebands
     bkg_pdf.model.plotOn(
         frame,
-        RooFit.Range("left,middle,right"),
+        # RooFit.Range("left,middle,right"),
         RooFit.NormRange("left,middle,right"),
         RooFit.Name("bkg_sidebands"),
     )
@@ -72,15 +67,6 @@ def make_plots_1d(
     ROOT_COLORS = get_ROOT_colors()
     for test_bkg_pdf in test_bkg_pdfs:
         c = next(ROOT_COLORS)
-        test_bkg_pdf.model.plotOn(
-            frame,
-            RooFit.Range("left,middle,right"),
-            RooFit.NormRange("left,middle,right"),
-            # RooFit.Name("bkg_sidebands"),
-            RooFit.LineColor(c),
-            RooFit.LineStyle(kDashed),
-        )
-
         test_bkg_pdf.model.plotOn(
             frame,
             RooFit.NormRange("left,middle,right"),
@@ -148,10 +134,6 @@ def make_plots_1d(
 
     leg.Draw()
 
-    # Plot only sideband data points - again
-    data_full.plotOn(frame, RooFit.Name("data_sb"))
-    # data_sb.plotOn(frame, RooFit.Name("data_sb"))
-
     # Bottom pad: pulls
     can.cd(2)
     gPad.SetPad(0, 0.00, 1, 0.30)
@@ -172,6 +154,11 @@ class ProjDim(Enum):
     Y = "y"
 
 
+class DataType(Enum):
+    REAL = auto()
+    PSEUDO = auto()
+
+
 def make_plots_2d(
     proj_dim: ProjDim,
     x,
@@ -189,6 +176,7 @@ def make_plots_2d(
     right_upper,
     outprefix,
     nbins,
+    data_type: DataType,
     start: Optional[int],
     winner: Optional[int],
 ) -> str:
@@ -204,6 +192,8 @@ def make_plots_2d(
             RooFit.Title(""),
         )
 
+    frame.SetTitle("")
+
     # Plot only sideband data points
     data_sb.plotOn(frame, RooFit.Name("data_sb"))
 
@@ -211,7 +201,7 @@ def make_plots_2d(
     if proj_dim == ProjDim.Y:
         bkg_pdf.model.plotOn(
             frame,
-            RooFit.Range("LEFT,MIDDLE,RIGHT"),
+            # RooFit.Range("LEFT,MIDDLE,RIGHT"),
             RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
             RooFit.Name("bkg_sidebands"),
         )
@@ -244,20 +234,22 @@ def make_plots_2d(
                 RooFit.LineStyle(kDashed),
             )
 
-    frame.SetMaximum(1.5 * frame.GetMaximum())  # leave  headroom
+    frame.SetMaximum(2.0 * frame.GetMaximum())  # leave  headroom
 
-    # Pulls (computed vs the full-range curve). For clarity we compute pulls only where points exist (sidebands).
-    pull_hist = frame.pullHist("data_sb", "bkg_sidebands")
-    pull_frame = x.frame(RooFit.Title("Pulls (sidebands only)"))
-    pull_frame.addPlotable(pull_hist, "P")
+    # # Pulls (computed vs the full-range curve). For clarity we compute pulls only where points exist (sidebands).
+    # pull_hist = frame.pullHist("data_sb", "bkg_sidebands")
+    # pull_frame = x.frame(RooFit.Title("Pulls (sidebands only)"))
+    # pull_frame.addPlotable(pull_hist, "P")
 
     # Canvas with shaded blinded region
     can = TCanvas("c", "c", 820, 920)
-    can.Divide(1, 2)
+    can.SetLeftMargin(0.16)  # more room on the left (0.12–0.20 is typical)
+
+    # can.Divide(1, 2)
 
     # Top pad: fit
-    can.cd(1)
-    gPad.SetPad(0, 0.30, 1, 1)
+    # can.cd(1)
+    # gPad.SetPad(0, 0.30, 1, 1)
     frame.Draw()
 
     # Shade blinded region
@@ -272,7 +264,10 @@ def make_plots_2d(
     # leg.SetTextAlign(13)
     leg.SetBorderSize(0)
     leg.SetFillStyle(0)
-    leg.AddEntry(frame.findObject("data_sb"), "Data", "lep")
+    if data_type == DataType.REAL:
+        leg.AddEntry(frame.findObject("data_sb"), "Data", "lep")
+    if data_type == DataType.PSEUDO:
+        leg.AddEntry(frame.findObject("data_sb"), "Pseudodata", "lep")
     leg.AddEntry(
         frame.findObject("bkg_sidebands"),
         f"True BKG ({bkg_pdf.pdf_family} - {bkg_pdf.n_params} params)",
@@ -305,13 +300,13 @@ def make_plots_2d(
     # data_full.plotOn(frame, RooFit.Name("data_sb"))
     data_sb.plotOn(frame, RooFit.Name("data_sb"))
 
-    # Bottom pad: pulls
-    can.cd(2)
-    gPad.SetPad(0, 0.00, 1, 0.30)
-    gPad.SetGridy(True)
-    pull_frame.GetYaxis().SetNdivisions(505)
-    pull_frame.GetYaxis().SetRangeUser(-5, 5)
-    pull_frame.Draw()
+    # # Bottom pad: pulls
+    # can.cd(2)
+    # gPad.SetPad(0, 0.00, 1, 0.30)
+    # gPad.SetGridy(True)
+    # pull_frame.GetYaxis().SetNdivisions(505)
+    # pull_frame.GetYaxis().SetRangeUser(-5, 5)
+    # pull_frame.Draw()
 
     if proj_dim == ProjDim.X:
         plot_file_name = f"plots/fit_2d/mumu_{outprefix}.pdf"

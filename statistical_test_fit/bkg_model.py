@@ -131,8 +131,8 @@ def build_background_cheb(x, cheb_coeffs, name="background_chebychev"):
 def build_background_cheb_2d(x, y, cheb_coeffs, name="background_chebychev_2d"):
     coeff_vars_x = [
         RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
-        # for i, v in enumerate([0.3], start=1)
-        for i, v in enumerate([random.uniform(-1, 1)], start=1)
+        for i, v in enumerate([0.3], start=1)
+        # for i, v in enumerate([random.uniform(-1, 1)], start=1)
         # for i, v in enumerate([0.0], start=1)
     ]
     coeff_list_x = RooArgList()
@@ -188,21 +188,49 @@ def build_background_bernstein(
     return bkg
 
 
-def build_background_power_law(
-    x,
-    exponents,
-    name="background_power_law",
-    title="Power-sum background",
-    exponents_bounds=(-10.0, +10.0),
+def build_background_bernstein_2d(
+    x, y, bern_coeffs, name="background_bernstein_2d", force_positive=True
 ):
-    if not (len(exponents) >= 1):
-        raise ValueError("At least one exponent should be provided")
+    lo = 0.0 if force_positive else -10.0
+    hi = 10.0
 
-    # parameters
-    a_vars = []
-    for i, v in enumerate(exponents):
-        a_vars.append(RooRealVar(f"a{i}", f"a{i}", float(v), *exponents_bounds))
+    coeff_vars_x = [
+        RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
+        for i, v in enumerate([0.3], start=1)
+        # for i, v in enumerate([random.uniform(-1, 1)], start=1)
+        # for i, v in enumerate([0.0], start=1)
+    ]
+    coeff_list_x = RooArgList()
+    for v in coeff_vars_x:
+        coeff_list_x.add(v)
+    bkg_x = RooChebychev(f"{name}_x", "Chebychev background 2D - x", x, coeff_list_x)
 
+    coeff_vars_y = [
+        RooRealVar(f"b{i}", f"Bernstein b{i}", float(v), lo, hi)
+        for i, v in enumerate(bern_coeffs)
+    ]
+
+    coeff_list_y = RooArgList()
+    for v in coeff_vars_y:
+        coeff_list_y.add(v)
+
+    bkg_y = RooBernstein(name, "Bernstein background 2D - y", y, coeff_list_y)
+
+    bkg = RooProdPdf("model", "Bernstein background 2D", RooArgList(bkg_x, bkg_y))
+
+    bkg._keepalive = {
+        "coeff_vars_x": coeff_vars_x,
+        "coeff_vars_y": coeff_vars_y,
+        "coeff_list_x": coeff_list_x,
+        "coeff_list_y": coeff_list_y,
+        "bkg_x": bkg_x,
+        "bkg_y": bkg_y,
+    }
+
+    return bkg
+
+
+def _get_power_law_formula(exponents):
     # build formula: @0 is x, then a0,b0,a1,b1,...
     # term i uses indices (1+2*i) for a_i and (2+2*i) for b_i
     formula = ""
@@ -229,6 +257,26 @@ def build_background_power_law(
     else:
         raise ValueError("Number of exponents > 8")
 
+    return formula
+
+
+def build_background_power_law(
+    x,
+    exponents,
+    name="background_power_law",
+    title="Power-sum background",
+    exponents_bounds=(-10.0, +10.0),
+):
+    if not (len(exponents) >= 1):
+        raise ValueError("At least one exponent should be provided")
+
+    # parameters
+    a_vars = []
+    for i, v in enumerate(exponents):
+        a_vars.append(RooRealVar(f"a{i}", f"a{i}", float(v), *exponents_bounds))
+
+    formula = _get_power_law_formula(exponents)
+
     args = RooArgList(x)
     for i in range(len(exponents)):
         args.add(a_vars[i])
@@ -237,6 +285,54 @@ def build_background_power_law(
     pdf._keepalive = {"a_vars": a_vars, "args": args}
 
     return pdf
+
+
+def build_background_power_law_2d(
+    x,
+    y,
+    exponents,
+    name="background_power_law_2d",
+    title="Power-sum background",
+    exponents_bounds=(-10.0, +10.0),
+):
+    if not (len(exponents) >= 1):
+        raise ValueError("At least one exponent should be provided")
+
+    coeff_vars_x = [
+        RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
+        for i, v in enumerate([0.3], start=1)
+        # for i, v in enumerate([random.uniform(-1, 1)], start=1)
+        # for i, v in enumerate([0.0], start=1)
+    ]
+    coeff_list_x = RooArgList()
+    for v in coeff_vars_x:
+        coeff_list_x.add(v)
+    bkg_x = RooChebychev(f"{name}_x", "Chebychev background 2D - x", x, coeff_list_x)
+
+    formula = _get_power_law_formula(exponents).replace("x", "m_mumugamma")
+
+    # parameters
+    a_vars_y = []
+    for i, v in enumerate(exponents):
+        a_vars_y.append(RooRealVar(f"a{i}", f"a{i}", float(v), *exponents_bounds))
+
+    args_y = RooArgList(y)
+    for i in range(len(exponents)):
+        args_y.add(a_vars_y[i])
+
+    bkg_y = RooGenericPdf(name, title, formula, args_y)
+
+    bkg = RooProdPdf("model", "Power-law background 2D", RooArgList(bkg_x, bkg_y))
+
+    bkg._keepalive = {
+        "coeff_vars_x": coeff_vars_x,
+        "coeff_list_x": coeff_list_x,
+        "a_vars_y": a_vars_y,
+        "args_y": args_y,
+        "bkg_x": bkg_x,
+        "bkg_y": bkg_y,
+    }
+    return bkg
 
 
 def build_background_exponential(
@@ -324,14 +420,14 @@ def build_background_models_2d(
     if pdf_family == BkgPdfFamily.CHEBYCHEV:
         model_builder = build_background_cheb_2d
 
-    # if pdf_family == BkgPdfFamily.BERNSTEIN:
-    #     model_builder = build_background_bernstein
-    #
-    # if pdf_family == BkgPdfFamily.POWER_LAW:
-    #     model_builder = build_background_power_law
+    if pdf_family == BkgPdfFamily.BERNSTEIN:
+        model_builder = build_background_bernstein_2d
+
+    if pdf_family == BkgPdfFamily.POWER_LAW:
+        model_builder = build_background_power_law_2d
     #
     # if pdf_family == BkgPdfFamily.EXPONENTIAL:
-    #     model_builder = build_background_exponential
+    #     model_builder = build_background_exponential_2d
 
     if model_builder == None:
         raise ValueError("Invalid PDF Family")

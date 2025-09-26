@@ -97,7 +97,7 @@ class ChiSquareResult:
         y,
         outprefix,
         pdf_family: BkgPdfFamily,
-        region_name="left,middle,right",
+        region_name="LEFT,MIDDLE,RIGHT",
         nbins=40,
         # norm_range="left,middle,right",
         nfloatpars=None,
@@ -116,6 +116,9 @@ class ChiSquareResult:
         # Determine number of floated parameters to subtract in ndf
         if nfloatpars is None:
             nfloatpars = _count_float_pars(model, x)
+            # nfloatpars = (
+            #     model.getParameters(data).selectByAttrib("Constant", False).getSize()
+            # )
 
         # Build a frame and plot only the region of interest
         frame = y.frame(RooFit.Bins(nbins), RooFit.Title(f"GOF on Y"))
@@ -138,6 +141,7 @@ class ChiSquareResult:
             # RooFit.ProjWData(RooArgSet(x), data),
             # RooFit.Normalization(nData, RooAbsReal.NumEvent),
             RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
+            RooFit.Range("LEFT,MIDDLE,RIGHT"),
             RooFit.Name(curve_name),
         )
 
@@ -159,7 +163,9 @@ class ChiSquareResult:
         can = TCanvas("c", "c", 820, 920)
         frame.Draw()
 
-        can.SaveAs(f"plots/fit_2d/control_mumugamma_{outprefix}_{pdf_family}.pdf")
+        can.SaveAs(
+            f"plots/fit_2d/control/{str(pdf_family).replace(' ', '_')}/control_mumugamma_{outprefix}_{pdf_family}.pdf"
+        )
 
         res = ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)
 
@@ -183,7 +189,7 @@ class ChiSquareResult:
         nData = data.sumEntries("")
         model.plotOn(
             frame,
-            # RooFit.ProjWData(RooArgSet(x), data),
+            RooFit.ProjWData(RooArgSet(x), data),
             RooFit.Normalization(nData, RooAbsReal.NumEvent),
             RooFit.Name(curve_name),
         )
@@ -191,7 +197,9 @@ class ChiSquareResult:
         can = TCanvas("c_x", "c_x", 820, 920)
         frame.Draw()
 
-        can.SaveAs(f"plots/fit_2d/control_mumu_{outprefix}_{pdf_family}.pdf")
+        can.SaveAs(
+            f"plots/fit_2d/control/{str(pdf_family).replace(' ', '_')}/control_mumu_{outprefix}_{pdf_family}.pdf"
+        )
 
         res = ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)
         return res
