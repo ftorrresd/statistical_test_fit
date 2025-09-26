@@ -150,6 +150,12 @@ def run_fit_2d(args: Namespace):
     m_mumugamma.setRange("left", left_lower, left_upper)
     m_mumugamma.setRange("middle", middle_lower, middle_upper)
     m_mumugamma.setRange("right", right_lower, right_upper)
+    m_mumu.setRange("left", m_mumu_lower, m_mumu_upper)
+    m_mumu.setRange("middle", m_mumu_lower, m_mumu_upper)
+    m_mumu.setRange("right", m_mumu_lower, m_mumu_upper)
+
+    m_mumugamma.setRange("full", left_lower, right_upper)
+    m_mumu.setRange("full", m_mumu_lower, m_mumu_upper)
 
     # Sideband-only dataset (useful for plotting)
     cut_expr = f"((m_mumugamma<{left_upper}) || (m_mumugamma>{right_lower}) || ((m_mumugamma>{middle_lower}) && (m_mumugamma<{middle_upper})))"
@@ -187,11 +193,13 @@ def run_fit_2d(args: Namespace):
             print()
             for test_bkg_pdf in test_bkg_pdfs[family]:
                 test_bkg_pdf.fit_res = test_bkg_pdf.model.fitTo(
-                    # data_sb,
-                    data_full,
-                    RooFit.Range(
-                        "left,middle,right"
-                    ),  # ...but restrict the likelihood to sidebands
+                    data_sb,
+                    RooFit.Range("middle"),
+                    # data_full,
+                    # RooFit.Range(
+                    #     # "left,middle,right"
+                    #     "middle"
+                    # ),  # ...but restrict the likelihood to sidebands
                     RooFit.Save(True),
                     RooFit.PrintLevel(-1),
                     RooFit.Verbose(False),
