@@ -133,6 +133,7 @@ def build_background_cheb_2d(x, y, cheb_coeffs, name="background_chebychev_2d"):
         RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
         # for i, v in enumerate([0.3], start=1)
         for i, v in enumerate([random.uniform(-1, 1)], start=1)
+        # for i, v in enumerate([0.0], start=1)
     ]
     coeff_list_x = RooArgList()
     for v in coeff_vars_x:

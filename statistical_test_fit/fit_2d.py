@@ -8,8 +8,10 @@ from ROOT import (  # type: ignore
     RooFit,  # type: ignore
     RooGaussian,  # type: ignore
     RooProdPdf,  # type: ignore
+    RooEffProd,  # type: ignore
     RooRandom,  # type: ignore
     RooRealVar,  # type: ignore
+    RooFormulaVar,  # type: ignore
 )
 
 from .bkg_model import (
@@ -130,8 +132,10 @@ def run_fit_2d(args: Namespace):
         z_model,
         higgs_model,
         bkg_pdf.model,
-        z_sigfrac,
-        h_sigfrac,
+        # z_sigfrac,
+        0.0,
+        # h_sigfrac,
+        0.0,
     )
 
     # Random seed
@@ -147,18 +151,14 @@ def run_fit_2d(args: Namespace):
     )
 
     # Named ranges for sidebands
-    m_mumugamma.setRange("left", left_lower, left_upper)
-    m_mumugamma.setRange("middle", middle_lower, middle_upper)
-    m_mumugamma.setRange("right", right_lower, right_upper)
-    m_mumu.setRange("left", m_mumu_lower, m_mumu_upper)
-    m_mumu.setRange("middle", m_mumu_lower, m_mumu_upper)
-    m_mumu.setRange("right", m_mumu_lower, m_mumu_upper)
-
-    m_mumugamma.setRange("full", left_lower, right_upper)
-    m_mumu.setRange("full", m_mumu_lower, m_mumu_upper)
+    m_mumugamma.setRange("LEFT", left_lower, left_upper)
+    m_mumugamma.setRange("MIDDLE", middle_lower, middle_upper)
+    m_mumugamma.setRange("RIGHT", right_lower, right_upper)
+    m_mumugamma.setRange("FULL", left_lower, right_upper)
 
     # Sideband-only dataset (useful for plotting)
     cut_expr = f"((m_mumugamma<{left_upper}) || (m_mumugamma>{right_lower}) || ((m_mumugamma>{middle_lower}) && (m_mumugamma<{middle_upper})))"
+    # data_sb = data_full.reduce(RooFit.Cut(cut_expr))
     data_sb = data_full.reduce(RooFit.Cut(cut_expr))
     print(f"Sideband entries: {data_sb.numEntries()} (out of {data_full.numEntries()})")
 
@@ -192,13 +192,41 @@ def run_fit_2d(args: Namespace):
             print("##############################################")
             print()
             for test_bkg_pdf in test_bkg_pdfs[family]:
-                test_bkg_pdf.fit_res = test_bkg_pdf.model.fitTo(
+                # sideband acceptance (depends only on m_mumugamma)
+                lu = RooRealVar("lu", "left_upper", left_upper)
+                rl = RooRealVar("rl", "right_lower", right_lower)
+                ml = RooRealVar("ml", "middle_lower", middle_lower)
+                mu = RooRealVar("mu", "middle_upper", middle_upper)
+                for v in (lu, rl, ml, mu):
+                    v.setConstant(True)
+
+                # acceptance: 1 in sidebands, 0 in the blinded window
+                acc = RooFormulaVar(
+                    "acc",
+                    "(m_mumugamma < lu) || (m_mumugamma > rl) || "
+                    "((m_mumugamma > ml) && (m_mumugamma < mu))",
+                    RooArgList(m_mumugamma, lu, rl, ml, mu),
+                )
+
+                # Apply acceptance to your 2D pdf (shape depends on m_mumu, m_mumugamma)
+                # eff_pdf(m_mumu, m_mumugamma) ∝ pdf(m_mumu, m_mumugamma) * acc(m_mumugamma)
+                eff_pdf = RooEffProd(
+                    "eff_pdf", "pdf * acceptance", test_bkg_pdf.model, acc
+                )
+
+                test_bkg_pdf.fit_res = eff_pdf.fitTo(
+                    # data_full,
                     data_sb,
-                    RooFit.Range("middle"),
+                    # RooFit.Range("LEFT,MIDDLE,RIGHT"),
+                    # RooFit.NormRange("RIGHT"),
+                    # data_sb,
+                    # RooFit.Range("full"),
+                    # RooFit.NormRange(
+                    #     "full"
+                    # ),  # ensure normalization is over the full box
                     # data_full,
                     # RooFit.Range(
-                    #     # "left,middle,right"
-                    #     "middle"
+                    #     "left,middle,right"
                     # ),  # ...but restrict the likelihood to sidebands
                     RooFit.Save(True),
                     RooFit.PrintLevel(-1),
@@ -278,18 +306,18 @@ def run_fit_2d(args: Namespace):
 
             # Optional: estimate expected background count in the blinded window (from fitted pdf)
             # Compute integral of background over blind window, normalized over full x.
-            m_mumugamma.setRange("blind_left", left_upper, middle_lower)
-            m_mumugamma.setRange("blind_right", middle_upper, right_lower)
+            m_mumugamma.setRange("BLIND_LEFT", left_upper, middle_lower)
+            m_mumugamma.setRange("BLIND_RIGHT", middle_upper, right_lower)
 
             # For an expected count, scale by the number of observed sideband events with
             # the pdf’s fraction in blind vs sideband ranges.
             i_blind = bkg_pdf.model.createIntegral(
-                RooArgSet(m_mumugamma), RooFit.Range("blind_left,blind_right")
+                RooArgSet(m_mumugamma), RooFit.Range("BLIND_LEFT,BLIND_RIGHT")
             ).getVal()
 
             i_full = bkg_pdf.model.createIntegral(
                 RooArgSet(m_mumugamma),
-                RooFit.Range("left,blind_left,middle,blind_right,right"),
+                RooFit.Range("LEFT,BLIND_LEFT,MIDDLE,BLIND_RIGHT,RIGHT"),
             ).getVal()
 
             frac_blind = i_blind / i_full if i_full > 0 else 0.0

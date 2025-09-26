@@ -192,11 +192,6 @@ def make_plots_2d(
     start: Optional[int],
     winner: Optional[int],
 ) -> str:
-    # Named ranges for sidebands
-    x.setRange("left", left_lower, left_upper)
-    x.setRange("middle", middle_lower, middle_upper)
-    x.setRange("right", right_lower, right_upper)
-
     # Frame
     if proj_dim == ProjDim.Y:
         frame = y.frame(
@@ -210,38 +205,44 @@ def make_plots_2d(
         )
 
     # Plot only sideband data points
-    # data_full.plotOn(frame, RooFit.Name("data_sb"))
     data_sb.plotOn(frame, RooFit.Name("data_sb"))
 
     # Draw fitted background on sidebands only (solid), normalized to sidebands
-    bkg_pdf.model.plotOn(
-        frame,
-        RooFit.Range("left,middle,right"),
-        RooFit.NormRange("left,middle,right"),
-        RooFit.Name("bkg_sidebands"),
-    )
+    if proj_dim == ProjDim.Y:
+        bkg_pdf.model.plotOn(
+            frame,
+            RooFit.Range("LEFT,MIDDLE,RIGHT"),
+            RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
+            RooFit.Name("bkg_sidebands"),
+        )
+    else:
+        bkg_pdf.model.plotOn(
+            frame,
+            RooFit.Name("bkg_sidebands"),
+        )
 
     ROOT_COLORS = get_ROOT_colors()
     for test_bkg_pdf in test_bkg_pdfs:
         c = next(ROOT_COLORS)
-        test_bkg_pdf.model.plotOn(
-            frame,
-            RooFit.Range("left,middle,right"),
-            RooFit.NormRange("left,middle,right"),
-            # RooFit.Name("bkg_sidebands"),
-            RooFit.LineColor(c),
-            RooFit.LineStyle(kDashed),
-        )
-
-        test_bkg_pdf.model.plotOn(
-            frame,
-            RooFit.NormRange("left,middle,right"),
-            RooFit.Name(
-                f"test_bkg_{test_bkg_pdf.model.getParameters(RooArgSet()).getSize()}_params"
-            ),
-            RooFit.LineColor(c),
-            RooFit.LineStyle(kDashed),
-        )
+        if proj_dim == ProjDim.Y:
+            test_bkg_pdf.model.plotOn(
+                frame,
+                RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
+                RooFit.Name(
+                    f"test_bkg_{test_bkg_pdf.model.getParameters(RooArgSet()).getSize()}_params"
+                ),
+                RooFit.LineColor(c),
+                RooFit.LineStyle(kDashed),
+            )
+        else:
+            test_bkg_pdf.model.plotOn(
+                frame,
+                RooFit.Name(
+                    f"test_bkg_{test_bkg_pdf.model.getParameters(RooArgSet()).getSize()}_params"
+                ),
+                RooFit.LineColor(c),
+                RooFit.LineStyle(kDashed),
+            )
 
     frame.SetMaximum(1.5 * frame.GetMaximum())  # leave  headroom
 
@@ -301,8 +302,8 @@ def make_plots_2d(
     leg.Draw()
 
     # Plot only sideband data points - again
-    data_full.plotOn(frame, RooFit.Name("data_sb"))
-    # data_sb.plotOn(frame, RooFit.Name("data_sb"))
+    # data_full.plotOn(frame, RooFit.Name("data_sb"))
+    data_sb.plotOn(frame, RooFit.Name("data_sb"))
 
     # Bottom pad: pulls
     can.cd(2)

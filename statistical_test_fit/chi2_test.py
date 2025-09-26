@@ -136,7 +136,8 @@ class ChiSquareResult:
         model.plotOn(
             frame,
             # RooFit.ProjWData(RooArgSet(x), data),
-            RooFit.Normalization(nData, RooAbsReal.NumEvent),
+            # RooFit.Normalization(nData, RooAbsReal.NumEvent),
+            RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
             RooFit.Name(curve_name),
         )
 
