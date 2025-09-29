@@ -1,3 +1,7 @@
+from_mauricio
+inputs/*.root
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
