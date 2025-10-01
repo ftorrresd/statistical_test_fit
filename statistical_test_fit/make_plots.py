@@ -12,6 +12,7 @@ from ROOT import (
     kDashed,  # type: ignore
     kGray,  # type: ignore
 )
+from typing_extensions import ReadOnly
 
 from .bkg_model import BkgModel, BkgPdfFamily
 
@@ -180,6 +181,10 @@ def make_plots_2d(
     start: Optional[int],
     winner: Optional[int],
 ) -> str:
+    data_postfix = ""
+    if data_type == DataType.REAL:
+        data_postfix = "_data"
+
     # Frame
     if proj_dim == ProjDim.Y:
         frame = y.frame(
@@ -309,9 +314,9 @@ def make_plots_2d(
     # pull_frame.Draw()
 
     if proj_dim == ProjDim.X:
-        plot_file_name = f"plots/fit_2d/mumu_{outprefix}.pdf"
+        plot_file_name = f"plots/fit_2d{data_postfix}/mumu_{outprefix}.pdf"
     else:
-        plot_file_name = f"plots/fit_2d/mumugamma_{outprefix}.pdf"
+        plot_file_name = f"plots/fit_2d{data_postfix}/mumugamma_{outprefix}.pdf"
     can.SaveAs(plot_file_name)
 
     return plot_file_name

@@ -9,7 +9,7 @@ from ROOT import (  # type: ignore
     gSystem,  # type: ignore
 )
 
-from statistical_test_fit import run_fit_1d, run_fit_2d
+from statistical_test_fit import run_fit_1d, run_fit_2d, run_fit_2d_data
 
 gROOT.SetBatch(True)
 RooMsgService.instance().setGlobalKillBelow(RooFit.WARNING)
@@ -19,6 +19,8 @@ RooMsgService.instance().setGlobalKillBelow(RooFit.WARNING)
 class FitToRun(Enum):
     ONEDIM = "1d"
     TWODIM = "2d"
+    NONE = "none"
+    DATA = "data"
     ALL = "all"
 
     # Create a custom type for argparse that converts the string to an Enum member
@@ -43,7 +45,7 @@ def main():
         "--fits-to-run",
         type=FitToRun.arg_type,
         default=FitToRun.ALL,
-        help="Choose a run configuration: 1d, 2d or all (default).",
+        help="Choose a run configuration (pseudodata): 1d, 2d, all (default), data or none.",
     )
     parser.add_argument(
         "--events", type=int, default=10000, help="N events to generate (unextended)"
@@ -60,16 +62,23 @@ def main():
     os.system("mkdir -p plots")
     os.system("mkdir -p plots/fit_1d")
     os.system("mkdir -p plots/fit_2d")
+    os.system("mkdir -p plots/fit_2d_data")
     os.system(r'find plots -type f ! -name ".gitkeep" -delete')
 
     gSystem.Load("libRooFit")
     gSystem.Load("libHiggsAnalysisCombinedLimit")
 
-    if args.fits_to_run == FitToRun.ONEDIM or args.fits_to_run == FitToRun.ALL:
-        run_fit_1d(args)
+    if args.fits_to_run != FitToRun.NONE:
+        if args.fits_to_run == FitToRun.ONEDIM or args.fits_to_run == FitToRun.ALL:
+            run_fit_1d(args)
 
-    if args.fits_to_run == FitToRun.TWODIM or args.fits_to_run == FitToRun.ALL:
-        run_fit_2d(args)
+        if args.fits_to_run == FitToRun.TWODIM or args.fits_to_run == FitToRun.ALL:
+            run_fit_2d(args)
+    else:
+        print("Skipping pseudodata")
+
+    if args.fits_to_run == FitToRun.DATA or args.fits_to_run == FitToRun.ALL:
+        run_fit_2d_data(args)
 
 
 if __name__ == "__main__":

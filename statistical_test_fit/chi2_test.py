@@ -101,7 +101,12 @@ class ChiSquareResult:
         nbins=40,
         # norm_range="left,middle,right",
         nfloatpars=None,
+        is_data=False,
     ) -> "ChiSquareResult":
+        data_postfix = ""
+        if is_data:
+            data_postfix = "_data"
+
         def _count_float_pars(model, x):
             """Return number of non-constant parameters the model depends on."""
             params_set = model.getParameters(RooArgSet(x))  # RooArgSet
@@ -164,7 +169,7 @@ class ChiSquareResult:
         frame.Draw()
 
         can.SaveAs(
-            f"plots/fit_2d/control/{str(pdf_family).replace(' ', '_')}/control_mumugamma_{outprefix}_{pdf_family}.pdf"
+            f"plots/fit_2d{data_postfix}/control/{str(pdf_family).replace(' ', '_')}/control_mumugamma_{outprefix}_{pdf_family}.pdf"
         )
 
         res = ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)
@@ -198,7 +203,7 @@ class ChiSquareResult:
         frame.Draw()
 
         can.SaveAs(
-            f"plots/fit_2d/control/{str(pdf_family).replace(' ', '_')}/control_mumu_{outprefix}_{pdf_family}.pdf"
+            f"plots/fit_2d{data_postfix}/control/{str(pdf_family).replace(' ', '_')}/control_mumu_{outprefix}_{pdf_family}.pdf"
         )
 
         res = ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)

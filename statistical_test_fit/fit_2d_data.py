@@ -3,6 +3,7 @@ import sys
 from argparse import Namespace
 
 from ROOT import (  # type: ignore
+    RooAbsPdf,  # type: ignore
     RooAddPdf,  # type: ignore
     RooArgList,  # type: ignore
     RooArgSet,  # type: ignore
@@ -23,7 +24,9 @@ from .bkg_model import (
 )
 from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
+from .dimuon_non_correlated import dimuon_non_correlated
 from .make_plots import DataType, ProjDim, make_plots_2d
+from .resonant_bkg_modeling import resonant_background_modeling_Higgs
 
 
 def build_signal(x, y, mean_x, sigma_x, mean_y, sigma_y, name: str):
@@ -91,7 +94,40 @@ def build_gen_model_unextended(
     return model
 
 
-def run_fit_2d(args: Namespace):
+def freeze_pdf_params(pdf: RooAbsPdf, observables: RooArgSet) -> RooArgSet:
+    """Return the (now frozen) parameter set.
+
+    If you have a dataset, you can auto-discover observables.
+
+    Example:
+    observables = pdf.getObservables(ata)
+    frozen = freeze_pdf_params(model, observables)"""
+
+    params = pdf.getParameters(
+        observables
+    )  # everything the pdf depends on, except 'observables'
+
+    it = params.createIterator()
+    obj = it.Next()
+    while obj:
+        # Freeze only real-valued fit parameters
+        if isinstance(obj, RooRealVar) and not obj.isConstant():
+            obj.setConstant(True)
+        obj = it.Next()
+    return params
+
+
+def unfreeze_pdf_params(pdf: RooAbsPdf, observables: RooArgSet):
+    params = pdf.getParameters(observables)
+    it = params.createIterator()
+    obj = it.Next()
+    while obj:
+        if isinstance(obj, RooRealVar) and obj.isConstant():
+            obj.setConstant(False)
+        obj = it.Next()
+
+
+def run_fit_2d_data(args: Namespace):
     # Limits
     m_mumu_lower = 8.0
     m_mumu_upper = 12.0
@@ -109,6 +145,12 @@ def run_fit_2d(args: Namespace):
     h_sigfrac = 0.05 / 2.0
 
     outprefix = "bkg_only"
+
+    # build upsilon models
+    # upsilon_model = dimuon_non_correlated(m_mumu_lower, m_mumu_upper)
+
+    # build higss resonant bkg
+    higgs_resonant_bkg = resonant_background_modeling_Higgs()
 
     # Observable
     m_mumu = RooRealVar("m_mumu", "m_mumu", m_mumu_lower, m_mumu_upper)
@@ -184,20 +226,20 @@ def run_fit_2d(args: Namespace):
         # min_n_coeffs=1,
         # n_coeffs=2,
     )
-    test_bkg_pdfs |= build_background_models_2d(
-        BkgPdfFamily.BERNSTEIN,
-        m_mumu,
-        m_mumugamma,
-        # min_n_coeffs=1,
-        # n_coeffs=2,
-    )
-    test_bkg_pdfs |= build_background_models_2d(
-        BkgPdfFamily.POWER_LAW,
-        m_mumu,
-        m_mumugamma,
-        # min_n_coeffs=1,
-        # n_coeffs=2,
-    )
+    # test_bkg_pdfs |= build_background_models_2d(
+    #     BkgPdfFamily.BERNSTEIN,
+    #     m_mumu,
+    #     m_mumugamma,
+    #     # min_n_coeffs=1,
+    #     # n_coeffs=2,
+    # )
+    # test_bkg_pdfs |= build_background_models_2d(
+    #     BkgPdfFamily.POWER_LAW,
+    #     m_mumu,
+    #     m_mumugamma,
+    #     # min_n_coeffs=1,
+    #     # n_coeffs=2,
+    # )
     # test_bkg_pdfs|=build_background_models(BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000)
 
     for family in BkgPdfFamily:
@@ -241,7 +283,7 @@ def run_fit_2d(args: Namespace):
                 )
 
                 os.system(
-                    f"mkdir -p plots/fit_2d/control/{str(test_bkg_pdf.pdf_family).replace(' ', '_')}"
+                    f"mkdir -p plots/fit_2d_data/control/{str(test_bkg_pdf.pdf_family).replace(' ', '_')}"
                 )
                 test_bkg_pdf.chi_square_res = ChiSquareResult.compute_chi_square_2d(
                     test_bkg_pdf.model,
@@ -251,6 +293,7 @@ def run_fit_2d(args: Namespace):
                     outprefix=f"test_bkg_pdf_{test_bkg_pdf.n_params}",
                     pdf_family=family,
                     nbins=args.nbins,
+                    is_data=True,
                 )
 
                 # test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(data_sb).getVal()
@@ -285,7 +328,7 @@ def run_fit_2d(args: Namespace):
                 right_upper,
                 f"{outprefix}_{family}",
                 nbins=args.nbins,
-                data_type=DataType.PSEUDO,
+                data_type=DataType.REAL,
                 start=start,
                 winner=winner,
             )
