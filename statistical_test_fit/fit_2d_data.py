@@ -26,7 +26,10 @@ from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
 from .dimuon_non_correlated import dimuon_non_correlated
 from .make_plots import DataType, ProjDim, make_plots_2d
-from .resonant_bkg_modeling import resonant_background_modeling_Higgs
+from .resonant_bkg_modeling import (
+    resonant_background_modeling_Higgs,
+    resonant_background_modeling_Z,
+)
 
 
 def build_signal(x, y, mean_x, sigma_x, mean_y, sigma_y, name: str):
@@ -150,7 +153,12 @@ def run_fit_2d_data(args: Namespace):
     # upsilon_model = dimuon_non_correlated(m_mumu_lower, m_mumu_upper)
 
     # build higss resonant bkg
-    higgs_resonant_bkg = resonant_background_modeling_Higgs()
+    # higgs_resonant_bkg_ws = resonant_background_modeling_Higgs()
+    # higgs_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
+
+    Z_resonant_bkg_ws = resonant_background_modeling_Z()
+    Z_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
+    exit()
 
     # Observable
     m_mumu = RooRealVar("m_mumu", "m_mumu", m_mumu_lower, m_mumu_upper)
@@ -351,7 +359,7 @@ def run_fit_2d_data(args: Namespace):
                 right_upper,
                 f"{outprefix}_{family}",
                 nbins=args.nbins,
-                data_type=DataType.PSEUDO,
+                data_type=DataType.REAL,
                 start=start,
                 winner=winner,
             )

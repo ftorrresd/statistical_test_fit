@@ -78,6 +78,7 @@ def fastplot(
     data_range=None,
     y_min=0,
     y_max=-999,
+    is_data=True,
 ):
     """Generic plot function
 
@@ -153,7 +154,11 @@ def fastplot(
             ROOT.RooFit.DataError(ROOT.RooAbsData.SumW2),
         )
 
-    leg.AddEntry(frame.findObject("Data"), "Data", "LEP")
+    data_legend_name = "Data"
+    if not is_data:
+        data_legend_name = "MC"
+
+    leg.AddEntry(frame.findObject("Data"), data_legend_name, "LEP")
 
     if data_range != None:
         model.plotOn(
