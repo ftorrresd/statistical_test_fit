@@ -128,9 +128,20 @@ def build_background_cheb(x, cheb_coeffs, name="background_chebychev"):
     return bkg
 
 
-def build_background_cheb_2d(x, y, cheb_coeffs, name="background_chebychev_2d"):
+def build_background_cheb_2d(
+    x,
+    y,
+    cheb_coeffs,
+    name="background_chebychev_2d",
+):
     coeff_vars_x = [
-        RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
+        RooRealVar(
+            f"c_{BkgPdfFamily.CHEBYCHEV.value}_x{i}",
+            f"Chebychev c_x{i}",
+            float(v),
+            -1.0,
+            1.0,
+        )
         for i, v in enumerate([0.3], start=1)
         # for i, v in enumerate([random.uniform(-1, 1)], start=1)
         # for i, v in enumerate([0.0], start=1)
@@ -141,7 +152,13 @@ def build_background_cheb_2d(x, y, cheb_coeffs, name="background_chebychev_2d"):
     bkg_x = RooChebychev(f"{name}_x", "Chebychev background 2D - x", x, coeff_list_x)
 
     coeff_vars_y = [
-        RooRealVar(f"c{i}", f"Chebychev c{i}", float(v), -1.0, 1.0)
+        RooRealVar(
+            f"c_{BkgPdfFamily.CHEBYCHEV.value}_{i}",
+            f"Chebychev c{i}",
+            float(v),
+            -1.0,
+            1.0,
+        )
         for i, v in enumerate(cheb_coeffs, start=1)
     ]
     coeff_list_y = RooArgList()
@@ -149,7 +166,11 @@ def build_background_cheb_2d(x, y, cheb_coeffs, name="background_chebychev_2d"):
         coeff_list_y.add(v)
     bkg_y = RooChebychev(f"{name}_y", "Chebychev background 2D - y", y, coeff_list_y)
 
-    bkg = RooProdPdf("model", "Chebychev background 2D", RooArgList(bkg_x, bkg_y))
+    bkg = RooProdPdf(
+        BkgPdfFamily.CHEBYCHEV.value,
+        "Chebychev background 2D",
+        RooArgList(bkg_x, bkg_y),
+    )
 
     bkg._keepalive = {
         "coeff_vars_x": coeff_vars_x,
@@ -195,7 +216,13 @@ def build_background_bernstein_2d(
     hi = 10.0
 
     coeff_vars_x = [
-        RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
+        RooRealVar(
+            f"c_{BkgPdfFamily.BERNSTEIN.value}_x{i}",
+            f"Chebychev c_x{i}",
+            float(v),
+            -1.0,
+            1.0,
+        )
         for i, v in enumerate([0.3], start=1)
         # for i, v in enumerate([random.uniform(-1, 1)], start=1)
         # for i, v in enumerate([0.0], start=1)
@@ -206,7 +233,9 @@ def build_background_bernstein_2d(
     bkg_x = RooChebychev(f"{name}_x", "Chebychev background 2D - x", x, coeff_list_x)
 
     coeff_vars_y = [
-        RooRealVar(f"b{i}", f"Bernstein b{i}", float(v), lo, hi)
+        RooRealVar(
+            f"b_{BkgPdfFamily.BERNSTEIN.value}_{i}", f"Bernstein b{i}", float(v), lo, hi
+        )
         for i, v in enumerate(bern_coeffs)
     ]
 
@@ -214,9 +243,13 @@ def build_background_bernstein_2d(
     for v in coeff_vars_y:
         coeff_list_y.add(v)
 
-    bkg_y = RooBernstein(name, "Bernstein background 2D - y", y, coeff_list_y)
+    bkg_y = RooBernstein(f"{name}_y", "Bernstein background 2D - y", y, coeff_list_y)
 
-    bkg = RooProdPdf("model", "Bernstein background 2D", RooArgList(bkg_x, bkg_y))
+    bkg = RooProdPdf(
+        BkgPdfFamily.BERNSTEIN.value,
+        "Bernstein background 2D",
+        RooArgList(bkg_x, bkg_y),
+    )
 
     bkg._keepalive = {
         "coeff_vars_x": coeff_vars_x,
@@ -299,7 +332,13 @@ def build_background_power_law_2d(
         raise ValueError("At least one exponent should be provided")
 
     coeff_vars_x = [
-        RooRealVar(f"c_x{i}", f"Chebychev c_x{i}", float(v), -1.0, 1.0)
+        RooRealVar(
+            f"c_{BkgPdfFamily.POWER_LAW.value}_x{i}",
+            f"Chebychev c_x{i}",
+            float(v),
+            -1.0,
+            1.0,
+        )
         for i, v in enumerate([0.3], start=1)
         # for i, v in enumerate([random.uniform(-1, 1)], start=1)
         # for i, v in enumerate([0.0], start=1)
@@ -309,20 +348,31 @@ def build_background_power_law_2d(
         coeff_list_x.add(v)
     bkg_x = RooChebychev(f"{name}_x", "Chebychev background 2D - x", x, coeff_list_x)
 
-    formula = _get_power_law_formula(exponents).replace("x", "m_mumugamma")
+    formula = _get_power_law_formula(exponents).replace("x", "boson_mass")
 
     # parameters
     a_vars_y = []
     for i, v in enumerate(exponents):
-        a_vars_y.append(RooRealVar(f"a{i}", f"a{i}", float(v), *exponents_bounds))
+        a_vars_y.append(
+            RooRealVar(
+                f"a{i}",
+                f"a{i}",
+                float(v),
+                *exponents_bounds,
+            )
+        )
 
     args_y = RooArgList(y)
     for i in range(len(exponents)):
         args_y.add(a_vars_y[i])
 
-    bkg_y = RooGenericPdf(name, title, formula, args_y)
+    bkg_y = RooGenericPdf(f"{name}_y", title, formula, args_y)
 
-    bkg = RooProdPdf("model", "Power-law background 2D", RooArgList(bkg_x, bkg_y))
+    bkg = RooProdPdf(
+        BkgPdfFamily.POWER_LAW.value,
+        "Power-law background 2D",
+        RooArgList(bkg_x, bkg_y),
+    )
 
     bkg._keepalive = {
         "coeff_vars_x": coeff_vars_x,

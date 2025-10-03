@@ -166,7 +166,7 @@ def make_plots_2d(
     y,
     data_full,
     data_sb,
-    bkg_pdf: BkgModel,
+    bkg_pdf: Optional[BkgModel],
     test_bkg_pdfs: list[BkgModel],
     bkg_pdf_family: BkgPdfFamily,
     left_lower,
@@ -203,18 +203,19 @@ def make_plots_2d(
     data_sb.plotOn(frame, RooFit.Name("data_sb"))
 
     # Draw fitted background on sidebands only (solid), normalized to sidebands
-    if proj_dim == ProjDim.Y:
-        bkg_pdf.model.plotOn(
-            frame,
-            # RooFit.Range("LEFT,MIDDLE,RIGHT"),
-            RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
-            RooFit.Name("bkg_sidebands"),
-        )
-    else:
-        bkg_pdf.model.plotOn(
-            frame,
-            RooFit.Name("bkg_sidebands"),
-        )
+    if bkg_pdf is not None:
+        if proj_dim == ProjDim.Y:
+            bkg_pdf.model.plotOn(
+                frame,
+                # RooFit.Range("LEFT,MIDDLE,RIGHT"),
+                RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
+                RooFit.Name("bkg_sidebands"),
+            )
+        else:
+            bkg_pdf.model.plotOn(
+                frame,
+                RooFit.Name("bkg_sidebands"),
+            )
 
     ROOT_COLORS = get_ROOT_colors()
     for test_bkg_pdf in test_bkg_pdfs:
@@ -273,11 +274,12 @@ def make_plots_2d(
         leg.AddEntry(frame.findObject("data_sb"), "Data", "lep")
     if data_type == DataType.PSEUDO:
         leg.AddEntry(frame.findObject("data_sb"), "Pseudodata", "lep")
-    leg.AddEntry(
-        frame.findObject("bkg_sidebands"),
-        f"True BKG ({bkg_pdf.pdf_family} - {bkg_pdf.n_params} params)",
-        "l",
-    )
+    if bkg_pdf is not None:
+        leg.AddEntry(
+            frame.findObject("bkg_sidebands"),
+            f"True BKG ({bkg_pdf.pdf_family} - {bkg_pdf.n_params} params)",
+            "l",
+        )
 
     for idx, test_bkg_pdf in enumerate(test_bkg_pdfs):
         assert test_bkg_pdf.chi_square_res is not None

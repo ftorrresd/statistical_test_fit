@@ -13,6 +13,7 @@ from ROOT import (  # type: ignore
 )
 
 from .fastplot import fastplot
+from .ws_helper import *
 
 
 def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0):

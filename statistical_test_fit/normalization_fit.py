@@ -1,9 +1,9 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from numpy.typing import ArrayLike
-from typing import Optional, List
 from collections import namedtuple
+from typing import List, Optional
 
+import matplotlib.pyplot as plt
+import numpy as np
+from numpy.typing import ArrayLike
 
 # Define result type
 FitResult = namedtuple("FitResult", ["coeffs", "cov", "chi2", "dof", "y0", "sy0"])
@@ -73,7 +73,9 @@ def fit_and_plot(
 
     # --- Plot ---
     fig, ax = plt.subplots()
-    ax.errorbar(x, y, yerr=sy, fmt="o", capsize=3, label="CR Normalization")
+    ax.errorbar(
+        x, y, yerr=sy, fmt="o", markersize=3, capsize=3, label="CR Normalization"
+    )
 
     xx = np.linspace(min(x) - 0.5, max(x) + 1.0, 300)
     yy = coeffs[0] * xx**2 + coeffs[1] * xx + coeffs[2]
@@ -83,10 +85,10 @@ def fit_and_plot(
         [x0],
         [y0],
         yerr=[sy0],
-        fmt="s",
+        fmt="o",
         color="green",
-        capsize=5,
-        markersize=8,
+        capsize=3,
+        markersize=3,
         label=f"Extrapolation for SR (x={x0}): {y0:.2f} +/- {sy0:.2f}",
     )
     # Draw vertical lines if provided
@@ -130,5 +132,5 @@ if __name__ == "__main__":
 
     print("Coefficients [a, b, c]:", result.coeffs)
     print("Covariance matrix:\n", result.cov)
-    print(f"chi2/dof = {result.chi2:.2f}/{result.dof} = {result.chi2/result.dof:.3f}")
+    print(f"chi2/dof = {result.chi2:.2f}/{result.dof} = {result.chi2 / result.dof:.3f}")
     print(f"Prediction at x0=2.5: {result.y0:.4f} ± {result.sy0:.4f}")

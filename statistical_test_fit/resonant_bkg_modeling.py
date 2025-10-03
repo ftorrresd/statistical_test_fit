@@ -1,5 +1,5 @@
-from enum import Enum
 from dataclasses import dataclass, field
+from enum import Enum
 from pprint import pprint
 
 from ROOT import (  # type: ignore

@@ -19,8 +19,6 @@ RooMsgService.instance().setGlobalKillBelow(RooFit.WARNING)
 class FitToRun(Enum):
     ONEDIM = "1d"
     TWODIM = "2d"
-    NONE = "none"
-    DATA = "data"
     ALL = "all"
 
     # Create a custom type for argparse that converts the string to an Enum member
@@ -68,17 +66,11 @@ def main():
     gSystem.Load("libRooFit")
     gSystem.Load("libHiggsAnalysisCombinedLimit")
 
-    if args.fits_to_run != FitToRun.NONE:
-        if args.fits_to_run == FitToRun.ONEDIM or args.fits_to_run == FitToRun.ALL:
-            run_fit_1d(args)
+    if args.fits_to_run == FitToRun.ONEDIM or args.fits_to_run == FitToRun.ALL:
+        run_fit_1d(args)
 
-        if args.fits_to_run == FitToRun.TWODIM or args.fits_to_run == FitToRun.ALL:
-            run_fit_2d(args)
-    else:
-        print("Skipping pseudodata")
-
-    if args.fits_to_run == FitToRun.DATA or args.fits_to_run == FitToRun.ALL:
-        run_fit_2d_data(args)
+    if args.fits_to_run == FitToRun.TWODIM or args.fits_to_run == FitToRun.ALL:
+        run_fit_2d(args)
 
 
 if __name__ == "__main__":
