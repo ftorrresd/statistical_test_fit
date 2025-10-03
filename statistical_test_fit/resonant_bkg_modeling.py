@@ -1,4 +1,5 @@
-from enum import Enum, auto
+from enum import Enum
+from dataclasses import dataclass, field
 from pprint import pprint
 
 from ROOT import (  # type: ignore
@@ -305,29 +306,33 @@ def resonant_background_modeling_Z():
     return w, boson_parameters
 
 
+@dataclass
+class ControlRegionProps:
+    name: str
+    lower: float
+    upper: float
+    width: float = field(init=False)
+    midpoint: float = field(init=False)
+
+    def __post_init__(self):
+        if self.upper <= self.lower:
+            raise ValueError(
+                "Invalid Control Region: Upper should be greater than lower"
+            )
+
+        self.width = self.upper - self.lower
+        self.midpoint = (self.upper + self.lower) / 2.0
+
+
 class ControlRegion(Enum):
-    CR1 = "CR1"
-    CR2 = "CR2"
-    CR3 = "CR3"
-    CR4 = "CR4"
-
-
-def get_interval(control_region):
-    if control_region == ControlRegion.CR1:
-        return 5, 8, 3
-    if control_region == ControlRegion.CR2:
-        return 5, 8, 3
-    if control_region == ControlRegion.CR3:
-        return 5, 8, 3
-    if control_region == ControlRegion.CR4:
-        return 5, 8, 3
+    CR1 = ControlRegionProps(name="CR1", lower=4.0, upper=8.0)
+    CR2 = ControlRegionProps(name="CR2", lower=12.0, upper=16.0)
+    CR3 = ControlRegionProps(name="CR3", lower=16.0, upper=20.0)
+    CR4 = ControlRegionProps(name="CR4", lower=20.0, upper=24.0)
 
 
 def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
-    #  """
-    # Resonant Background Modeling
-    #  """
-    lower, upper, width = get_interval(control_region)
+    """Resonant Background Modeling"""
 
     input_file = "inputs/selected_Run2_resonant_background_modeling_MC_data_.root"
 
@@ -386,7 +391,7 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
     )
 
     data = data1.reduce(
-        f"(upsilon_mass < {upper} && upsilon_mass >= {lower} && boson_mass>75. && boson_mass<200.)"
+        f"(upsilon_mass < {control_region.value.upper} && upsilon_mass >= {control_region.value.lower} && boson_mass>75. && boson_mass<200.)"
     )
     # data.Print()
     # data = data2.reduce(ROOT.RooArgSet("boson_mass", "weight"))
@@ -402,7 +407,9 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
     print("#data: ", data.numEntries())
     print("#model: ", resonant_background_model_integral)
     print("res_frac: ", w.var("res_frac").getVal())
-    normalization = w.var("res_frac").getVal() * (data.numEntries() / width)
+    normalization = w.var("res_frac").getVal() * (
+        data.numEntries() / control_region.value.width
+    )
     print("normalization: ", normalization)
     NormPara = {}
     NormPara["normalization"] = normalization
@@ -415,7 +422,7 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
 
     # plot data the and the pdf
     print("\n\n--> Saving plot for ")
-    nBins = 16
+    nBins = 40
     w.var("boson_mass").SetTitle(r"m_{#mu#mu#gamma}")
     w.var("boson_mass").setUnit(r"GeV")
 
@@ -428,7 +435,7 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
         w.pdf("resonant_background_model"),
         w.data("resonant_background_data"),
         w.var("boson_mass"),
-        "plots_2d_data/resonant_background_MC_data_{control_region}_fit_m_mumugamma.pdf",
+        f"plots/fit_2d_data/resonant_background_MC_data_{control_region.value.name}_fit_m_mumugamma.pdf",
         components=[
             (w.pdf("resonant_background_model_res"), 10),
             (w.pdf("resonant_background_model_non_res"), 10),

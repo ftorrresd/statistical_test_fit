@@ -295,7 +295,7 @@ def fastplot(
         # div = (float(nbins)/obs_range)
         # print(div,obs_range,numbins)
         unit = observable.getUnit()
-        if unit is not None or unit is not "":
+        if unit is not None or unit != "":
             ylabel = "Events / ( %s / %d )" % (observable.getUnit(), div)
             frame.SetYTitle(ylabel)
 
@@ -386,9 +386,9 @@ def fastplot(
             extra_info.Draw("Same")
         if isinstance(extra_text, list):
             for txt in extra_text:
-                assert isinstance(txt, ROOT.TPaveText), (
-                    "Please provide extra_txt with a list or ROOT.TPaveText"
-                )
+                assert isinstance(
+                    txt, ROOT.TPaveText
+                ), "Please provide extra_txt with a list or ROOT.TPaveText"
                 txt.Draw("Same")
 
     if extra_info is not None:
@@ -396,9 +396,9 @@ def fastplot(
         if isinstance(extra_info, ROOT.TPaveText):
             extra_info.Draw("Same")
         else:
-            assert isinstance(extra_info, list), (
-                "Please provide extra_info with a list or ROOT.TPaveText"
-            )
+            assert isinstance(
+                extra_info, list
+            ), "Please provide extra_info with a list or ROOT.TPaveText"
             box = ROOT.TPaveText(0.2, 0.75, 0.4, 0.9, "NDC")
             box.SetFillColor(10)
             box.SetBorderSize(0)

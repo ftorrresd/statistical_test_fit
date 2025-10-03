@@ -32,6 +32,7 @@ from .resonant_bkg_modeling import (
     resonant_background_modeling_Higgs,
     resonant_background_modeling_Z,
 )
+from .normalization_fit import fit_and_plot
 
 
 def build_signal(x, y, mean_x, sigma_x, mean_y, sigma_y, name: str):
@@ -161,11 +162,48 @@ def run_fit_2d_data(args: Namespace):
     Z_resonant_bkg_ws, Z_resonant_bkg_parameters = resonant_background_modeling_Z()
     Z_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
 
-    normalization_CR1 = get_normalization_from_CR(
-        Z_resonant_bkg_parameters,
-        ControlRegion.CR1,
+    normalizations_from_CR = []
+    normalizations_from_CR.append(
+        get_normalization_from_CR(
+            Z_resonant_bkg_parameters,
+            ControlRegion.CR1,
+        )
     )
-    print(111, normalization_CR1)
+    normalizations_from_CR.append(
+        get_normalization_from_CR(
+            Z_resonant_bkg_parameters,
+            ControlRegion.CR2,
+        )
+    )
+    normalizations_from_CR.append(
+        get_normalization_from_CR(
+            Z_resonant_bkg_parameters,
+            ControlRegion.CR3,
+        )
+    )
+    normalizations_from_CR.append(
+        get_normalization_from_CR(
+            Z_resonant_bkg_parameters,
+            ControlRegion.CR4,
+        )
+    )
+
+    normalization_extrapolation = fit_and_plot(
+        [c.value.midpoint for c in ControlRegion],
+        [r["normalization"] for r in normalizations_from_CR],
+        [r["normalization_unc"] for r in normalizations_from_CR],
+        x0=10.0,
+        output_pdf="plots/fit_2d_data/normalization_extrapolation.pdf",
+        x_lines=[
+            ControlRegion.CR1.value.upper,
+            ControlRegion.CR2.value.lower,
+            ControlRegion.CR2.value.upper,
+            ControlRegion.CR3.value.upper,
+        ],
+        point_labels=["CR1", "CR2", "CR3", "CR4"],
+    )
+    print(f"Extrapolated normalization: {normalization_extrapolation}")
+
     exit()
 
     # Observable
