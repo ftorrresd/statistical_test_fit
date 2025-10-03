@@ -124,58 +124,60 @@ def run_fit_2d_data(args: Namespace):
 
     outprefix = "bkg_only"
 
-    # # build upsilon models
-    # upsilon_model = dimuon_non_correlated(upsilon_mass_lower, upsilon_mass_upper)
-    #
-    # # build higss resonant bkg
-    # higgs_resonant_bkg_ws = resonant_background_modeling_Higgs()
-    # higgs_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
-    #
-    # Z_resonant_bkg_ws, Z_resonant_bkg_parameters = resonant_background_modeling_Z()
-    # Z_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
-    #
-    # normalizations_from_CR = []
-    # normalizations_from_CR.append(
-    #     get_normalization_from_CR(
-    #         Z_resonant_bkg_parameters,
-    #         ControlRegion.CR1,
-    #     )
-    # )
-    # normalizations_from_CR.append(
-    #     get_normalization_from_CR(
-    #         Z_resonant_bkg_parameters,
-    #         ControlRegion.CR2,
-    #     )
-    # )
-    # normalizations_from_CR.append(
-    #     get_normalization_from_CR(
-    #         Z_resonant_bkg_parameters,
-    #         ControlRegion.CR3,
-    #     )
-    # )
-    # normalizations_from_CR.append(
-    #     get_normalization_from_CR(
-    #         Z_resonant_bkg_parameters,
-    #         ControlRegion.CR4,
-    #     )
-    # )
-    #
-    # normalization_extrapolation = fit_and_plot(
-    #     [c.value.midpoint for c in ControlRegion],
-    #     [r["normalization"] for r in normalizations_from_CR],
-    #     [r["normalization_unc"] for r in normalizations_from_CR],
-    #     x0=10.0,
-    #     output_pdf="plots/fit_2d_data/normalization_extrapolation.pdf",
-    #     x_lines=[
-    #         ControlRegion.CR1.value.upper,
-    #         ControlRegion.CR2.value.lower,
-    #         ControlRegion.CR2.value.upper,
-    #         ControlRegion.CR3.value.upper,
-    #     ],
-    #     point_labels=["CR1", "CR2", "CR3", "CR4"],
-    # )
-    # print(f"Extrapolated normalization: {normalization_extrapolation}")
-    #
+    # build upsilon models
+    upsilon_model = dimuon_non_correlated(upsilon_mass_lower, upsilon_mass_upper)
+    upsilon_model.Print("v")
+    exit()
+
+    # build higss resonant bkg
+    higgs_resonant_bkg_ws = resonant_background_modeling_Higgs()
+    higgs_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
+
+    Z_resonant_bkg_ws, Z_resonant_bkg_parameters = resonant_background_modeling_Z()
+    Z_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
+
+    normalizations_from_CR = []
+    normalizations_from_CR.append(
+        get_normalization_from_CR(
+            Z_resonant_bkg_parameters,
+            ControlRegion.CR1,
+        )
+    )
+    normalizations_from_CR.append(
+        get_normalization_from_CR(
+            Z_resonant_bkg_parameters,
+            ControlRegion.CR2,
+        )
+    )
+    normalizations_from_CR.append(
+        get_normalization_from_CR(
+            Z_resonant_bkg_parameters,
+            ControlRegion.CR3,
+        )
+    )
+    normalizations_from_CR.append(
+        get_normalization_from_CR(
+            Z_resonant_bkg_parameters,
+            ControlRegion.CR4,
+        )
+    )
+
+    normalization_extrapolation = fit_and_plot(
+        [c.value.midpoint for c in ControlRegion],
+        [r["normalization"] for r in normalizations_from_CR],
+        [r["normalization_unc"] for r in normalizations_from_CR],
+        x0=10.0,
+        output_pdf="plots/fit_2d_data/normalization_extrapolation.pdf",
+        x_lines=[
+            ControlRegion.CR1.value.upper,
+            ControlRegion.CR2.value.lower,
+            ControlRegion.CR2.value.upper,
+            ControlRegion.CR3.value.upper,
+        ],
+        point_labels=["CR1", "CR2", "CR3", "CR4"],
+    )
+    print(f"Extrapolated normalization: {normalization_extrapolation}")
+
     # Observable
     upsilon_mass = RooRealVar(
         "upsilon_mass", "upsilon_mass", upsilon_mass_lower, upsilon_mass_upper
@@ -186,8 +188,6 @@ def run_fit_2d_data(args: Namespace):
     boson_mass = RooRealVar("boson_mass", "boson_mass", left_lower, right_upper)
     boson_mass.SetTitle("m_{#mu#mu#gamma}")  # LaTeX-style title
     boson_mass.setUnit("GeV")  # physical unit
-
-    observables = RooArgSet(upsilon_mass, boson_mass)
 
     f = TFile.Open("inputs/mass_Run2.root")
     data_full = RooDataSet(
