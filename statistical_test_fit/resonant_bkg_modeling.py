@@ -1,4 +1,4 @@
-from enum import IntEnum, auto
+from enum import Enum, auto
 from pprint import pprint
 
 from ROOT import (  # type: ignore
@@ -7,6 +7,7 @@ from ROOT import (  # type: ignore
     RooFit,  # type: ignore
     RooWorkspace,  # type: ignore
     TFile,  # type: ignore
+    TMath,  # type: ignore
 )
 
 from .fastplot import fastplot
@@ -133,9 +134,9 @@ def resonant_background_modeling_Higgs():
 
 
 def resonant_background_modeling_Z():
-    ################################
-    # Resonant Background Modeling #
-    ################################
+    """
+    Resonant Background Modeling
+    """
 
     input_file = "inputs/mass_Z_ZGTo2MuG_MMuMu-2To15_Run2.root"
 
@@ -277,39 +278,171 @@ def resonant_background_modeling_Z():
     w = set_constant(w)
 
     print("\n\n--> Fit parameters ")
-    boson_parmeters = {}
-    boson_parmeters["mean_boson"] = (
+    boson_parameters = {}
+    boson_parameters["mean_boson"] = (
         fit_result.floatParsFinal().find("mean_boson").getValV()
-    )  # mean_boson.getValV()
-    boson_parmeters["sigma_boson"] = (
+    )
+    boson_parameters["sigma_boson"] = (
         fit_result.floatParsFinal().find("sigma_boson").getValV()
-    )  # sigma_boson.getValV()
-    boson_parmeters["alpha1_upsilon"] = (
+    )
+    boson_parameters["alpha1_upsilon"] = (
         fit_result.floatParsFinal().find("alpha1_upsilon").getValV()
-    )  # alpha1_upsilon.getValV()
-    boson_parmeters["n1_upsilon"] = (
+    )
+    boson_parameters["n1_upsilon"] = (
         fit_result.floatParsFinal().find("n1_upsilon").getValV()
-    )  # n1_upsilon.getValV()
-    boson_parmeters["alpha2_upsilon"] = (
+    )
+    boson_parameters["alpha2_upsilon"] = (
         fit_result.floatParsFinal().find("alpha2_upsilon").getValV()
-    )  # alpha2_upsilon.getValV()
-    boson_parmeters["n2_upsilon"] = (
+    )
+    boson_parameters["n2_upsilon"] = (
         fit_result.floatParsFinal().find("n2_upsilon").getValV()
-    )  # n2_upsilon.getValV()
+    )
 
-    pprint(boson_parmeters)
+    pprint(boson_parameters)
 
     print("data.sumEntries(): ", data.sumEntries())
 
-    return w
+    return w, boson_parameters
 
 
-class ControlRegion(IntEnum):
-    CR1 = auto()
-    CR2 = auto()
-    CR3 = auto()
-    CR4 = auto()
+class ControlRegion(Enum):
+    CR1 = "CR1"
+    CR2 = "CR2"
+    CR3 = "CR3"
+    CR4 = "CR4"
 
 
-def resonant_background_modeling_CR(control_region: ControlRegion):
-    print(control_region)
+def get_interval(control_region):
+    if control_region == ControlRegion.CR1:
+        return 5, 8, 3
+    if control_region == ControlRegion.CR2:
+        return 5, 8, 3
+    if control_region == ControlRegion.CR3:
+        return 5, 8, 3
+    if control_region == ControlRegion.CR4:
+        return 5, 8, 3
+
+
+def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
+    #  """
+    # Resonant Background Modeling
+    #  """
+    lower, upper, width = get_interval(control_region)
+
+    input_file = "inputs/selected_Run2_resonant_background_modeling_MC_data_.root"
+
+    w = RooWorkspace("resonant_background_ws")
+
+    # load upsilon and boson fit parameters from json
+
+    print("###########------------>>>>>>>>>>>  boson_parmeters:  ", boson_parameters)
+    ### resonant model
+    w.factory(
+        "RooDoubleCB::resonant_background_model_res("
+        "boson_mass[75, 200], "
+        "" + str(boson_parameters["mean_boson"]) + ", "
+        "" + str(boson_parameters["sigma_boson"]) + ", "
+        "" + str(boson_parameters["alpha1_upsilon"]) + ", "
+        "" + str(boson_parameters["n1_upsilon"]) + ", "
+        "" + str(boson_parameters["alpha2_upsilon"]) + ", "
+        "" + str(boson_parameters["n2_upsilon"]) + ""
+        ")"
+    )
+
+    # non resonant model
+    w.factory(
+        "RooBernstein::resonant_background_model_non_res("
+        "boson_mass[75, 200],"
+        "{"
+        "1,"
+        "p1[0,-1,1],"
+        "p2[0,-1,1]"
+        "}"
+        ")"
+    )
+
+    # w.factory("RooExponential::resonant_background_model_non_res("
+    #          "boson_mass[70, 150],"
+    #          "alpha[0, -10, 10]"
+    #         ")")
+
+    # 1D model
+    w.factory(
+        "SUM::resonant_background_model(res_frac[0.5, 0., 1.]*resonant_background_model_res,resonant_background_model_non_res)"
+    )
+
+    w.factory("weight[-100,100]")
+
+    w.factory("upsilon_mass[4.,35.]")
+
+    # load data
+    f = TFile.Open(input_file)
+    data1 = RooDataSet(
+        "resonant_background_data",
+        "resonant_background_data",
+        RooArgSet(w.var("boson_mass"), w.var("upsilon_mass"), w.var("weight")),
+        RooFit.Import(f.Events),
+        RooFit.WeightVar(w.var("weight")),
+    )
+
+    data = data1.reduce(
+        f"(upsilon_mass < {upper} && upsilon_mass >= {lower} && boson_mass>75. && boson_mass<200.)"
+    )
+    # data.Print()
+    # data = data2.reduce(ROOT.RooArgSet("boson_mass", "weight"))
+    getattr(w, "import")(data)
+
+    # fit to data
+    fit_result = w.pdf("resonant_background_model").fitTo(data, RooFit.Save())
+
+    # Get normalization
+    resonant_background_model_integral = (
+        w.pdf("resonant_background_model").createIntegral(data.get()).getVal()
+    )
+    print("#data: ", data.numEntries())
+    print("#model: ", resonant_background_model_integral)
+    print("res_frac: ", w.var("res_frac").getVal())
+    normalization = w.var("res_frac").getVal() * (data.numEntries() / width)
+    print("normalization: ", normalization)
+    NormPara = {}
+    NormPara["normalization"] = normalization
+    NormPara["normalization_unc"] = (normalization) * TMath.Sqrt(
+        (w.var("res_frac").getError() / w.var("res_frac").getVal()) ** 2
+        + (TMath.Sqrt(data.numEntries()) / data.numEntries()) ** 2
+    )
+
+    print(f"-- > Normalization: {NormPara}")
+
+    # plot data the and the pdf
+    print("\n\n--> Saving plot for ")
+    nBins = 16
+    w.var("boson_mass").SetTitle(r"m_{#mu#mu#gamma}")
+    w.var("boson_mass").setUnit(r"GeV")
+
+    # w.pdf("resonant_background_model_boson_gauss").SetTitle(r"Gaussian Component")
+    # w.pdf("resonant_background_model_boson_cb").SetTitle(r"CB Component")
+    # w.pdf("signal_model_upsilon").SetTitle(r"CB Component")
+
+    # plot boson mass fit
+    fastplot(
+        w.pdf("resonant_background_model"),
+        w.data("resonant_background_data"),
+        w.var("boson_mass"),
+        "plots_2d_data/resonant_background_MC_data_{control_region}_fit_m_mumugamma.pdf",
+        components=[
+            (w.pdf("resonant_background_model_res"), 10),
+            (w.pdf("resonant_background_model_non_res"), 10),
+        ],
+        nbins=nBins,
+        legend=[0.6, 0.6, 0.93, 0.92],  # type: ignore
+        is_data=True,
+    )
+
+    # setting all var as constants
+    w = set_constant(w)
+
+    # Save the workspace into a ROOT file
+    print("\n\n--> Parameters for ")
+    fit_result.Print()
+
+    return NormPara

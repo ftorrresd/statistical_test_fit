@@ -27,6 +27,8 @@ from .chi2_test import ChiSquareResult
 from .dimuon_non_correlated import dimuon_non_correlated
 from .make_plots import DataType, ProjDim, make_plots_2d
 from .resonant_bkg_modeling import (
+    ControlRegion,
+    get_normalization_from_CR,
     resonant_background_modeling_Higgs,
     resonant_background_modeling_Z,
 )
@@ -156,8 +158,14 @@ def run_fit_2d_data(args: Namespace):
     # higgs_resonant_bkg_ws = resonant_background_modeling_Higgs()
     # higgs_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
 
-    Z_resonant_bkg_ws = resonant_background_modeling_Z()
+    Z_resonant_bkg_ws, Z_resonant_bkg_parameters = resonant_background_modeling_Z()
     Z_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
+
+    normalization_CR1 = get_normalization_from_CR(
+        Z_resonant_bkg_parameters,
+        ControlRegion.CR1,
+    )
+    print(111, normalization_CR1)
     exit()
 
     # Observable
