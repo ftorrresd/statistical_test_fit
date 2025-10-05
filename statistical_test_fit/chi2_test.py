@@ -82,8 +82,19 @@ class ChiSquareResult:
         # p-value for chi2 with ndf dof: upper tail integral
         pval = TMath.Prob(chi2, ndf)
 
+        # Make a pull histogram on that projection:
+        hpull = frame.pullHist()  # default uses (data - curve) / error(data)
+        pullframe = x.frame(RooFit.Title("Pull"))
+        pullframe.addPlotable(hpull, "P")  # points
+
         can = TCanvas("c", "c", 820, 920)
+        can.Divide(1, 2)
+        can.cd(1)
         frame.Draw()
+
+        can.cd(2)
+        pullframe.Draw()
+        can.Update()
 
         can.SaveAs(f"plots/fit_1d/control_{outprefix}_{pdf_family}.pdf")
 
@@ -165,11 +176,23 @@ class ChiSquareResult:
         # p-value for chi2 with ndf dof: upper tail integral
         pval = TMath.Prob(chi2, ndf)
 
+        # Make a pull histogram on that projection:
+        hpull = frame.pullHist()  # default uses (data - curve) / error(data)
+        pullframe = y.frame(RooFit.Title("Pull"))
+        pullframe.addPlotable(hpull, "P")  # points
+
         can = TCanvas("c", "c", 820, 920)
+        can.Divide(1, 2)
+        _ = can.cd(1)
         frame.Draw()
 
+        pad2 = can.cd(2)
+        pad2.SetGrid(1, 1)  # add grid (x,y)
+        pullframe.Draw()
+        can.Update()
+
         can.SaveAs(
-            f"plots/fit_2d{data_postfix}/control/{str(pdf_family).replace(' ', '_')}/control_mumugamma_{outprefix}_{pdf_family}.pdf"
+            f"plots/fit_2d{data_postfix}/control/{str(pdf_family).replace(' ', '_')}/control_mumugamma_{outprefix}_{str( pdf_family ).replace(' ', '_')}.pdf"
         )
 
         res = ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)
@@ -199,11 +222,23 @@ class ChiSquareResult:
             RooFit.Name(curve_name),
         )
 
-        can = TCanvas("c_x", "c_x", 820, 920)
+        # Make a pull histogram on that projection:
+        hpull = frame.pullHist()  # default uses (data - curve) / error(data)
+        pullframe = x.frame(RooFit.Title("Pull"))
+        pullframe.addPlotable(hpull, "P")  # points
+
+        can = TCanvas("c", "c", 820, 920)
+        can.Divide(1, 2)
+        can.cd(1)
         frame.Draw()
 
+        pad2 = can.cd(2)
+        pad2.SetGrid(1, 1)  # add grid (x,y)
+        pullframe.Draw()
+        can.Update()
+
         can.SaveAs(
-            f"plots/fit_2d{data_postfix}/control/{str(pdf_family).replace(' ', '_')}/control_mumu_{outprefix}_{pdf_family}.pdf"
+            f"plots/fit_2d{data_postfix}/control/{str(pdf_family).replace(' ', '_')}/control_mumu_{outprefix}_{str( pdf_family ).replace(' ', '_')}.pdf"
         )
 
         res = ChiSquareResult(chi2=chi2, pvalue=pval, ndf=ndf, chi2_ndf=chi2_ndf)

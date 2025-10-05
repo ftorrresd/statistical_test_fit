@@ -1,3 +1,4 @@
+from typing import Dict
 from ROOT import (  # type: ignore
     AddressOf,  # type: ignore
     RooAbsPdf,  # type: ignore
@@ -48,3 +49,70 @@ def unfreeze_pdf_params(pdf: RooAbsPdf, observables: RooArgSet):
         if isinstance(obj, RooRealVar) and obj.isConstant():
             obj.setConstant(False)
         obj = it.Next()
+
+
+def get_pdf_parameters(
+    pdf: RooAbsPdf,
+    observables: RooArgSet = RooArgSet(),
+    sufix=None,
+    skip_constants=False,
+) -> Dict[str, float]:
+    """
+    Build a dictionary mapping parameter names to their current values.
+
+    Parameters
+    ----------
+    pdf : RooAbsPdf
+        The RooFit PDF whose parameters you want to extract.
+    observables : RooArgSet
+        The set of observables (used to exclude them from parameters).
+
+    Returns
+    -------
+    Dict[str, float]
+        A dictionary of {parameter_name: value}.
+    """
+    params = pdf.getParameters(observables)
+    result = {}
+    for p in params:
+        # optional: skip observables or fixed constants
+        if p.isConstant() and skip_constants:
+            continue
+
+        name = p.GetName()
+        if sufix is not None:
+            name = name.replace(f"_{sufix}", "")
+        result[name] = p.getVal()
+    return result
+
+
+def set_pdf_parameters(
+    pdf: RooAbsPdf,
+    params_dict: Dict[str, float],
+    observables: RooArgSet,
+    make_constant: bool = False,
+    sufix=None,
+) -> None:
+    """
+    Set parameter values of a PDF from a dictionary, optionally making them constant.
+
+    Parameters
+    ----------
+    pdf : RooAbsPdf
+        The RooFit PDF whose parameters will be updated.
+    params_dict : Dict[str, float]
+        Dictionary of {parameter_name: new_value}.
+    observables : RooArgSet
+        The set of observables (to exclude them from parameter list).
+    make_constant : bool, optional
+        If True, parameters are set constant after being updated.
+    """
+    params = pdf.getParameters(observables)
+    for p in params:
+        name = p.GetName()
+        if sufix is not None:
+            name = name.replace(f"_{sufix}", "")
+
+        p.setVal(params_dict[name])
+        if make_constant:
+            p.setConstant(True)

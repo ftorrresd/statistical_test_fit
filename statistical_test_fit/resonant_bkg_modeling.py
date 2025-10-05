@@ -32,9 +32,9 @@ def resonant_background_modeling_Higgs():
         "mean_boson[125, 75, 200], "
         "sigma_boson[2, 0.5, 4],"
         "alpha1_upsilon[3, 0, 10],"
-        "n1_upsilon[0.5, 0.1, 50],"
+        "n1_upsilon[0.5, 0.1, 75],"
         "alpha2_upsilon[3, 0, 10],"
-        "n2_upsilon[0.5, 0.1, 50]"
+        "n2_upsilon[0.5, 0.1, 75]"
         ")"
     )
 
@@ -148,12 +148,12 @@ def resonant_background_modeling_Z():
     w.factory(
         "RooDoubleCB::resonant_background_model_boson("
         "boson_mass[75, 200], "
-        "mean_boson[91.1876, 70, 150], "
+        "mean_boson[91.1876, 75, 175], "
         "sigma_boson[2, 0.5, 4],"
         "alpha1_upsilon[3, 0, 10],"
-        "n1_upsilon[0.5, 0.1, 50],"
+        "n1_upsilon[0.5, 0.1, 75],"
         "alpha2_upsilon[3, 0, 10],"
-        "n2_upsilon[0.5, 0.1, 50]"
+        "n2_upsilon[0.5, 0.1, 75]"
         ")"
     )
 
@@ -367,7 +367,7 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
     )
 
     # w.factory("RooExponential::resonant_background_model_non_res("
-    #          "boson_mass[70, 150],"
+    #          "boson_mass[75, 175],"
     #          "alpha[0, -10, 10]"
     #         ")")
 

@@ -17,8 +17,11 @@ from typing_extensions import ReadOnly
 from .bkg_model import BkgModel, BkgPdfFamily
 
 
-def get_ROOT_colors():
-    return cycle([1, 2, 3, 5, 6, 7, 8, 9])
+def get_ROOT_colors(data_type):
+    if data_type == DataType.PSEUDO:
+        return cycle([1, 2, 3, 5, 6, 7, 8, 9, 4])
+    if data_type == DataType.REAL:
+        return cycle([4, 1, 2, 3, 6, 7, 8, 9, 5, 4])
 
 
 def shade_blind_region(bl_lo, bl_hi, ymin, ymax, color=kGray, alpha=0.35):
@@ -65,7 +68,7 @@ def make_plots_1d(
         RooFit.Name("bkg_sidebands"),
     )
 
-    ROOT_COLORS = get_ROOT_colors()
+    ROOT_COLORS = get_ROOT_colors(DataType.PSEUDO)
     for test_bkg_pdf in test_bkg_pdfs:
         c = next(ROOT_COLORS)
         test_bkg_pdf.model.plotOn(
@@ -217,7 +220,7 @@ def make_plots_2d(
                 RooFit.Name("bkg_sidebands"),
             )
 
-    ROOT_COLORS = get_ROOT_colors()
+    ROOT_COLORS = get_ROOT_colors(data_type)
     for test_bkg_pdf in test_bkg_pdfs:
         c = next(ROOT_COLORS)
         if proj_dim == ProjDim.Y:

@@ -1,5 +1,7 @@
+from pprint import pprint
 import os
-import sys
+import time
+from functools import wraps
 from argparse import Namespace
 
 from ROOT import (  # type: ignore
@@ -38,71 +40,21 @@ from .resonant_bkg_modeling import (
 )
 
 
-def build_signal(x, y, mean_x, sigma_x, mean_y, sigma_y, name: str):
-    mu_x = RooRealVar(
-        "mu_x",
-        "signal mean - x",
-        mean_x,
-        x.getMin(),
-        x.getMax(),
-    )
-    sig_x = RooRealVar(
-        "sigma_x", "signal sigma - x", sigma_x, sigma_x * (0.7), sigma_x * (1.3)
-    )
-    gaus_x = RooGaussian(f"{name}_x", "Gaussian signal - x", x, mu_x, sig_x)
+def execution_time(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        formatted_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+        print(f"Execution time of {func.__name__}: {formatted_time}")
+        return result
 
-    mu_y = RooRealVar(
-        "mu_y",
-        "signal mean - x",
-        mean_y,
-        y.getMin(),
-        y.getMax(),
-    )
-    sig_y = RooRealVar(
-        "sigma_y", "signal sigma - x", sigma_y, sigma_y * (0.7), sigma_y * (1.3)
-    )
-    gaus_y = RooGaussian(f"{name}_y", "Gaussian signal - y", y, mu_y, sig_y)
-
-    sig = RooProdPdf(f"{name}_model", "Gaussian signal 2D", RooArgList(gaus_x, gaus_y))
-
-    sig._keepalive = {
-        "gaus_x": gaus_x,
-        "gaus_y": gaus_y,
-        "mu_x": mu_x,
-        "sig_x": sig_x,
-        "mu_y": mu_y,
-        "sig_y": sig_y,
-    }
-
-    return sig
+    return wrapper
 
 
-def build_gen_model_unextended(
-    z_model,
-    higgs_model,
-    bkg: BkgModel,
-    f_Zsig: float,
-    f_Hsig: float,
-):
-    # Mixture model for GENERATION ONLY (fraction, not extended)
-    fs_Z = RooRealVar("fzsig_gen", "Z signal fraction (gen)", float(f_Zsig), 0.0, 1.0)
-    fs_H = RooRealVar("fhsig_gen", "H signal fraction (gen)", float(f_Hsig), 0.0, 1.0)
-    model = RooAddPdf(
-        "model_gen",
-        "signal+background (gen)",
-        RooArgList(z_model, higgs_model, bkg),
-        RooArgList(f_Zsig, f_Hsig),
-    )
-    model._keepalive = {
-        "z_model": z_model,
-        "higgs_model": higgs_model,
-        "bkg": bkg,
-        "fs_Z": fs_Z,
-        "fs_H": fs_H,
-    }
-    return model
-
-
+@execution_time
 def run_fit_2d_data(args: Namespace):
     w = RooWorkspace("ws")
 
@@ -110,7 +62,7 @@ def run_fit_2d_data(args: Namespace):
     upsilon_mass_lower = 8.0
     upsilon_mass_upper = 12.0
 
-    left_lower = 70.0
+    left_lower = 50.0
     left_upper = 80.0
 
     middle_lower = 100.0
@@ -125,9 +77,10 @@ def run_fit_2d_data(args: Namespace):
     outprefix = "bkg_only"
 
     # build upsilon models
-    upsilon_model = dimuon_non_correlated(upsilon_mass_lower, upsilon_mass_upper)
-    upsilon_model.Print("v")
-    exit()
+    upsilon_params = dimuon_non_correlated(upsilon_mass_lower, upsilon_mass_upper)
+    print("\n\nUpsilon Parameters:")
+    pprint(upsilon_params)
+    print("\n\n")
 
     # build higss resonant bkg
     higgs_resonant_bkg_ws = resonant_background_modeling_Higgs()
@@ -193,8 +146,14 @@ def run_fit_2d_data(args: Namespace):
     data_full = RooDataSet(
         "data_obs",
         "data_obs",
-        RooArgSet(boson_mass, upsilon_mass),
+        RooArgSet(
+            upsilon_mass,
+            boson_mass,
+        ),
         RooFit.Import(f.Events),
+        RooFit.Cut(
+            f"(upsilon_mass < {upsilon_mass_upper} && upsilon_mass >= {upsilon_mass_lower} && boson_mass>={left_lower} && boson_mass<{right_upper})"
+        ),
     )
     getattr(w, "import")(data_full)
 
@@ -216,11 +175,20 @@ def run_fit_2d_data(args: Namespace):
 
     # build the many bkg models
     test_bkg_pdfs |= build_background_models_2d(
+        BkgPdfFamily.JOHNSON,
+        upsilon_mass,
+        boson_mass,
+        # min_n_coeffs=1,
+        # n_coeffs=3,
+        upsilon_params=upsilon_params,
+    )
+    test_bkg_pdfs |= build_background_models_2d(
         BkgPdfFamily.CHEBYCHEV,
         upsilon_mass,
         boson_mass,
         # min_n_coeffs=1,
-        # n_coeffs=2,
+        # n_coeffs=3,
+        upsilon_params=upsilon_params,
     )
     test_bkg_pdfs |= build_background_models_2d(
         BkgPdfFamily.BERNSTEIN,
@@ -228,14 +196,17 @@ def run_fit_2d_data(args: Namespace):
         boson_mass,
         # min_n_coeffs=1,
         # n_coeffs=2,
+        upsilon_params=upsilon_params,
     )
-    test_bkg_pdfs |= build_background_models_2d(
-        BkgPdfFamily.POWER_LAW,
-        upsilon_mass,
-        boson_mass,
-        # min_n_coeffs=1,
-        # n_coeffs=2,
-    )
+    # test_bkg_pdfs |= build_background_models_2d(
+    #     BkgPdfFamily.POWER_LAW,
+    #     upsilon_mass,
+    #     boson_mass,
+    #     min_n_coeffs=1,
+    #     n_coeffs=2,
+    #     upsilon_params=upsilon_params,
+    #     initial_coeff=4.0,
+    # )
     # test_bkg_pdfs |= build_background_models(
     #     BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000
     # )
@@ -273,6 +244,7 @@ def run_fit_2d_data(args: Namespace):
                     "eff_pdf", "pdf * acceptance", test_bkg_pdf.model, acc
                 )
 
+                print(f"Will fit PDF: {test_bkg_pdf.model.GetName()}")
                 test_bkg_pdf.fit_res = eff_pdf.fitTo(
                     data_sb,
                     RooFit.Save(True),
@@ -280,10 +252,12 @@ def run_fit_2d_data(args: Namespace):
                     RooFit.Verbose(False),
                     RooFit.Minimizer("Minuit2", "Migrad"),
                 )
+                print("... done fitting.")
 
                 os.system(
                     f"mkdir -p plots/fit_2d_data/control/{str(test_bkg_pdf.pdf_family).replace(' ', '_')}"
                 )
+
                 test_bkg_pdf.chi_square_res = ChiSquareResult.compute_chi_square_2d(
                     test_bkg_pdf.model,
                     data_sb,
@@ -368,6 +342,7 @@ def run_fit_2d_data(args: Namespace):
     for family in BkgPdfFamily:
         if len(test_bkg_pdfs[family]) > 0:
             w.cat("pdfIndex").defineType(family.value)
+            print(f"--> Adding winner for {family}")
             getattr(w, "import")(test_bkg_pdfs[family][winners[family]].model)
             pdf_list.add(w.pdf(family.value))
 
