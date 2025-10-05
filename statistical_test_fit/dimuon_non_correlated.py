@@ -23,6 +23,7 @@ def build_upsilon_model(mass, sufix=None):
         sufix = f"_{sufix}"
     else:
         sufix = ""
+
     # set range of observable for MuMu Invariant mass
     M1S = 9.46  # upsilon 1S pgd mass value
     M2S = 10.02  # upsilon 2S pgd mass value

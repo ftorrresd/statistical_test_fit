@@ -77,40 +77,39 @@ def run_fit_2d_data(args: Namespace):
     outprefix = "bkg_only"
 
     # build upsilon models
-    upsilon_params = dimuon_non_correlated(upsilon_mass_lower, upsilon_mass_upper)
-    print("\n\nUpsilon Parameters:")
-    pprint(upsilon_params)
-    print("\n\n")
+    # upsilon_params = dimuon_non_correlated(upsilon_mass_lower, upsilon_mass_upper)
+    # print("\n\nUpsilon Parameters:")
+    # pprint(upsilon_params)
+    # print("\n\n")
 
     # build higss resonant bkg
-    higgs_resonant_bkg_ws = resonant_background_modeling_Higgs()
-    higgs_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
+    # higgs_resonant_bkg_ws = resonant_background_modeling_Higgs()
+    # higgs_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
 
-    Z_resonant_bkg_ws, Z_resonant_bkg_parameters = resonant_background_modeling_Z()
-    Z_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
+    Z_resonant_bkg_parameters_deep = resonant_background_modeling_Z()
 
     normalizations_from_CR = []
     normalizations_from_CR.append(
         get_normalization_from_CR(
-            Z_resonant_bkg_parameters,
+            Z_resonant_bkg_parameters_deep,
             ControlRegion.CR1,
         )
     )
     normalizations_from_CR.append(
         get_normalization_from_CR(
-            Z_resonant_bkg_parameters,
+            Z_resonant_bkg_parameters_deep,
             ControlRegion.CR2,
         )
     )
     normalizations_from_CR.append(
         get_normalization_from_CR(
-            Z_resonant_bkg_parameters,
+            Z_resonant_bkg_parameters_deep,
             ControlRegion.CR3,
         )
     )
     normalizations_from_CR.append(
         get_normalization_from_CR(
-            Z_resonant_bkg_parameters,
+            Z_resonant_bkg_parameters_deep,
             ControlRegion.CR4,
         )
     )
@@ -130,6 +129,7 @@ def run_fit_2d_data(args: Namespace):
         point_labels=["CR1", "CR2", "CR3", "CR4"],
     )
     print(f"Extrapolated normalization: {normalization_extrapolation}")
+    exit()
 
     # Observable
     upsilon_mass = RooRealVar(
