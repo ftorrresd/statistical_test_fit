@@ -32,13 +32,13 @@ def resonant_background_modeling_Higgs():
 
     w.factory(
         "RooDoubleCB::resonant_background_model_boson("
-        "boson_mass[75, 200], "
-        "mean_boson[125, 75, 200], "
+        "boson_mass[50, 200], "
+        "mean_boson[125, 50, 200], "
         "sigma_boson[2, 0.5, 4],"
         "alpha1_upsilon[3, 0, 10],"
-        "n1_upsilon[0.5, 0.1, 75],"
+        "n1_upsilon[0.5, 0.1, 50],"
         "alpha2_upsilon[3, 0, 10],"
-        "n2_upsilon[0.5, 0.1, 75]"
+        "n2_upsilon[0.5, 0.1, 50]"
         ")"
     )
 
@@ -151,8 +151,8 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
         f"resonant_background_model_ZG_mean_boson{sufix}",
         "mean_{Z}",
         91.1876,
-        75.0,
-        175.0,
+        50.0,
+        150.0,
         "GeV",
     )
     sigma_boson = RooRealVar(
@@ -170,13 +170,13 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
         f"resonant_background_model_ZG_alpha1_upsilon{sufix}", "alpha1", 3.0, 0.0, 10.0
     )
     n1_upsilon = RooRealVar(
-        f"resonant_background_model_ZG_n1_upsilon{sufix}", "n1", 0.5, 0.1, 75.0
+        f"resonant_background_model_ZG_n1_upsilon{sufix}", "n1", 0.5, 0.1, 50.0
     )
     alpha2_upsilon = RooRealVar(
         f"resonant_background_model_ZG_alpha2_upsilon{sufix}", "alpha2", 3.0, 0.0, 10.0
     )
     n2_upsilon = RooRealVar(
-        f"resonant_background_model_ZG_n2_upsilon{sufix}", "n2", 0.5, 0.1, 75.0
+        f"resonant_background_model_ZG_n2_upsilon{sufix}", "n2", 0.5, 0.1, 50.0
     )
 
     resonant_background_model_ZG_boson = RooDoubleCB(
@@ -191,37 +191,6 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
         n2_upsilon,
     )
 
-    # # === Upsilon (Bernstein of order 1: {1, p1}) ===
-    # p1 = RooRealVar(
-    #     f"resonant_background_model_ZG_p1{sufix}",
-    #     "resonant_background_model_ZG_p1",
-    #     5.0,
-    #     0.0,
-    #     10.0,
-    # )
-    # p0 = RooRealVar(
-    #     f"resonant_background_model_ZG_p0{sufix}",
-    #     "resonant_background_model_ZG_p0",
-    #     1.0,
-    # )
-    # bern_coeffs = RooArgList(p0, p1)  # mirrors factory "{ 1, p1 }"
-    #
-    # resonant_background_model_ZG_upsilon = RooBernstein(
-    #     f"resonant_background_model_ZG_upsilon{sufix}",
-    #     "Upsilon Bernstein (order 1)",
-    #     upsilon_mass,
-    #     bern_coeffs,
-    # )
-
-    # === 2D product ===
-    # resonant_background_model = RooProdPdf(
-    #     f"resonant_background_model{sufix}",
-    #     "2D product model",
-    #     RooArgList(
-    #         resonant_background_model_ZG_boson, resonant_background_model_ZG_upsilon
-    #     ),
-    # )
-
     resonant_background_model_ZG_boson._keepalive = [
         mean_boson,
         sigma_boson,
@@ -229,9 +198,6 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
         n1_upsilon,
         alpha2_upsilon,
         n2_upsilon,
-        # p0,
-        # p1,
-        # resonant_background_model_ZG_upsilon,
     ]
 
     return resonant_background_model_ZG_boson
@@ -248,37 +214,13 @@ def resonant_background_modeling_Z():
 
     w.factory("weight[-100,100]")
     w.factory("upsilon_mass[8, 12]")  # name[value, min, max]
-    w.factory("boson_mass[75, 200]")  # name[value, min, max]
-
-    # ### boson model
-    # w.factory(
-    #     "RooDoubleCB::resonant_background_model_boson("
-    #     "boson_mass[75, 200], "
-    #     "mean_boson[91.1876, 75, 175], "
-    #     "sigma_boson[2, 0.5, 4],"
-    #     "alpha1_upsilon[3, 0, 10],"
-    #     "n1_upsilon[0.5, 0.1, 75],"
-    #     "alpha2_upsilon[3, 0, 10],"
-    #     "n2_upsilon[0.5, 0.1, 75]"
-    #     ")"
-    # )
-    #
-    # # upsilon model
-    # w.factory(
-    #     "RooBernstein::resonant_background_model_upsilon( upsilon_mass[8, 12], { 1, p1[5, 0, 10] })"
-    # )
-    #
-    # # 2D model
-    # w.factory(
-    #     "PROD::resonant_background_model(resonant_background_model_boson,resonant_background_model_upsilon)"
-    # )
+    w.factory("boson_mass[50, 200]")  # name[value, min, max]
 
     # load data
     f = TFile.Open(input_file)
     data = RooDataSet(
         "resonant_background_data",
         "resonant_background_data",
-        # RooArgSet(w.var("boson_mass"), w.var("upsilon_mass"), w.var("weight")),
         RooArgSet(w.var("boson_mass"), w.var("weight")),
         RooFit.Import(f.Events),
         RooFit.WeightVar(w.var("weight")),
@@ -296,55 +238,6 @@ def resonant_background_modeling_Z():
     )
     fit_result.Print("v")
 
-    ##################################################################################################################################################################
-    # # Define the ranges
-    # left_range = RooFit.Range("LEFT")
-    # center_range = RooFit.Range("CENTER")
-    # right_range = RooFit.Range("RIGHT")
-    # full_range = RooFit.Range("FULL")
-    #
-    # # Get the normalization sets for the ranges
-    # left_norm_set = RooArgSet(w.var("boson_mass"))
-    # center_norm_set = RooArgSet(w.var("boson_mass"))
-    # right_norm_set = RooArgSet(w.var("boson_mass"))
-    # full_norm_set = RooArgSet(w.var("boson_mass"))
-
-    # # Set the ranges for the normalization sets
-    # w.var("boson_mass").setRange("LEFT", 75, 80)
-    # w.var("boson_mass").setRange("CENTER", 110, 115)
-    # w.var("boson_mass").setRange("RIGHT", 135, 200)
-    # w.var("boson_mass").setRange("FULL", 75, 200)
-
-    # # Calculate the integrals for each range
-    # integral_left = (
-    #     w.pdf("resonant_background_model_ZG_boson")
-    #     .createIntegral(left_norm_set, left_range)
-    #     .getVal()
-    # )
-    # integral_center = (
-    #     w.pdf("resonant_background_model_ZG_boson")
-    #     .createIntegral(center_norm_set, center_range)
-    #     .getVal()
-    # )
-    # integral_right = (
-    #     w.pdf("resonant_background_model_ZG_boson")
-    #     .createIntegral(right_norm_set, right_range)
-    #     .getVal()
-    # )
-    # integral_full = (
-    #     w.pdf("resonant_background_model_ZG_boson")
-    #     .createIntegral(full_norm_set, full_range)
-    #     .getVal()
-    # )
-    #
-    # # Print the results
-    # print("Integral in LEFT range:", integral_left)
-    # print("Integral in CENTER range:", integral_center)
-    # print("Integral in RIGHT range:", integral_right)
-    # print("Integral in FULL range:", integral_full)
-
-    ##################################################################################################################################################################
-
     # plot data the and the pdf
     print("\n\n--> Saving plot ")
     nBins = 80
@@ -352,9 +245,6 @@ def resonant_background_modeling_Z():
     w.var("boson_mass").setUnit(r"GeV")
     w.var("upsilon_mass").SetTitle(r"m_{#mu#mu}")
     w.var("upsilon_mass").setUnit(r"GeV")
-    # w.pdf("resonant_background_model_boson_gauss").SetTitle(r"Gaussian Component")
-    # w.pdf("resonant_background_model_boson_cb").SetTitle(r"CB Component")
-    # w.pdf("signal_model_upsilon").SetTitle(r"CB Component")
 
     # plot boson mass fit
     fastplot(
@@ -370,26 +260,6 @@ def resonant_background_modeling_Z():
         legend=[0.6, 0.6, 0.9, 0.92],  # legend=[0.6, 0.6, 0.93, 0.92], #type:ignore
         is_data=False,
     )
-
-    # # plot upsilon mass fit
-    # fastplot(
-    #     w.pdf("resonant_background_model_ZG_boson"),
-    #     w.data("resonant_background_data"),
-    #     w.var("upsilon_mass"),
-    #     "plots/fit_2d_data/resonant_background_fit_ZG_MC_m_mumu.pdf",
-    #     # components=[
-    #     #             (upsilon_1S, 10),
-    #     #             (upsilon_2S, 10),
-    #     #             (upsilon_3S, 10),
-    #     #             (background, 20)
-    #     #             ],
-    #     nbins=nBins,
-    #     legend=[0.6, 0.2, 0.93, 0.4],  # type:ignore
-    #     is_data=False,
-    # )
-
-    # setting all var as constants
-    # w = set_constant(w)
 
     print("data.sumEntries(): ", data.sumEntries())
 
@@ -425,7 +295,7 @@ class ControlRegionProps:
 
 
 class ControlRegion(Enum):
-    CR1 = ControlRegionProps(name="CR1", lower=5.0, upper=8.0)
+    CR1 = ControlRegionProps(name="CR1", lower=4.0, upper=8.0)
     CR2 = ControlRegionProps(name="CR2", lower=12.0, upper=16.0)
     CR3 = ControlRegionProps(name="CR3", lower=16.0, upper=20.0)
     CR4 = ControlRegionProps(name="CR4", lower=20.0, upper=24.0)
@@ -439,12 +309,11 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
     w = RooWorkspace("resonant_background_ws")
 
     # load upsilon and boson fit parameters from json
-
     print("###########------------>>>>>>>>>>>  boson_parmeters:  ", boson_parameters)
     ### resonant model
     w.factory(
         "RooDoubleCB::resonant_background_model_res("
-        "boson_mass[75, 200], "
+        "boson_mass[50, 200], "
         "" + str(boson_parameters["resonant_background_model_ZG_mean_boson"]) + ", "
         "" + str(boson_parameters["resonant_background_model_ZG_sigma_boson"]) + ", "
         "" + str(boson_parameters["resonant_background_model_ZG_alpha1_upsilon"]) + ", "
@@ -454,22 +323,14 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
         ")"
     )
 
-    # non resonant model
+    # Create parameters for the Johnson PDF
+    meanJ = w.factory("mean[9.96, 0.01, 100]")
+    sigmaJ = w.factory("lambda[24.3, 0.01, 100]")
+    gammaJ = w.factory("gamma[-2.16, -10.0, 10.0]")
+    deltaJ = w.factory("delta[1.42, 0.01, 20.0]")
     w.factory(
-        "RooBernstein::resonant_background_model_non_res("
-        "boson_mass[75, 200],"
-        "{"
-        "1,"
-        "p1[0,-1,1],"
-        "p2[0,-1,1]"
-        "}"
-        ")"
+        "RooJohnson::resonant_background_model_non_res(boson_mass, mean, lambda, gamma, delta)"
     )
-
-    # w.factory("RooExponential::resonant_background_model_non_res("
-    #          "boson_mass[75, 175],"
-    #          "alpha[0, -10, 10]"
-    #         ")")
 
     # 1D model
     w.factory(
@@ -482,7 +343,7 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
 
     # load data
     f = TFile.Open(input_file)
-    data1 = RooDataSet(
+    data_ = RooDataSet(
         "resonant_background_data",
         "resonant_background_data",
         RooArgSet(w.var("boson_mass"), w.var("upsilon_mass"), w.var("weight")),
@@ -490,15 +351,14 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
         RooFit.WeightVar(w.var("weight")),
     )
 
-    data = data1.reduce(
-        f"(upsilon_mass < {control_region.value.upper} && upsilon_mass >= {control_region.value.lower} && boson_mass>75. && boson_mass<200.)"
+    data = data_.reduce(
+        f"(upsilon_mass < {control_region.value.upper} && upsilon_mass >= {control_region.value.lower} && boson_mass>50. && boson_mass<200.)"
     )
     # data.Print()
-    # data = data2.reduce(ROOT.RooArgSet("boson_mass", "weight"))
     getattr(w, "import")(data)
 
     # fit to data
-    fit_result = w.pdf("resonant_background_model").fitTo(data, RooFit.Save())
+    _ = w.pdf("resonant_background_model").fitTo(data, RooFit.Save())
 
     # Get normalization
     resonant_background_model_integral = (
@@ -526,10 +386,6 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
     w.var("boson_mass").SetTitle(r"m_{#mu#mu#gamma}")
     w.var("boson_mass").setUnit(r"GeV")
 
-    # w.pdf("resonant_background_model_boson_gauss").SetTitle(r"Gaussian Component")
-    # w.pdf("resonant_background_model_boson_cb").SetTitle(r"CB Component")
-    # w.pdf("signal_model_upsilon").SetTitle(r"CB Component")
-
     # plot boson mass fit
     fastplot(
         w.pdf("resonant_background_model"),
@@ -544,12 +400,5 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
         legend=[0.6, 0.6, 0.93, 0.92],  # type: ignore
         is_data=True,
     )
-
-    # setting all var as constants
-    w = set_constant(w)
-
-    # Save the workspace into a ROOT file
-    print("\n\n--> Parameters for ")
-    fit_result.Print()
 
     return NormPara
