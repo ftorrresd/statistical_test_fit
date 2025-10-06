@@ -1,6 +1,6 @@
 from enum import Enum, auto
 from itertools import cycle
-from typing import Optional
+from typing import Optional, List, Any
 
 from ROOT import (
     RooArgSet,  # type: ignore
@@ -11,6 +11,7 @@ from ROOT import (
     gPad,  # type: ignore
     kDashed,  # type: ignore
     kGray,  # type: ignore
+    kRed,  # type: ignore
 )
 from typing_extensions import ReadOnly
 
@@ -183,6 +184,7 @@ def make_plots_2d(
     data_type: DataType,
     start: Optional[int],
     winner: Optional[int],
+    components: Optional[List[Any]] = None,
 ) -> str:
     data_postfix = ""
     if data_type == DataType.REAL:
@@ -204,6 +206,13 @@ def make_plots_2d(
 
     # Plot only sideband data points
     data_sb.plotOn(frame, RooFit.Name("data_sb"))
+    if data_full is not None and proj_dim == ProjDim.Y:
+        data_full.plotOn(
+            frame,
+            RooFit.Name("data_full"),
+            RooFit.MarkerStyle(20),
+            RooFit.MarkerColor(kRed),
+        )
 
     # Draw fitted background on sidebands only (solid), normalized to sidebands
     if bkg_pdf is not None:
@@ -243,7 +252,23 @@ def make_plots_2d(
                 RooFit.LineStyle(kDashed),
             )
 
-    frame.SetMaximum(2.0 * frame.GetMaximum())  # leave  headroom
+    leg = TLegend(0.4, 0.5, 0.88, 0.88)
+    if components is not None:
+        for n, c in components:
+            test_bkg_pdfs[0].model.plotOn(
+                frame,
+                RooFit.Components(c.GetName()),
+                RooFit.LineColor(kRed - 7),
+                RooFit.FillColor(kRed - 7),
+                RooFit.FillStyle(1001),
+                RooFit.Name(c.GetName()),
+                RooFit.DrawOption("F"),
+            )
+
+            leg.AddEntry(frame.findObject(c.GetName()), c.getTitle().Data())
+
+    if proj_dim == ProjDim.X:
+        frame.SetMaximum(2.0 * frame.GetMaximum())  # leave  headroom
 
     # # Pulls (computed vs the full-range curve). For clarity we compute pulls only where points exist (sidebands).
     # pull_hist = frame.pullHist("data_sb", "bkg_sidebands")
@@ -269,7 +294,6 @@ def make_plots_2d(
     box_right.Draw("same")
 
     # Add a legend
-    leg = TLegend(0.4, 0.5, 0.88, 0.88)
     # leg.SetTextAlign(13)
     leg.SetBorderSize(0)
     leg.SetFillStyle(0)
@@ -307,7 +331,6 @@ def make_plots_2d(
     leg.Draw()
 
     # Plot only sideband data points - again
-    # data_full.plotOn(frame, RooFit.Name("data_sb"))
     data_sb.plotOn(frame, RooFit.Name("data_sb"))
 
     # # Bottom pad: pulls

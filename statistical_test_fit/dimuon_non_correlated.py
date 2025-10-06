@@ -1,4 +1,6 @@
 from pprint import pprint
+import json
+
 from ROOT import (  # type: ignore
     RooAddPdf,  # type: ignore
     RooArgList,  # type: ignore
@@ -141,8 +143,11 @@ def build_upsilon_model(mass, sufix=None):
     return upsilon_model, upsilon_1S, upsilon_2S, upsilon_3S
 
 
-def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0):
+def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0, load_from_cache=False):
     """Upsilon + Background Model"""
+    if load_from_cache:
+        with open("upsilon_model_params.json", "r") as f:
+            return json.load(f)
 
     lowRange = m_mumu_lower
     highRange = m_mumu_upper
@@ -225,5 +230,8 @@ def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0):
     )
 
     upsilon_model_params = get_pdf_parameters(upsilon_model, RooArgSet(mass))
+
+    with open("upsilon_model_params.json", "w") as f:
+        json.dump(upsilon_model_params, f, indent=4)
 
     return upsilon_model_params

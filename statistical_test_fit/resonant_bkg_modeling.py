@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import json
 from enum import Enum
 from pprint import pprint
 
@@ -149,7 +150,7 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
     # === Boson (Double Crystal Ball) ===
     mean_boson = RooRealVar(
         f"resonant_background_model_ZG_mean_boson{sufix}",
-        "mean_{Z}",
+        "mean{sufix}",
         91.1876,
         50.0,
         150.0,
@@ -157,7 +158,7 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
     )
     sigma_boson = RooRealVar(
         f"resonant_background_model_ZG_sigma_boson{sufix}",
-        "sigma_{Z}",
+        "sigma{sufix}",
         2.0,
         0.5,
         4.0,
@@ -167,21 +168,29 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
     # Note: your parameter names use *_upsilon even though they belong to the boson line.
     # Keeping them as-is for fidelity; you may want to rename to *_boson for clarity.
     alpha1_upsilon = RooRealVar(
-        f"resonant_background_model_ZG_alpha1_upsilon{sufix}", "alpha1", 3.0, 0.0, 10.0
+        f"resonant_background_model_ZG_alpha1_upsilon{sufix}",
+        "alpha1{sufix}",
+        3.0,
+        0.0,
+        10.0,
     )
     n1_upsilon = RooRealVar(
-        f"resonant_background_model_ZG_n1_upsilon{sufix}", "n1", 0.5, 0.1, 50.0
+        f"resonant_background_model_ZG_n1_upsilon{sufix}", "n1{sufix}", 0.5, 0.1, 50.0
     )
     alpha2_upsilon = RooRealVar(
-        f"resonant_background_model_ZG_alpha2_upsilon{sufix}", "alpha2", 3.0, 0.0, 10.0
+        f"resonant_background_model_ZG_alpha2_upsilon{sufix}",
+        "alpha2{sufix}",
+        3.0,
+        0.0,
+        10.0,
     )
     n2_upsilon = RooRealVar(
-        f"resonant_background_model_ZG_n2_upsilon{sufix}", "n2", 0.5, 0.1, 50.0
+        f"resonant_background_model_ZG_n2_upsilon{sufix}", "n2{sufix}", 0.5, 0.1, 50.0
     )
 
     resonant_background_model_ZG_boson = RooDoubleCB(
         f"resonant_background_model_ZG_boson{sufix}",
-        "Boson DoubleCB",
+        "Boson DoubleCB {sufix}",
         boson_mass,
         mean_boson,
         sigma_boson,
@@ -203,10 +212,14 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
     return resonant_background_model_ZG_boson
 
 
-def resonant_background_modeling_Z():
+def resonant_background_modeling_Z(load_from_cache=False):
     """
     Resonant Background Modeling
     """
+
+    if load_from_cache:
+        with open("resonant_background_model_Z_params.json", "r") as f:
+            return json.load(f)
 
     input_file = "inputs/mass_Z_ZGTo2MuG_MMuMu-2To15_Run2.root"
 
@@ -273,6 +286,9 @@ def resonant_background_modeling_Z():
     print("\n\n--> Fit parameters ")
     pprint(resonant_background_model_Z_params)
 
+    with open("resonant_background_model_Z_params.json", "w") as f:
+        json.dump(resonant_background_model_Z_params, f, indent=4)
+
     return resonant_background_model_Z_params
 
 
@@ -301,8 +317,13 @@ class ControlRegion(Enum):
     CR4 = ControlRegionProps(name="CR4", lower=20.0, upper=24.0)
 
 
-def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
+def get_normalization_from_CR(
+    boson_parameters, control_region: ControlRegion, load_from_cache=False
+):
     """Resonant Background Modeling"""
+    if load_from_cache:
+        with open(f"NormParams_{control_region.value.name}.json", "r") as f:
+            return json.load(f)
 
     input_file = "inputs/selected_Run2_resonant_background_modeling_MC_data_.root"
 
@@ -400,5 +421,8 @@ def get_normalization_from_CR(boson_parameters, control_region: ControlRegion):
         legend=[0.6, 0.6, 0.93, 0.92],  # type: ignore
         is_data=True,
     )
+
+    with open(f"NormParams_{control_region.value.name}.json", "w") as f:
+        json.dump(NormPara, f, indent=4)
 
     return NormPara

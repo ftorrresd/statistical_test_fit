@@ -38,6 +38,8 @@ from .resonant_bkg_modeling import (
     resonant_background_modeling_Higgs,
     resonant_background_modeling_Z,
 )
+from .resonant_bkg_modeling import build_resonant_background_modeling_Z
+from .ws_helper import set_pdf_parameters
 
 
 def execution_time(func):
@@ -52,6 +54,60 @@ def execution_time(func):
         return result
 
     return wrapper
+
+
+def get_z_resonant_frac(
+    *,
+    extrapolation,
+    n_total,
+    n_sb,
+    Z_resonant_bkg_parameters,
+    left_lower,
+    left_upper,
+    middle_lower,
+    middle_upper,
+    right_lower,
+    right_upper,
+) -> float:
+    name = "NORM"
+
+    _boson_mass = RooRealVar("boson_mass", "boson_mass", left_lower, right_upper)
+    _boson_mass.setRange("LEFT", left_lower, left_upper)
+    _boson_mass.setRange("MIDDLE", middle_lower, middle_upper)
+    _boson_mass.setRange("RIGHT", right_lower, right_upper)
+    _boson_mass.setRange("FULL", left_lower, right_upper)
+
+    resonant_background_model_Z = build_resonant_background_modeling_Z(
+        _boson_mass, sufix=name
+    )
+    set_pdf_parameters(
+        resonant_background_model_Z,
+        Z_resonant_bkg_parameters,
+        _boson_mass,
+        make_constant=True,
+        sufix=name,
+    )
+
+    integral_sb = resonant_background_model_Z.createIntegral(
+        RooArgSet(_boson_mass),
+        RooFit.Range("LEFT,MIDDLE,RIGHT"),
+        RooFit.NormSet(RooArgSet(_boson_mass)),  # ensures normalization
+    )
+    print("Normalized integral over SBs:", integral_sb.getVal())
+    print(
+        "Total resonant events over SBs (SB integral x extrapolation):",
+        integral_sb.getVal() * extrapolation,
+    )
+    print(
+        "SB integral x extrapolation / n_total:",
+        integral_sb.getVal() * extrapolation / n_total,
+    )
+    print(
+        "SB integral x extrapolation / n_sb:",
+        integral_sb.getVal() * extrapolation / n_sb,
+    )
+
+    return integral_sb.getVal() * extrapolation / n_sb
 
 
 @execution_time
@@ -76,41 +132,52 @@ def run_fit_2d_data(args: Namespace):
 
     outprefix = "bkg_only"
 
+    LOAD_FROM_CACHE = True
+    if not LOAD_FROM_CACHE:
+        os.system("rm -rf *.json")
+
     # build upsilon models
-    # upsilon_params = dimuon_non_correlated(upsilon_mass_lower, upsilon_mass_upper)
-    # print("\n\nUpsilon Parameters:")
-    # pprint(upsilon_params)
-    # print("\n\n")
+    upsilon_params = dimuon_non_correlated(
+        upsilon_mass_lower, upsilon_mass_upper, load_from_cache=LOAD_FROM_CACHE
+    )
+    print("\n\nUpsilon Parameters:")
+    pprint(upsilon_params)
+    print("\n\n")
 
     # build higss resonant bkg
-    # higgs_resonant_bkg_ws = resonant_background_modeling_Higgs()
-    # higgs_resonant_bkg_ws.pdf("resonant_background_model").Print("v")
+    # _ = resonant_background_modeling_Higgs()
 
-    Z_resonant_bkg_parameters_deep = resonant_background_modeling_Z()
+    Z_resonant_bkg_parameters = resonant_background_modeling_Z(
+        load_from_cache=LOAD_FROM_CACHE
+    )
 
     normalizations_from_CR = []
     normalizations_from_CR.append(
         get_normalization_from_CR(
-            Z_resonant_bkg_parameters_deep,
+            Z_resonant_bkg_parameters,
             ControlRegion.CR1,
+            load_from_cache=LOAD_FROM_CACHE,
         )
     )
     normalizations_from_CR.append(
         get_normalization_from_CR(
-            Z_resonant_bkg_parameters_deep,
+            Z_resonant_bkg_parameters,
             ControlRegion.CR2,
+            load_from_cache=LOAD_FROM_CACHE,
         )
     )
     normalizations_from_CR.append(
         get_normalization_from_CR(
-            Z_resonant_bkg_parameters_deep,
+            Z_resonant_bkg_parameters,
             ControlRegion.CR3,
+            load_from_cache=LOAD_FROM_CACHE,
         )
     )
     normalizations_from_CR.append(
         get_normalization_from_CR(
-            Z_resonant_bkg_parameters_deep,
+            Z_resonant_bkg_parameters,
             ControlRegion.CR4,
+            load_from_cache=LOAD_FROM_CACHE,
         )
     )
 
@@ -129,7 +196,6 @@ def run_fit_2d_data(args: Namespace):
         point_labels=["CR1", "CR2", "CR3", "CR4"],
     )
     print(f"Extrapolated normalization: {normalization_extrapolation}")
-    exit()
 
     # Observable
     upsilon_mass = RooRealVar(
@@ -169,6 +235,19 @@ def run_fit_2d_data(args: Namespace):
     data_sb = data_full.reduce(RooFit.Cut(cut_expr))
     print(f"Sideband entries: {data_sb.numEntries()} (out of {data_full.numEntries()})")
 
+    z_resonant_frac = get_z_resonant_frac(
+        extrapolation=normalization_extrapolation.y0,
+        n_total=data_full.numEntries(),
+        n_sb=data_sb.numEntries(),
+        Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
+        left_lower=left_lower,
+        left_upper=left_upper,
+        middle_lower=middle_lower,
+        middle_upper=middle_upper,
+        right_lower=right_lower,
+        right_upper=right_upper,
+    )
+
     test_bkg_pdfs: dict[BkgPdfFamily, list[BkgModel]] = {}
     for family in BkgPdfFamily:
         test_bkg_pdfs[family] = []
@@ -181,22 +260,28 @@ def run_fit_2d_data(args: Namespace):
         # min_n_coeffs=1,
         # n_coeffs=3,
         upsilon_params=upsilon_params,
+        Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
+        Z_resonant_fraction=z_resonant_frac,
     )
     test_bkg_pdfs |= build_background_models_2d(
         BkgPdfFamily.CHEBYCHEV,
         upsilon_mass,
         boson_mass,
-        # min_n_coeffs=1,
-        # n_coeffs=3,
+        min_n_coeffs=9,
+        n_coeffs=13,
         upsilon_params=upsilon_params,
+        Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
+        Z_resonant_fraction=z_resonant_frac,
     )
     test_bkg_pdfs |= build_background_models_2d(
         BkgPdfFamily.BERNSTEIN,
         upsilon_mass,
         boson_mass,
-        # min_n_coeffs=1,
-        # n_coeffs=2,
+        min_n_coeffs=9,
+        n_coeffs=13,
         upsilon_params=upsilon_params,
+        Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
+        Z_resonant_fraction=z_resonant_frac,
     )
     # test_bkg_pdfs |= build_background_models_2d(
     #     BkgPdfFamily.POWER_LAW,
@@ -206,6 +291,8 @@ def run_fit_2d_data(args: Namespace):
     #     n_coeffs=2,
     #     upsilon_params=upsilon_params,
     #     initial_coeff=4.0,
+    #     Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
+    # z_resonant_frac=z_resonant_frac,
     # )
     # test_bkg_pdfs |= build_background_models(
     #     BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000
@@ -252,6 +339,7 @@ def run_fit_2d_data(args: Namespace):
                     RooFit.Verbose(False),
                     RooFit.Minimizer("Minuit2", "Migrad"),
                 )
+                test_bkg_pdf.fit_res.Print("v")
                 print("... done fitting.")
 
                 os.system(
@@ -290,6 +378,7 @@ def run_fit_2d_data(args: Namespace):
                 upsilon_mass,
                 boson_mass,
                 data_full,
+                # None,
                 data_sb,
                 None,
                 test_bkg_pdfs[family],
@@ -305,6 +394,7 @@ def run_fit_2d_data(args: Namespace):
                 data_type=DataType.REAL,
                 start=start,
                 winner=winner,
+                # components=[("Z Resonant BKG", test_bkg_pdfs[family][0].model)],
             )
             print(f"\nPlot saved to: {plot_file_name}")
 
@@ -312,7 +402,8 @@ def run_fit_2d_data(args: Namespace):
                 ProjDim.X,
                 upsilon_mass,
                 boson_mass,
-                data_full,
+                # data_full,
+                None,
                 data_sb,
                 None,
                 test_bkg_pdfs[family],
@@ -344,7 +435,8 @@ def run_fit_2d_data(args: Namespace):
             w.cat("pdfIndex").defineType(family.value)
             print(f"--> Adding winner for {family}")
             getattr(w, "import")(test_bkg_pdfs[family][winners[family]].model)
-            pdf_list.add(w.pdf(family.value))
+            # pdf_list.add(w.pdf(family.value))
+            pdf_list.add(w.pdf(test_bkg_pdfs[family][winners[family]].model.GetName()))
 
     multi_pdf = RooMultiPdf(
         "multiPdf",
