@@ -118,10 +118,14 @@ def run_fit_2d_data(args: Namespace):
     upsilon_mass_lower = 8.0
     upsilon_mass_upper = 12.0
 
-    left_lower = 50.0
-    left_upper = 80.0
+    # left_lower = 50.0
+    left_lower = 57.0
+    # left_upper = 80.0
+    # left_upper = 75.0
+    left_upper = 75.0
 
-    middle_lower = 100.0
+    # middle_lower = 100.0
+    middle_lower = 105.0
     middle_upper = 115.0
 
     right_lower = 135.0
@@ -132,7 +136,7 @@ def run_fit_2d_data(args: Namespace):
 
     outprefix = "bkg_only"
 
-    LOAD_FROM_CACHE = True
+    LOAD_FROM_CACHE = False
     if not LOAD_FROM_CACHE:
         os.system("rm -rf *.json")
 
@@ -235,7 +239,7 @@ def run_fit_2d_data(args: Namespace):
     data_sb = data_full.reduce(RooFit.Cut(cut_expr))
     print(f"Sideband entries: {data_sb.numEntries()} (out of {data_full.numEntries()})")
 
-    z_resonant_frac = get_z_resonant_frac(
+    _ = get_z_resonant_frac(
         extrapolation=normalization_extrapolation.y0,
         n_total=data_full.numEntries(),
         n_sb=data_sb.numEntries(),
@@ -260,28 +264,22 @@ def run_fit_2d_data(args: Namespace):
         # min_n_coeffs=1,
         # n_coeffs=3,
         upsilon_params=upsilon_params,
-        Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
-        Z_resonant_fraction=z_resonant_frac,
     )
     test_bkg_pdfs |= build_background_models_2d(
         BkgPdfFamily.CHEBYCHEV,
         upsilon_mass,
         boson_mass,
-        min_n_coeffs=9,
-        n_coeffs=13,
+        min_n_coeffs=3,
+        n_coeffs=10,
         upsilon_params=upsilon_params,
-        Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
-        Z_resonant_fraction=z_resonant_frac,
     )
     test_bkg_pdfs |= build_background_models_2d(
         BkgPdfFamily.BERNSTEIN,
         upsilon_mass,
         boson_mass,
-        min_n_coeffs=9,
-        n_coeffs=13,
+        min_n_coeffs=3,
+        n_coeffs=10,
         upsilon_params=upsilon_params,
-        Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
-        Z_resonant_fraction=z_resonant_frac,
     )
     # test_bkg_pdfs |= build_background_models_2d(
     #     BkgPdfFamily.POWER_LAW,
@@ -291,8 +289,6 @@ def run_fit_2d_data(args: Namespace):
     #     n_coeffs=2,
     #     upsilon_params=upsilon_params,
     #     initial_coeff=4.0,
-    #     Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
-    # z_resonant_frac=z_resonant_frac,
     # )
     # test_bkg_pdfs |= build_background_models(
     #     BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000
@@ -377,8 +373,8 @@ def run_fit_2d_data(args: Namespace):
                 ProjDim.Y,
                 upsilon_mass,
                 boson_mass,
-                data_full,
-                # None,
+                # data_full,
+                None,
                 data_sb,
                 None,
                 test_bkg_pdfs[family],

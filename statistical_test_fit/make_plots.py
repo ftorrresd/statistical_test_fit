@@ -267,8 +267,8 @@ def make_plots_2d(
 
             leg.AddEntry(frame.findObject(c.GetName()), c.getTitle().Data())
 
-    if proj_dim == ProjDim.X:
-        frame.SetMaximum(2.0 * frame.GetMaximum())  # leave  headroom
+    # if proj_dim == ProjDim.X:
+    frame.SetMaximum(2.0 * frame.GetMaximum())  # leave  headroom
 
     # # Pulls (computed vs the full-range curve). For clarity we compute pulls only where points exist (sidebands).
     # pull_hist = frame.pullHist("data_sb", "bkg_sidebands")

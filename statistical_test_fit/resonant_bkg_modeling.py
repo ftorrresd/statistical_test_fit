@@ -33,13 +33,13 @@ def resonant_background_modeling_Higgs():
 
     w.factory(
         "RooDoubleCB::resonant_background_model_boson("
-        "boson_mass[50, 200], "
-        "mean_boson[125, 50, 200], "
+        "boson_mass[57, 200], "
+        "mean_boson[125, 57, 200], "
         "sigma_boson[2, 0.5, 4],"
         "alpha1_upsilon[3, 0, 10],"
-        "n1_upsilon[0.5, 0.1, 50],"
+        "n1_upsilon[0.5, 0.1, 57],"
         "alpha2_upsilon[3, 0, 10],"
-        "n2_upsilon[0.5, 0.1, 50]"
+        "n2_upsilon[0.5, 0.1, 57]"
         ")"
     )
 
@@ -152,8 +152,8 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
         f"resonant_background_model_ZG_mean_boson{sufix}",
         "mean{sufix}",
         91.1876,
-        50.0,
-        150.0,
+        57.0,
+        157.0,
         "GeV",
     )
     sigma_boson = RooRealVar(
@@ -175,7 +175,7 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
         10.0,
     )
     n1_upsilon = RooRealVar(
-        f"resonant_background_model_ZG_n1_upsilon{sufix}", "n1{sufix}", 0.5, 0.1, 50.0
+        f"resonant_background_model_ZG_n1_upsilon{sufix}", "n1{sufix}", 0.5, 0.1, 57.0
     )
     alpha2_upsilon = RooRealVar(
         f"resonant_background_model_ZG_alpha2_upsilon{sufix}",
@@ -185,7 +185,7 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
         10.0,
     )
     n2_upsilon = RooRealVar(
-        f"resonant_background_model_ZG_n2_upsilon{sufix}", "n2{sufix}", 0.5, 0.1, 50.0
+        f"resonant_background_model_ZG_n2_upsilon{sufix}", "n2{sufix}", 0.5, 0.1, 57.0
     )
 
     resonant_background_model_ZG_boson = RooDoubleCB(
@@ -227,7 +227,7 @@ def resonant_background_modeling_Z(load_from_cache=False):
 
     w.factory("weight[-100,100]")
     w.factory("upsilon_mass[8, 12]")  # name[value, min, max]
-    w.factory("boson_mass[50, 200]")  # name[value, min, max]
+    w.factory("boson_mass[57, 200]")  # name[value, min, max]
 
     # load data
     f = TFile.Open(input_file)
@@ -334,7 +334,7 @@ def get_normalization_from_CR(
     ### resonant model
     w.factory(
         "RooDoubleCB::resonant_background_model_res("
-        "boson_mass[50, 200], "
+        "boson_mass[57, 200], "
         "" + str(boson_parameters["resonant_background_model_ZG_mean_boson"]) + ", "
         "" + str(boson_parameters["resonant_background_model_ZG_sigma_boson"]) + ", "
         "" + str(boson_parameters["resonant_background_model_ZG_alpha1_upsilon"]) + ", "
@@ -373,7 +373,7 @@ def get_normalization_from_CR(
     )
 
     data = data_.reduce(
-        f"(upsilon_mass < {control_region.value.upper} && upsilon_mass >= {control_region.value.lower} && boson_mass>50. && boson_mass<200.)"
+        f"(upsilon_mass < {control_region.value.upper} && upsilon_mass >= {control_region.value.lower} && boson_mass>57. && boson_mass<200.)"
     )
     # data.Print()
     getattr(w, "import")(data)

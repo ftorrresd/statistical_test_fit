@@ -249,8 +249,6 @@ def build_background_cheb_2d(
     y,
     cheb_coeffs,
     upsilon_params,
-    Z_resonant_bkg_parameters,
-    Z_resonant_fraction,
     name="background_chebychev_2d",
 ):
     name = f"{name}_{len(cheb_coeffs)}"
@@ -314,35 +312,10 @@ def build_background_cheb_2d(
         coeff_list_y,
     )
 
-    resonant_background_model_Z = build_resonant_background_modeling_Z(y, sufix=name)
-    set_pdf_parameters(
-        resonant_background_model_Z,
-        Z_resonant_bkg_parameters,
-        y,
-        make_constant=True,
-        sufix=name,
-    )
-    Z_resonant_frac = RooRealVar(
-        f"{name}_Z_resonant_frac",
-        f"{name}_Z_resonant_frac",
-        Z_resonant_fraction,
-    )
-
-    bkg_y_plus_resonant_background_model_Z = RooAddPdf(
-        f"{name}_y_plus_resonant_background_model_Z",
-        f"{name} + Z resonant model background 2D - y",
-        RooArgList(
-            resonant_background_model_Z,
-            bkg_y,
-        ),
-        RooArgList(Z_resonant_frac),
-        kTRUE,
-    )
-
     bkg = RooProdPdf(
         f"{name}",
         f"{name} background 2D",
-        RooArgList(bkg_x, bkg_y_plus_resonant_background_model_Z),
+        RooArgList(bkg_x, bkg_y),
     )
 
     bkg._keepalive = {
@@ -355,9 +328,6 @@ def build_background_cheb_2d(
         "bkg_y": bkg_y,
         "upsilon_frac": upsilon_frac,
         "upsilon_model": upsilon_model,
-        "Z_resonant_frac": Z_resonant_frac,
-        "resonant_background_model_Z": resonant_background_model_Z,
-        "bkg_y_plus_resonant_background_model_Z": bkg_y_plus_resonant_background_model_Z,
     }
 
     return bkg
@@ -368,8 +338,6 @@ def build_background_bernstein_2d(
     y,
     bern_coeffs,
     upsilon_params,
-    Z_resonant_bkg_parameters,
-    Z_resonant_fraction,
     name="background_bernstein_2d",
     force_positive=True,
 ):
@@ -439,35 +407,10 @@ def build_background_bernstein_2d(
         coeff_list_y,
     )
 
-    resonant_background_model_Z = build_resonant_background_modeling_Z(y, sufix=name)
-    set_pdf_parameters(
-        resonant_background_model_Z,
-        Z_resonant_bkg_parameters,
-        y,
-        make_constant=True,
-        sufix=name,
-    )
-    Z_resonant_frac = RooRealVar(
-        f"{name}_Z_resonant_frac",
-        f"{name}_Z_resonant_frac",
-        Z_resonant_fraction,
-    )
-
-    bkg_y_plus_resonant_background_model_Z = RooAddPdf(
-        f"{name}_y_plus_resonant_background_model_Z",
-        f"{name} + Z resonant model background 2D - y",
-        RooArgList(
-            resonant_background_model_Z,
-            bkg_y,
-        ),
-        RooArgList(Z_resonant_frac),
-        kTRUE,
-    )
-
     bkg = RooProdPdf(
         f"{name}",
         f"{name} background 2D",
-        RooArgList(bkg_x, bkg_y_plus_resonant_background_model_Z),
+        RooArgList(bkg_x, bkg_y),
     )
 
     bkg._keepalive = {
@@ -480,9 +423,6 @@ def build_background_bernstein_2d(
         "bkg_y": bkg_y,
         "upsilon_frac": upsilon_frac,
         "upsilon_model": upsilon_model,
-        "Z_resonant_frac": Z_resonant_frac,
-        "resonant_background_model_Z": resonant_background_model_Z,
-        "bkg_y_plus_resonant_background_model_Z": bkg_y_plus_resonant_background_model_Z,
     }
 
     return bkg
@@ -493,8 +433,6 @@ def build_background_johnson_2d(
     y,
     dummy_coeffs,
     upsilon_params,
-    Z_resonant_bkg_parameters,
-    Z_resonant_fraction,
     name="background_johnson_2d",
 ):
     name = name
@@ -555,37 +493,10 @@ def build_background_johnson_2d(
         delta,
     )
 
-    resonant_background_model_Z = build_resonant_background_modeling_Z(y, sufix=name)
-    set_pdf_parameters(
-        resonant_background_model_Z,
-        Z_resonant_bkg_parameters,
-        y,
-        make_constant=True,
-        sufix=name,
-    )
-    Z_resonant_frac = RooRealVar(
-        f"{name}_Z_resonant_frac",
-        f"{name}_Z_resonant_frac",
-        Z_resonant_fraction,
-        # 0.0,
-        # 1.0,
-    )
-
-    bkg_y_plus_resonant_background_model_Z = RooAddPdf(
-        f"{name}_y_plus_resonant_background_model_Z",
-        f"{name} + Z resonant model background 2D - y",
-        RooArgList(
-            resonant_background_model_Z,
-            bkg_y,
-        ),
-        RooArgList(Z_resonant_frac),
-        kTRUE,
-    )
-
     bkg = RooProdPdf(
         f"{name}",
         f"{name} background 2D",
-        RooArgList(bkg_x, bkg_y_plus_resonant_background_model_Z),
+        RooArgList(bkg_x, bkg_y),
     )
 
     bkg._keepalive = {
@@ -600,9 +511,6 @@ def build_background_johnson_2d(
         "bkg_y": bkg_y,
         "upsilon_frac": upsilon_frac,
         "upsilon_model": upsilon_model,
-        "Z_resonant_frac": Z_resonant_frac,
-        "resonant_background_model_Z": resonant_background_model_Z,
-        "bkg_y_plus_resonant_background_model_Z": bkg_y_plus_resonant_background_model_Z,
     }
 
     return bkg
@@ -613,8 +521,6 @@ def build_background_power_law_2d(
     y,
     exponents,
     upsilon_params,
-    Z_resonant_bkg_parameters,
-    Z_resonant_fraction,
     name="background_power_law_2d",
     exponents_bounds=(-10.0, +10.0),
 ):
@@ -688,35 +594,10 @@ def build_background_power_law_2d(
         args_y,
     )
 
-    resonant_background_model_Z = build_resonant_background_modeling_Z(y, sufix=name)
-    set_pdf_parameters(
-        resonant_background_model_Z,
-        Z_resonant_bkg_parameters,
-        y,
-        make_constant=True,
-        sufix=name,
-    )
-    Z_resonant_frac = RooRealVar(
-        f"{name}_Z_resonant_frac",
-        f"{name}_Z_resonant_frac",
-        Z_resonant_fraction,
-    )
-
-    bkg_y_plus_resonant_background_model_Z = RooAddPdf(
-        f"{name}_y_plus_resonant_background_model_Z",
-        f"{name} + Z resonant model background 2D - y",
-        RooArgList(
-            resonant_background_model_Z,
-            bkg_y,
-        ),
-        RooArgList(Z_resonant_frac),
-        kTRUE,
-    )
-
     bkg = RooProdPdf(
         f"{name}",
         f"{name} background 2D",
-        RooArgList(bkg_x, bkg_y_plus_resonant_background_model_Z),
+        RooArgList(bkg_x, bkg_y),
     )
 
     bkg._keepalive = {
@@ -729,9 +610,6 @@ def build_background_power_law_2d(
         "bkg_y": bkg_y,
         "upsilon_frac": upsilon_frac,
         "upsilon_model": upsilon_model,
-        "Z_resonant_frac": Z_resonant_frac,
-        "resonant_background_model_Z": resonant_background_model_Z,
-        "bkg_y_plus_resonant_background_model_Z": bkg_y_plus_resonant_background_model_Z,
     }
     return bkg
 
@@ -785,8 +663,6 @@ def build_background_models_2d(
     x,
     y,
     upsilon_params,
-    Z_resonant_bkg_parameters,
-    Z_resonant_fraction,
     n_coeffs: int = 8,
     min_n_coeffs: int = 1,
     initial_coeff=None,
@@ -826,8 +702,6 @@ def build_background_models_2d(
                         y,
                         [initial_coeff] * i,
                         upsilon_params,
-                        Z_resonant_bkg_parameters,
-                        Z_resonant_fraction,
                     ),
                     pdf_family=pdf_family,
                 )
@@ -840,8 +714,6 @@ def build_background_models_2d(
                     y,
                     [0.0],
                     upsilon_params,
-                    Z_resonant_bkg_parameters,
-                    Z_resonant_fraction,
                 ),
                 pdf_family=BkgPdfFamily.JOHNSON,
             )
