@@ -35,25 +35,12 @@ from .normalization_fit import fit_and_plot
 from .resonant_bkg_modeling import (
     ControlRegion,
     get_normalization_from_CR,
-    resonant_background_modeling_Higgs,
+    build_resonant_background_Higgs_ws,
+    build_resonant_background_Z_ws,
     resonant_background_modeling_Z,
 )
 from .resonant_bkg_modeling import build_resonant_background_modeling_Z
 from .ws_helper import set_pdf_parameters
-
-
-def execution_time(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        formatted_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-        print(f"Execution time of {func.__name__}: {formatted_time}")
-        return result
-
-    return wrapper
 
 
 def get_z_resonant_frac(
@@ -110,6 +97,20 @@ def get_z_resonant_frac(
     return integral_sb.getVal() * extrapolation / n_sb
 
 
+def execution_time(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        formatted_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+        print(f"Execution time of {func.__name__}: {formatted_time}")
+        return result
+
+    return wrapper
+
+
 @execution_time
 def run_fit_2d_data(args: Namespace):
     w = RooWorkspace("ws")
@@ -136,7 +137,7 @@ def run_fit_2d_data(args: Namespace):
 
     outprefix = "bkg_only"
 
-    LOAD_FROM_CACHE = False
+    LOAD_FROM_CACHE = args.use_cache
     if not LOAD_FROM_CACHE:
         os.system("rm -rf *.json")
 
@@ -149,7 +150,8 @@ def run_fit_2d_data(args: Namespace):
     print("\n\n")
 
     # build higss resonant bkg
-    # _ = resonant_background_modeling_Higgs()
+    build_resonant_background_Higgs_ws()
+    build_resonant_background_Z_ws()
 
     Z_resonant_bkg_parameters = resonant_background_modeling_Z(
         load_from_cache=LOAD_FROM_CACHE

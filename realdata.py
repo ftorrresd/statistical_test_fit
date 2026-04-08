@@ -21,6 +21,7 @@ def main():
         description="Background-only RooFit with a blinded signal region on real Data."
     )
     parser.add_argument("--nbins", type=int, default=60)
+    parser.add_argument("--use-cache", default=False, action="store_true")
 
     args = parser.parse_args()
 
