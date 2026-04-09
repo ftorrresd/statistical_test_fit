@@ -486,12 +486,16 @@ def get_normalization_from_CR(
         w.var("boson_mass"),
         f"plots/fit_2d_data/resonant_background_MC_data_{control_region.value.name}_fit_m_mumugamma.pdf",
         components=[
-            (w.pdf("resonant_background_model_res"), 10),
-            (w.pdf("resonant_background_model_non_res"), 10),
+            (w.pdf("resonant_background_model_res"), "Resonant component: RooDoubleCB"),
+            (
+                w.pdf("resonant_background_model_non_res"),
+                "Non-resonant component: RooJohnson",
+            ),
         ],
         nbins=nBins,
         legend=[0.6, 0.6, 0.93, 0.92],  # type: ignore
         is_data=True,
+        model_legend_name="Total model: RooAddPdf",
     )
 
     with open(f"NormParams_{control_region.value.name}.json", "w") as f:

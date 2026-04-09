@@ -136,6 +136,7 @@ Focused smoke commands:
 ```bash
 python3 pseudodata.py --fits-to-run 1d --events 1000 --seed 1 --relax-strict-mode
 python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1 --relax-strict-mode
+python3 pseudodata.py --events 5000 --seed 42 --nbins 60 --relax-strict-mode
 python3 realdata.py --use-cache --relax-strict-mode
 ```
 

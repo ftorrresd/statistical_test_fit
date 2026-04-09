@@ -18,6 +18,19 @@ from typing_extensions import ReadOnly
 from .bkg_model import BkgModel, BkgPdfFamily
 
 
+def _curve_name_for_model(test_bkg_pdf: BkgModel, idx: int) -> str:
+    return f"test_bkg_{test_bkg_pdf.pdf_family.value}_{idx}"
+
+
+def _format_model_label(test_bkg_pdf: BkgModel) -> str:
+    label = str(test_bkg_pdf.pdf_family)
+    if test_bkg_pdf.scan_order is not None:
+        label += f" order {test_bkg_pdf.scan_order}"
+    if test_bkg_pdf.n_float_params is not None:
+        label += f" ({test_bkg_pdf.n_float_params} floated)"
+    return label
+
+
 def get_ROOT_colors(data_type):
     if data_type == DataType.PSEUDO:
         return cycle([1, 2, 3, 5, 6, 7, 8, 9, 4])
@@ -70,14 +83,12 @@ def make_plots_1d(
     )
 
     ROOT_COLORS = get_ROOT_colors(DataType.PSEUDO)
-    for test_bkg_pdf in test_bkg_pdfs:
+    for idx, test_bkg_pdf in enumerate(test_bkg_pdfs):
         c = next(ROOT_COLORS)
         test_bkg_pdf.model.plotOn(
             frame,
             RooFit.NormRange("left,middle,right"),
-            RooFit.Name(
-                f"test_bkg_{test_bkg_pdf.model.getParameters(RooArgSet()).getSize()}_params"
-            ),
+            RooFit.Name(_curve_name_for_model(test_bkg_pdf, idx)),
             RooFit.LineColor(c),
             RooFit.LineStyle(kDashed),
         )
@@ -130,10 +141,8 @@ def make_plots_1d(
 
         chi2_pval = test_bkg_pdf.chi_square_res.pvalue
         leg.AddEntry(
-            frame.findObject(
-                f"test_bkg_{test_bkg_pdf.model.getParameters(RooArgSet()).getSize()}_params"
-            ),
-            f"{bkg_pdf_family}: {test_bkg_pdf.model.getParameters(RooArgSet()).getSize()} params - #chi^{{2}} p-value: {chi2_pval:.3f}{start_winner_str}",
+            frame.findObject(_curve_name_for_model(test_bkg_pdf, idx)),
+            f"{_format_model_label(test_bkg_pdf)} - #chi^{{2}} p-value: {chi2_pval:.3f}{start_winner_str}",
             "l",
         )
 
@@ -230,24 +239,20 @@ def make_plots_2d(
             )
 
     ROOT_COLORS = get_ROOT_colors(data_type)
-    for test_bkg_pdf in test_bkg_pdfs:
+    for idx, test_bkg_pdf in enumerate(test_bkg_pdfs):
         c = next(ROOT_COLORS)
         if proj_dim == ProjDim.Y:
             test_bkg_pdf.model.plotOn(
                 frame,
                 RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
-                RooFit.Name(
-                    f"test_bkg_{test_bkg_pdf.model.getParameters(RooArgSet()).getSize()}_params"
-                ),
+                RooFit.Name(_curve_name_for_model(test_bkg_pdf, idx)),
                 RooFit.LineColor(c),
                 RooFit.LineStyle(kDashed),
             )
         else:
             test_bkg_pdf.model.plotOn(
                 frame,
-                RooFit.Name(
-                    f"test_bkg_{test_bkg_pdf.model.getParameters(RooArgSet()).getSize()}_params"
-                ),
+                RooFit.Name(_curve_name_for_model(test_bkg_pdf, idx)),
                 RooFit.LineColor(c),
                 RooFit.LineStyle(kDashed),
             )
@@ -300,7 +305,13 @@ def make_plots_2d(
     if data_type == DataType.REAL:
         leg.AddEntry(frame.findObject("data_sb"), "Data", "lep")
     if data_type == DataType.PSEUDO:
-        leg.AddEntry(frame.findObject("data_sb"), "Pseudodata", "lep")
+        leg.AddEntry(frame.findObject("data_sb"), "Sideband pseudodata", "lep")
+        if data_full is not None and proj_dim == ProjDim.Y:
+            leg.AddEntry(
+                frame.findObject("data_full"),
+                "Full pseudodata (incl. blinded region)",
+                "lep",
+            )
     if bkg_pdf is not None:
         leg.AddEntry(
             frame.findObject("bkg_sidebands"),
@@ -321,10 +332,8 @@ def make_plots_2d(
 
         chi2_pval = test_bkg_pdf.chi_square_res.pvalue
         leg.AddEntry(
-            frame.findObject(
-                f"test_bkg_{test_bkg_pdf.model.getParameters(RooArgSet()).getSize()}_params"
-            ),
-            f"{bkg_pdf_family}: {test_bkg_pdf.model.getParameters(RooArgSet()).getSize()} params - #chi^{{2}} p-value: {chi2_pval:.3f}{start_winner_str}",
+            frame.findObject(_curve_name_for_model(test_bkg_pdf, idx)),
+            f"{_format_model_label(test_bkg_pdf)} - #chi^{{2}} p-value: {chi2_pval:.3f}{start_winner_str}",
             "l",
         )
 

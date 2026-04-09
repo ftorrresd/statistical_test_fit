@@ -79,6 +79,7 @@ def fastplot(
     y_min=0,
     y_max=-999,
     is_data=True,
+    model_legend_name="Fit",
 ):
     """Generic plot function
 
@@ -174,11 +175,11 @@ def fastplot(
             frame, ROOT.RooFit.Name("Model"), ROOT.RooFit.LineColor(color_cycle[0])
         )
 
-    leg.AddEntry(frame.findObject("Model"), "Fit", "L")
+    leg.AddEntry(frame.findObject("Model"), model_legend_name, "L")
 
     if components is not None:
         n_col = 1
-        for c, ni in components:
+        for c, component_label in components:
             if data_range != None:  # here it should be !=
                 model.plotOn(
                     frame,
@@ -204,7 +205,10 @@ def fastplot(
                     ROOT.RooFit.DrawOption("F"),
                 )
 
-            leg.AddEntry(frame.findObject(c.GetName()), c.getTitle().Data())
+            if not isinstance(component_label, str):
+                component_label = c.getTitle().Data()
+
+            leg.AddEntry(frame.findObject(c.GetName()), component_label)
 
             if data_range != None:  # here it should be !=
                 model.plotOn(
@@ -304,6 +308,10 @@ def fastplot(
     if y_max != -999:
         yaxis = frame.GetYaxis()
         yaxis.SetRangeUser(y_min, y_max)
+    else:
+        frame.SetMinimum(y_min)
+        headroom_factor = 1.35 if legend is not False else 1.20
+        frame.SetMaximum(headroom_factor * frame.GetMaximum())
     frame.Draw()
     if legend is not False:
         leg.Draw("same")
@@ -386,9 +394,9 @@ def fastplot(
             extra_info.Draw("Same")
         if isinstance(extra_text, list):
             for txt in extra_text:
-                assert isinstance(
-                    txt, ROOT.TPaveText
-                ), "Please provide extra_txt with a list or ROOT.TPaveText"
+                assert isinstance(txt, ROOT.TPaveText), (
+                    "Please provide extra_txt with a list or ROOT.TPaveText"
+                )
                 txt.Draw("Same")
 
     if extra_info is not None:
@@ -396,9 +404,9 @@ def fastplot(
         if isinstance(extra_info, ROOT.TPaveText):
             extra_info.Draw("Same")
         else:
-            assert isinstance(
-                extra_info, list
-            ), "Please provide extra_info with a list or ROOT.TPaveText"
+            assert isinstance(extra_info, list), (
+                "Please provide extra_info with a list or ROOT.TPaveText"
+            )
             box = ROOT.TPaveText(0.2, 0.75, 0.4, 0.9, "NDC")
             box.SetFillColor(10)
             box.SetBorderSize(0)

@@ -34,6 +34,7 @@ from .resonant_bkg_modeling import build_resonant_background_modeling_Z
 class BkgModel:
     pdf_family: BkgPdfFamily
     model: Any
+    scan_order: Optional[int] = None
     n_params: Optional[int] = None
     n_float_params: Optional[int] = None
     chi_square_res: Optional[ChiSquareResult] = None
@@ -59,6 +60,7 @@ class BkgModel:
         return hash(
             (
                 self.pdf_family,
+                self.scan_order,
                 self.chi_square_res,
                 self.n_params,
                 self.n_float_params,
@@ -70,6 +72,8 @@ class BkgModel:
         self.model.Print()
         string_repr = []
         string_repr.append(f"Polinomial family: {self.pdf_family}")
+        if self.scan_order is not None:
+            string_repr.append(f"Scanned order: {self.scan_order}")
         string_repr.append(f"N params: {self.n_params}")
         if self.n_float_params is not None:
             string_repr.append(f"N floated params: {self.n_float_params}")
@@ -183,6 +187,8 @@ def _format_candidate_summary(idx: int, test_bkg_model: BkgModel) -> str:
 
     if test_bkg_model.n_params is not None:
         summary.append(f"n_params={test_bkg_model.n_params}")
+    if test_bkg_model.scan_order is not None:
+        summary.append(f"order={test_bkg_model.scan_order}")
     if test_bkg_model.n_float_params is not None:
         summary.append(f"n_float={test_bkg_model.n_float_params}")
     if test_bkg_model.fit_ok is True:
@@ -864,6 +870,7 @@ def build_background_models(
                     [initial_coeff] * i,
                 ),
                 pdf_family=pdf_family,
+                scan_order=i,
             )
         )
 
@@ -916,6 +923,7 @@ def build_background_models_2d(
                         upsilon_params,
                     ),
                     pdf_family=pdf_family,
+                    scan_order=i,
                 )
             )
     else:
@@ -928,6 +936,7 @@ def build_background_models_2d(
                     upsilon_params,
                 ),
                 pdf_family=BkgPdfFamily.JOHNSON,
+                scan_order=1,
             )
         )
 
