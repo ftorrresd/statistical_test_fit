@@ -288,10 +288,11 @@ def resonant_background_modeling_Z(load_from_cache=False):
     """
     Resonant Background Modeling
     """
+    cached_resonant_background_model_Z_params = None
 
     if load_from_cache:
         with open("resonant_background_model_Z_params.json", "r") as f:
-            return json.load(f)
+            cached_resonant_background_model_Z_params = json.load(f)
 
     input_file = "inputs/mass_Z_ZGTo2MuG_MMuMu-2To15_Run2.root"
 
@@ -317,11 +318,19 @@ def resonant_background_modeling_Z(load_from_cache=False):
     )
     getattr(w, "import")(resonant_background_model_Z)
 
-    # fit to data
-    fit_result = w.pdf("resonant_background_model_ZG_boson").fitTo(
-        data, RooFit.Save(), RooFit.SumW2Error(True)
-    )
-    fit_result.Print("v")
+    if cached_resonant_background_model_Z_params is not None:
+        set_pdf_parameters(
+            w.pdf("resonant_background_model_ZG_boson"),
+            cached_resonant_background_model_Z_params,
+            RooArgSet(w.var("boson_mass")),
+            make_constant=True,
+        )
+    else:
+        # fit to data
+        fit_result = w.pdf("resonant_background_model_ZG_boson").fitTo(
+            data, RooFit.Save(), RooFit.SumW2Error(True)
+        )
+        fit_result.Print("v")
 
     # plot data the and the pdf
     print("\n\n--> Saving plot ")
@@ -347,6 +356,11 @@ def resonant_background_modeling_Z(load_from_cache=False):
     )
 
     print("data.sumEntries(): ", data.sumEntries())
+
+    if cached_resonant_background_model_Z_params is not None:
+        print("\n\n--> Loaded resonant Z parameters from cache")
+        pprint(cached_resonant_background_model_Z_params)
+        return cached_resonant_background_model_Z_params
 
     resonant_background_model_Z_params = get_pdf_parameters(
         w.pdf("resonant_background_model_ZG_boson"),
@@ -393,9 +407,10 @@ def get_normalization_from_CR(
     boson_parameters, control_region: ControlRegion, load_from_cache=False
 ):
     """Resonant Background Modeling"""
+    cached_norm_para = None
     if load_from_cache:
         with open(f"NormParams_{control_region.value.name}.json", "r") as f:
-            return json.load(f)
+            cached_norm_para = json.load(f)
 
     input_file = "inputs/selected_Run2_resonant_background_modeling_MC_data_.root"
 
@@ -497,6 +512,12 @@ def get_normalization_from_CR(
         is_data=True,
         model_legend_name="Total model: RooAddPdf",
     )
+
+    if cached_norm_para is not None:
+        print(
+            f"-- > Loaded normalization from cache for {control_region.value.name}: {cached_norm_para}"
+        )
+        return cached_norm_para
 
     with open(f"NormParams_{control_region.value.name}.json", "w") as f:
         json.dump(NormPara, f, indent=4)

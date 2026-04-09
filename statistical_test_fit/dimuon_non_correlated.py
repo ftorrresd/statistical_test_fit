@@ -145,9 +145,10 @@ def build_upsilon_model(mass, sufix=None):
 
 def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0, load_from_cache=False):
     """Upsilon + Background Model"""
+    cached_upsilon_model_params = None
     if load_from_cache:
         with open("upsilon_model_params.json", "r") as f:
-            return json.load(f)
+            cached_upsilon_model_params = json.load(f)
 
     lowRange = m_mumu_lower
     highRange = m_mumu_upper
@@ -208,6 +209,14 @@ def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0, load_from_cache=F
         RooFit.Cut(f"(upsilon_mass < 12.0 && upsilon_mass >= 8.0)"),
     )
 
+    if cached_upsilon_model_params is not None:
+        set_pdf_parameters(
+            upsilon_model,
+            cached_upsilon_model_params,
+            RooArgSet(mass),
+            make_constant=True,
+        )
+
     # perform the fit
     _ = total_model.fitTo(data, RooFit.Save())
 
@@ -228,6 +237,9 @@ def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0, load_from_cache=F
         nbins=60,
         legend=[0.6, 0.6, 0.93, 0.92],  # type: ignore
     )
+
+    if cached_upsilon_model_params is not None:
+        return cached_upsilon_model_params
 
     upsilon_model_params = get_pdf_parameters(upsilon_model, RooArgSet(mass))
 

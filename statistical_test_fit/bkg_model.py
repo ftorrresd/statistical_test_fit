@@ -936,7 +936,6 @@ def build_background_models_2d(
                     upsilon_params,
                 ),
                 pdf_family=BkgPdfFamily.JOHNSON,
-                scan_order=1,
             )
         )
 
