@@ -9,7 +9,7 @@ from ROOT import (  # type: ignore
     gSystem,  # type: ignore
 )
 
-from statistical_test_fit import run_fit_1d, run_fit_2d, run_fit_2d_data
+from statistical_test_fit import run_fit_1d, run_fit_2d
 
 gROOT.SetBatch(True)
 RooMsgService.instance().setGlobalKillBelow(RooFit.WARNING)
@@ -53,6 +53,12 @@ def main():
     )
     parser.add_argument("-s", "--seed", type=int)
     parser.add_argument("--nbins", type=int, default=60)
+    parser.add_argument(
+        "--relax-strict-mode",
+        action="store_true",
+        default=False,
+        help="Allow relaxed model selection fallback instead of aborting when a family fails strict selection.",
+    )
 
     args = parser.parse_args()
 

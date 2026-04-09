@@ -16,6 +16,7 @@ from .bkg_model import (
     compute_winner_and_start_indexes,
     build_background_cheb,
     build_background_models,
+    update_fit_quality,
 )
 from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
@@ -145,6 +146,9 @@ def run_fit_1d(args: Namespace):
     # test_bkg_pdfs|=build_background_models(BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000)
 
     for family in BkgPdfFamily:
+        if len(test_bkg_pdfs[family]) == 0:
+            continue
+
         print()
         print("##############################################")
         print("##############################################")
@@ -166,6 +170,9 @@ def run_fit_1d(args: Namespace):
                 RooFit.Verbose(False),
                 RooFit.Minimizer("Minuit2", "Migrad"),
             )
+            test_bkg_pdf.n_float_params = (
+                test_bkg_pdf.fit_res.floatParsFinal().getSize()
+            )
 
             test_bkg_pdf.chi_square_res = ChiSquareResult.compute_chi_square_1d(
                 test_bkg_pdf.model,
@@ -174,12 +181,14 @@ def run_fit_1d(args: Namespace):
                 outprefix=f"test_bkg_pdf_{test_bkg_pdf.n_params}",
                 pdf_family=family,
                 nbins=args.nbins,
+                nfloatpars=test_bkg_pdf.n_float_params,
             )
 
             test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(
                 data_full,
                 RooFit.Range("left,middle,right"),
             ).getVal()
+            update_fit_quality(test_bkg_pdf)
 
         print("\n\n=== Test Background-only fit (sidebands) ===")
         for i, test_bkg_pdf in enumerate(test_bkg_pdfs[family]):
@@ -190,7 +199,10 @@ def run_fit_1d(args: Namespace):
             print(test_bkg_pdf)
 
         # compute winner function
-        start, winner = compute_winner_and_start_indexes(test_bkg_pdfs[family])
+        start, winner = compute_winner_and_start_indexes(
+            test_bkg_pdfs[family],
+            strict_mode=not args.relax_strict_mode,
+        )
 
         # Plots
         plot_file_name = make_plots_1d(

@@ -1,12 +1,27 @@
+from array import array
 from collections import namedtuple
 from typing import List, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import ArrayLike
+from ROOT import (  # type: ignore
+    TCanvas,  # type: ignore
+    TGraph,  # type: ignore
+    TGraphErrors,  # type: ignore
+    TLegend,  # type: ignore
+    TLatex,  # type: ignore
+    TLine,  # type: ignore
+    kBlue,  # type: ignore
+    kGreen,  # type: ignore
+    kRed,  # type: ignore
+)
 
 # Define result type
 FitResult = namedtuple("FitResult", ["coeffs", "cov", "chi2", "dof", "y0", "sy0"])
+
+
+def _to_double_array(values) -> array:
+    return array("d", [float(v) for v in values])
 
 
 def fit_and_plot(
@@ -21,29 +36,8 @@ def fit_and_plot(
     """
     Perform weighted quadratic fit, predict at x0 with uncertainty,
     plot everything, save to PDF, and close all figures.
-
-    Parameters
-    ----------
-    x, y, sigma_y : ArrayLike
-        Data points and uncertainties.
-    x0 : float
-        Extrapolation point.
-    output_pdf : str, default="fit_result.pdf"
-        Path of the PDF file to save the plot.
-
-    Returns
-    -------
-    FitResult : namedtuple
-        Fields:
-        - coeffs : np.ndarray, shape (3,), fitted coefficients [a, b, c].
-        - cov    : np.ndarray, shape (3,3), covariance matrix of coefficients.
-        - chi2   : float, chi-square of the fit.
-        - dof    : int, degrees of freedom.
-        - y0     : float, predicted value at x0.
-        - sy0    : float, uncertainty on prediction at x0.
     """
 
-    # --- Prepare arrays ---
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     sy = np.asarray(sigma_y, dtype=float)
@@ -51,7 +45,6 @@ def fit_and_plot(
     if np.any(sy <= 0):
         raise ValueError("All sigma_y must be > 0.")
 
-    # --- Weighted fit ---
     X = np.column_stack([x**2, x, np.ones_like(x)])
     w = 1.0 / sy**2
     WX = X * w[:, None]
@@ -60,69 +53,110 @@ def fit_and_plot(
 
     coeffs = np.linalg.solve(XT_W_X, XT_W_y)
 
-    r = y - X @ coeffs
-    chi2 = float(np.sum((r / sy) ** 2))
+    residuals = y - X @ coeffs
+    chi2 = float(np.sum((residuals / sy) ** 2))
     dof = max(len(x) - 3, 1)
     cov = np.linalg.inv(XT_W_X) * (chi2 / dof)
 
-    # --- Prediction at x0 ---
     v = np.array([x0**2, x0, 1.0])
     y0 = float(v @ coeffs)
     var_y0 = float(v @ cov @ v)
     sy0 = float(np.sqrt(var_y0)) if var_y0 > 0 else 0.0
 
-    # --- Plot ---
-    fig, ax = plt.subplots()
-    ax.errorbar(
-        x, y, yerr=sy, fmt="o", markersize=3, capsize=3, label="CR Normalization"
-    )
-
     xx = np.linspace(min(x) - 0.5, max(x) + 1.0, 300)
     yy = coeffs[0] * xx**2 + coeffs[1] * xx + coeffs[2]
-    ax.plot(xx, yy, "r-", label="Quadratic fit")
 
-    ax.errorbar(
-        [x0],
-        [y0],
-        yerr=[sy0],
-        fmt="o",
-        color="green",
-        capsize=3,
-        markersize=3,
-        label=f"Extrapolation for SR (x={x0}): {y0:.2f} +/- {sy0:.2f}",
+    canvas = TCanvas("normalization_fit", "normalization_fit", 900, 700)
+    canvas.SetLeftMargin(0.12)
+    canvas.SetBottomMargin(0.12)
+    canvas.SetRightMargin(0.05)
+    canvas.SetTopMargin(0.06)
+
+    graph = TGraphErrors(
+        len(x),
+        _to_double_array(x),
+        _to_double_array(y),
+        _to_double_array(np.zeros_like(x)),
+        _to_double_array(sy),
     )
-    # Draw vertical lines if provided
+    graph.SetTitle("")
+    graph.SetMarkerStyle(20)
+    graph.SetMarkerSize(1.0)
+    graph.SetLineWidth(2)
+    graph.GetXaxis().SetTitle("CR Midpoint")
+    graph.GetYaxis().SetTitle("Normalization")
+
+    y_values = np.concatenate([y - sy, y + sy, yy, np.array([y0 - sy0, y0 + sy0])])
+    y_min = float(np.min(y_values))
+    y_max = float(np.max(y_values))
+    y_span = y_max - y_min
+    if y_span <= 0:
+        y_span = max(abs(y_max), 1.0)
+    graph.SetMinimum(y_min - 0.15 * y_span)
+    graph.SetMaximum(y_max + 0.20 * y_span)
+    graph.Draw("AP")
+
+    fit_graph = TGraph(len(xx), _to_double_array(xx), _to_double_array(yy))
+    fit_graph.SetLineColor(kRed)
+    fit_graph.SetLineWidth(2)
+    fit_graph.Draw("L SAME")
+
+    pred_graph = TGraphErrors(
+        1,
+        _to_double_array([x0]),
+        _to_double_array([y0]),
+        _to_double_array([0.0]),
+        _to_double_array([sy0]),
+    )
+    pred_graph.SetMarkerStyle(21)
+    pred_graph.SetMarkerSize(1.1)
+    pred_graph.SetMarkerColor(kGreen + 2)
+    pred_graph.SetLineColor(kGreen + 2)
+    pred_graph.SetLineWidth(2)
+    pred_graph.Draw("P SAME")
+
+    line_bottom = graph.GetMinimum()
+    line_top = graph.GetMaximum()
+    lines = []
     if x_lines is not None:
         for xv in x_lines:
-            ax.axvline(x=xv, color="blue", linestyle="--", alpha=0.5)
+            line = TLine(float(xv), line_bottom, float(xv), line_top)
+            line.SetLineColor(kBlue)
+            line.SetLineStyle(2)
+            line.Draw("SAME")
+            lines.append(line)
 
-    # Annotate data points if labels are provided
+    labels = []
     if point_labels is not None:
         if len(point_labels) != len(x):
             raise ValueError("Length of point_labels must match length of x.")
+        label_offset = 0.05 * (line_top - line_bottom)
         for xi, yi, lbl in zip(x, y, point_labels):
-            ax.text(
-                xi,
-                yi + 0.07 * (max(y) - min(y)),  # small offset above point
-                lbl,
-                ha="center",
-                va="bottom",
-                fontsize=9,
-                rotation=0,
-            )
+            text = TLatex(float(xi), float(yi + label_offset), lbl)
+            text.SetTextAlign(22)
+            text.SetTextSize(0.03)
+            text.Draw()
+            labels.append(text)
 
-    ax.set_xlabel("CR Midpoint")
-    ax.set_ylabel("Normalization")
-    ax.legend()
-    ax.grid(True, ls="--", alpha=0.5)
+    legend = TLegend(0.52, 0.70, 0.90, 0.90)
+    legend.SetBorderSize(0)
+    legend.SetFillStyle(0)
+    legend.AddEntry(graph, "CR Normalization", "lep")
+    legend.AddEntry(fit_graph, "Quadratic fit", "l")
+    legend.AddEntry(
+        pred_graph,
+        f"Extrapolation for SR (x={x0:.1f}): {y0:.2f} +/- {sy0:.2f}",
+        "lep",
+    )
+    legend.Draw()
 
-    fig.savefig(output_pdf, bbox_inches="tight")
-    plt.close("all")
+    canvas.SetGrid(1, 1)
+    canvas.SaveAs(output_pdf)
+    canvas.Close()
 
     return FitResult(coeffs, cov, chi2, dof, y0, sy0)
 
 
-# --- Example usage ---
 if __name__ == "__main__":
     x = np.array([0.0, 0.5, 1.0, 1.5, 2.0])
     y = np.array([1.1, 1.5, 2.2, 3.2, 4.1])

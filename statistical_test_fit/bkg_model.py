@@ -1,3 +1,4 @@
+import math
 from pprint import pprint
 import random
 from dataclasses import dataclass
@@ -10,13 +11,17 @@ from ROOT import (  # type: ignore
     RooBernstein,  # type: ignore
     RooChebychev,  # type: ignore
     RooJohnson,  # type: ignore
-    RooExpPoly,  # type: ignore
     kTRUE,  # type: ignore
     RooGenericPdf,  # type: ignore
     RooProdPdf,  # type: ignore
     RooRealVar,  # type: ignore
     TMath,  # type: ignore
 )
+
+try:
+    from ROOT import RooExpPoly  # type: ignore
+except ImportError:
+    RooExpPoly = None
 
 from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
@@ -30,9 +35,12 @@ class BkgModel:
     pdf_family: BkgPdfFamily
     model: Any
     n_params: Optional[int] = None
+    n_float_params: Optional[int] = None
     chi_square_res: Optional[ChiSquareResult] = None
     NLL: Optional[float] = None
     fit_res: Optional[Any] = None
+    fit_ok: Optional[bool] = None
+    fit_quality_reason: Optional[str] = None
 
     def __post_init__(self):
         self.n_params = self.model.getParameters(RooArgSet()).getSize()
@@ -42,17 +50,34 @@ class BkgModel:
             (self.chi_square_res is not None)
             and (self.NLL is not None)
             and (self.n_params is not None)
+            and (self.n_float_params is not None)
             and (self.fit_res is not None)
+            and (self.fit_ok is not None)
         )
 
     def __hash__(self) -> int:
-        return hash((self.pdf_family, self.chi_square_res, self.n_params, self.NLL))
+        return hash(
+            (
+                self.pdf_family,
+                self.chi_square_res,
+                self.n_params,
+                self.n_float_params,
+                self.NLL,
+            )
+        )
 
     def __str__(self) -> str:
         self.model.Print()
         string_repr = []
         string_repr.append(f"Polinomial family: {self.pdf_family}")
         string_repr.append(f"N params: {self.n_params}")
+        if self.n_float_params is not None:
+            string_repr.append(f"N floated params: {self.n_float_params}")
+        if self.fit_ok is not None:
+            fit_quality = "OK" if self.fit_ok else "FAILED"
+            string_repr.append(f"Fit quality: {fit_quality}")
+        if self.fit_quality_reason is not None:
+            string_repr.append(f"Fit note: {self.fit_quality_reason}")
         if self.fit_res is not None:
             string_repr.append(
                 f"Status: {self.fit_res.status()}  (0=OK)   CovQual: {self.fit_res.covQual()}  (3=good)"
@@ -70,51 +95,278 @@ class BkgModel:
         return "\n".join(string_repr)
 
 
+def _print_big_warning(title: str, details: Optional[list[str]] = None) -> None:
+    banner = "!" * 90
+    print()
+    print(banner)
+    print(f"!!! BIG WARNING: {title}")
+    if details is not None:
+        for detail in details:
+            print(f"!!! {detail}")
+    print(banner)
+    print()
+
+
+def _assess_fit_result(
+    fit_res,
+    require_covqual: int = 3,
+    max_edm: float = 1e-3,
+) -> tuple[bool, str]:
+    reasons = []
+
+    status = fit_res.status()
+    if status != 0:
+        reasons.append(f"status={status} (expected 0)")
+
+    cov_qual = fit_res.covQual()
+    if cov_qual < require_covqual:
+        reasons.append(f"covQual={cov_qual} (expected >= {require_covqual})")
+
+    if hasattr(fit_res, "edm"):
+        edm = fit_res.edm()
+        if not math.isfinite(edm):
+            reasons.append("edm is not finite")
+        elif edm > max_edm:
+            reasons.append(f"edm={edm:.3e} (expected <= {max_edm:.3e})")
+
+    if hasattr(fit_res, "minNll") and not math.isfinite(fit_res.minNll()):
+        reasons.append("minNll is not finite")
+
+    if reasons:
+        return False, "; ".join(reasons)
+
+    return True, f"status=0, covQual>={require_covqual}, edm<={max_edm:.3e}"
+
+
+def update_fit_quality(test_bkg_model: BkgModel) -> None:
+    if test_bkg_model.fit_res is None:
+        raise RuntimeError(
+            f"Cannot assess fit quality for {test_bkg_model.model.GetName()} without a fit result."
+        )
+
+    test_bkg_model.n_float_params = test_bkg_model.fit_res.floatParsFinal().getSize()
+
+    fit_ok, fit_quality_reason = _assess_fit_result(test_bkg_model.fit_res)
+    if test_bkg_model.NLL is None or not math.isfinite(test_bkg_model.NLL):
+        fit_ok = False
+        if test_bkg_model.NLL is None:
+            fit_quality_reason = f"{fit_quality_reason}; NLL was not stored"
+        else:
+            fit_quality_reason = (
+                f"{fit_quality_reason}; NLL={test_bkg_model.NLL} is not finite"
+            )
+
+    test_bkg_model.fit_ok = fit_ok
+    test_bkg_model.fit_quality_reason = fit_quality_reason
+
+    if not test_bkg_model.fit_ok:
+        details = [
+            f"Family: {test_bkg_model.pdf_family}",
+            f"Model: {test_bkg_model.model.GetName()}",
+            f"Status: {test_bkg_model.fit_res.status()}",
+            f"CovQual: {test_bkg_model.fit_res.covQual()}",
+            f"N floated params: {test_bkg_model.n_float_params}",
+        ]
+        if hasattr(test_bkg_model.fit_res, "edm"):
+            details.append(f"EDM: {test_bkg_model.fit_res.edm():.3e}")
+        if test_bkg_model.NLL is not None:
+            details.append(f"NLL: {test_bkg_model.NLL:.6f}")
+        details.append(f"Reason: {test_bkg_model.fit_quality_reason}")
+        _print_big_warning(
+            f"Fit failed quality checks for {test_bkg_model.model.GetName()}",
+            details,
+        )
+
+
+def _format_candidate_summary(idx: int, test_bkg_model: BkgModel) -> str:
+    summary = [f"[{idx}] {test_bkg_model.model.GetName()}"]
+
+    if test_bkg_model.n_params is not None:
+        summary.append(f"n_params={test_bkg_model.n_params}")
+    if test_bkg_model.n_float_params is not None:
+        summary.append(f"n_float={test_bkg_model.n_float_params}")
+    if test_bkg_model.fit_ok is True:
+        summary.append("fit=OK")
+    elif test_bkg_model.fit_ok is False:
+        summary.append(f"fit=FAILED ({test_bkg_model.fit_quality_reason})")
+
+    if test_bkg_model.chi_square_res is not None:
+        summary.append(f"chi2_p={test_bkg_model.chi_square_res.pvalue:.4f}")
+    if test_bkg_model.NLL is not None:
+        summary.append(f"NLL={test_bkg_model.NLL:.6f}")
+
+    return " | ".join(summary)
+
+
+def _raise_family_strict_selection_error(
+    test_bkg_models: list[BkgModel],
+    message: str,
+) -> None:
+    family = "unknown"
+    if len(test_bkg_models) > 0:
+        family = str(test_bkg_models[0].pdf_family)
+
+    details = [
+        f"Family-strict model selection aborted for {family}.",
+        message,
+    ]
+    details.extend(
+        _format_candidate_summary(idx, test_bkg_model)
+        for idx, test_bkg_model in enumerate(test_bkg_models)
+    )
+    _print_big_warning(f"Family-strict selection failed for {family}", details)
+    raise RuntimeError(message)
+
+
+def _select_relaxed_winner(
+    test_bkg_models: list[BkgModel],
+    failure_message: str,
+) -> tuple[int, int]:
+    family = str(test_bkg_models[0].pdf_family)
+    valid_models = [
+        (idx, test_bkg_model)
+        for idx, test_bkg_model in enumerate(test_bkg_models)
+        if test_bkg_model.fit_ok
+    ]
+
+    details = [
+        f"Relaxed selection enabled for {family}.",
+        failure_message,
+    ]
+
+    if len(valid_models) == 0:
+        _print_big_warning(
+            f"No fit-quality-passing candidates available for {family}",
+            details
+            + [
+                _format_candidate_summary(idx, test_bkg_model)
+                for idx, test_bkg_model in enumerate(test_bkg_models)
+            ],
+        )
+        fallback_idx = len(test_bkg_models) - 1
+        return fallback_idx, fallback_idx
+
+    start_idx = None
+    winner_idx = None
+    best_pvalue = -1.0
+    for valid_idx, (_, test_bkg_model) in enumerate(valid_models):
+        assert test_bkg_model.chi_square_res is not None
+        pvalue = test_bkg_model.chi_square_res.pvalue
+        if pvalue > 0.05:
+            start_idx = valid_idx
+            winner_idx = valid_idx
+            break
+        if pvalue > best_pvalue:
+            best_pvalue = pvalue
+            start_idx = valid_idx
+            winner_idx = valid_idx
+
+    assert start_idx is not None and winner_idx is not None
+
+    details.append(
+        "Falling back to the fit-quality-passing candidate with the best available chi-square p-value."
+    )
+    details.extend(
+        _format_candidate_summary(idx, test_bkg_model)
+        for idx, test_bkg_model in enumerate(test_bkg_models)
+    )
+    _print_big_warning(f"Relaxed model selection fallback for {family}", details)
+
+    return valid_models[start_idx][0], valid_models[winner_idx][0]
+
+
+def _compute_lrt_pvalue(
+    simple_model: BkgModel,
+    complex_model: BkgModel,
+    tol: float = 1e-6,
+) -> tuple[float, int, float]:
+    if simple_model.NLL is None or complex_model.NLL is None:
+        raise ValueError("Both models must have a finite stored NLL before the LRT.")
+
+    if simple_model.n_float_params is None or complex_model.n_float_params is None:
+        raise ValueError("Both models must store the number of floated parameters.")
+
+    delta_n_float_params = complex_model.n_float_params - simple_model.n_float_params
+    if delta_n_float_params <= 0:
+        raise ValueError(
+            "The complex model must have more floated parameters than the simple one. "
+            f"Received df={delta_n_float_params}."
+        )
+
+    q = 2.0 * (simple_model.NLL - complex_model.NLL)
+    if not math.isfinite(q):
+        raise ValueError(f"2*DeltaNLL is not finite: {q}")
+    if q < -tol:
+        raise ValueError(
+            f"Encountered a negative 2*DeltaNLL beyond tolerance. Received {q:.6f}."
+        )
+
+    q = max(q, 0.0)
+    pval = TMath.Prob(q, delta_n_float_params)
+    return q, delta_n_float_params, pval
+
+
 def compute_winner_and_start_indexes(
     test_bkg_models: list[BkgModel],
-) -> tuple[Optional[int], Optional[int]]:
-    start = None
-    winner = None
+    strict_mode: bool = True,
+) -> tuple[int, int]:
+    if len(test_bkg_models) == 0:
+        raise RuntimeError("Cannot select a winner from an empty family.")
+
+    valid_models = []
     for idx, test_bkg_model in enumerate(test_bkg_models):
-        assert test_bkg_model.is_complete()
-        if start is None:
-            assert test_bkg_model.chi_square_res is not None
-            if test_bkg_model.chi_square_res.pvalue > 0.05:
-                start = idx
-                winner = idx
+        if not test_bkg_model.is_complete():
+            message = f"Model {idx} is missing fit diagnostics required by selection."
+            if strict_mode:
+                _raise_family_strict_selection_error(test_bkg_models, message)
+            return _select_relaxed_winner(test_bkg_models, message)
 
-        if start is not None:
-            if idx > 0 and idx > start:
-                previous_model = test_bkg_models[idx - 1]
+        if test_bkg_model.fit_ok:
+            valid_models.append((idx, test_bkg_model))
 
-                assert previous_model.NLL is not None and test_bkg_model.NLL is not None
-                delta_NLL = abs(test_bkg_model.NLL - previous_model.NLL)
+    if len(valid_models) == 0:
+        message = "No candidate in this family passed the fit-quality requirements."
+        if strict_mode:
+            _raise_family_strict_selection_error(test_bkg_models, message)
+        return _select_relaxed_winner(test_bkg_models, message)
 
-                assert (
-                    previous_model.n_params is not None
-                    and test_bkg_model.n_params is not None
-                )
-                delta_n_params = test_bkg_model.n_params - previous_model.n_params
+    start_idx = None
+    winner_idx = None
+    for valid_idx, (_, test_bkg_model) in enumerate(valid_models):
+        assert test_bkg_model.chi_square_res is not None
+        if test_bkg_model.chi_square_res.pvalue > 0.05:
+            start_idx = valid_idx
+            winner_idx = valid_idx
+            break
 
-                pval = TMath.Prob(delta_NLL, delta_n_params)
-                # print(f"DEBUG: {delta_NLL, delta_n_params, pval}")
-                if pval > 0.05:
-                    winner = idx - 1
-                    break
+    if start_idx is None or winner_idx is None:
+        message = "No candidate in this family passed the chi-square p-value threshold after fit-quality filtering."
+        if strict_mode:
+            _raise_family_strict_selection_error(test_bkg_models, message)
+        return _select_relaxed_winner(test_bkg_models, message)
 
-    if start is not None and winner is not None:
-        return start, winner
+    for valid_idx in range(start_idx + 1, len(valid_models)):
+        _, previous_model = valid_models[valid_idx - 1]
+        _, current_model = valid_models[valid_idx]
 
-    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    print("WARNING: Could not find best polynomial order!")
-    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        try:
+            _, _, pval = _compute_lrt_pvalue(previous_model, current_model)
+        except ValueError as exc:
+            message = (
+                "Invalid likelihood-ratio comparison between "
+                f"{previous_model.model.GetName()} and {current_model.model.GetName()}: {exc}"
+            )
+            if strict_mode:
+                _raise_family_strict_selection_error(test_bkg_models, message)
+            return _select_relaxed_winner(test_bkg_models, message)
 
-    return (
-        len(test_bkg_models) - 1,
-        len(test_bkg_models) - 1,
-    )
+        if pval > 0.05:
+            winner_idx = valid_idx - 1
+            break
+
+        winner_idx = valid_idx
+
+    return valid_models[start_idx][0], valid_models[winner_idx][0]
 
 
 def _get_power_law_formula(exponents):
@@ -146,7 +398,7 @@ def _get_power_law_formula(exponents):
 
     formula = formula.replace("x", "@0")
     for i in range(len(exponents)):
-        formula = formula.replace(f"a{i}", f"@{i+1}")
+        formula = formula.replace(f"a{i}", f"@{i + 1}")
 
     return formula
 
@@ -226,6 +478,9 @@ def build_background_exponential(
     title="Exponential background",
     coeffs_bounds=(-1000000000000.0, 0.0),
 ):
+    if RooExpPoly is None:
+        raise ImportError("RooExpPoly is not available in this ROOT build.")
+
     if not (len(coeffs) >= 1):
         raise ValueError("At least one coeffs should be provided")
 
@@ -244,11 +499,58 @@ def build_background_exponential(
     return pdf
 
 
+def _build_x_background_component(
+    x,
+    name: str,
+    coeff_vars_x,
+    coeff_list_x,
+    upsilon_params=None,
+):
+    bkg_x_lin = RooChebychev(
+        f"{name}_chebychev_x", "Chebychev background 2D - x", x, coeff_list_x
+    )
+    x_keepalive = {
+        "coeff_vars_x": coeff_vars_x,
+        "coeff_list_x": coeff_list_x,
+        "bkg_x_lin": bkg_x_lin,
+    }
+
+    if upsilon_params is None:
+        return bkg_x_lin, x_keepalive
+
+    upsilon_frac = RooRealVar(f"{name}_upsilon_frac", f"{name}_upsilon_frac", 0.2, 0, 1)
+    upsilon_model, _, _, _ = build_upsilon_model(x, sufix=name)
+
+    set_pdf_parameters(
+        upsilon_model,
+        upsilon_params,
+        x,
+        make_constant=True,
+        sufix=name,
+    )
+
+    bkg_x = RooAddPdf(
+        f"{name}_x",
+        "Chebychev + upsilon model background 2D - x",
+        RooArgList(upsilon_model, bkg_x_lin),
+        RooArgList(upsilon_frac),
+        kTRUE,
+    )
+    x_keepalive.update(
+        {
+            "bkg_x": bkg_x,
+            "upsilon_frac": upsilon_frac,
+            "upsilon_model": upsilon_model,
+        }
+    )
+    return bkg_x, x_keepalive
+
+
 def build_background_cheb_2d(
     x,
     y,
     cheb_coeffs,
-    upsilon_params,
+    upsilon_params=None,
     name="background_chebychev_2d",
 ):
     name = f"{name}_{len(cheb_coeffs)}"
@@ -266,29 +568,12 @@ def build_background_cheb_2d(
     for v in coeff_vars_x:
         coeff_list_x.add(v)
 
-    upsilon_frac = RooRealVar(f"{name}_upsilon_frac", f"{name}_upsilon_frac", 0.2, 0, 1)
-    bkg_x_lin = RooChebychev(
-        f"{name}_chebychev_x", "Chebychev background 2D - x", x, coeff_list_x
-    )
-    upsilon_model, _, _, _ = build_upsilon_model(x, sufix=name)
-
-    set_pdf_parameters(
-        upsilon_model,
-        upsilon_params,
+    bkg_x, x_keepalive = _build_x_background_component(
         x,
-        make_constant=True,
-        sufix=name,
-    )
-
-    bkg_x = RooAddPdf(
-        f"{name}_x",
-        "Chebychev + upsilon model background 2D - x",
-        RooArgList(
-            upsilon_model,
-            bkg_x_lin,
-        ),
-        RooArgList(upsilon_frac),
-        kTRUE,
+        name,
+        coeff_vars_x,
+        coeff_list_x,
+        upsilon_params,
     )
 
     coeff_vars_y = [
@@ -319,15 +604,10 @@ def build_background_cheb_2d(
     )
 
     bkg._keepalive = {
-        "coeff_vars_x": coeff_vars_x,
+        **x_keepalive,
         "coeff_vars_y": coeff_vars_y,
-        "coeff_list_x": coeff_list_x,
         "coeff_list_y": coeff_list_y,
-        "bkg_x": bkg_x,
-        "bkg_x_lin": bkg_x_lin,
         "bkg_y": bkg_y,
-        "upsilon_frac": upsilon_frac,
-        "upsilon_model": upsilon_model,
     }
 
     return bkg
@@ -337,7 +617,7 @@ def build_background_bernstein_2d(
     x,
     y,
     bern_coeffs,
-    upsilon_params,
+    upsilon_params=None,
     name="background_bernstein_2d",
     force_positive=True,
 ):
@@ -359,30 +639,12 @@ def build_background_bernstein_2d(
     for v in coeff_vars_x:
         coeff_list_x.add(v)
 
-    upsilon_frac = RooRealVar(f"{name}_upsilon_frac", f"{name}_upsilon_frac", 0.2, 0, 1)
-    bkg_x_lin = RooChebychev(
-        f"{name}_chebchev_x", "Chebychev background 2D - x", x, coeff_list_x
-    )
-
-    upsilon_model, _, _, _ = build_upsilon_model(x, sufix=name)
-
-    set_pdf_parameters(
-        upsilon_model,
-        upsilon_params,
+    bkg_x, x_keepalive = _build_x_background_component(
         x,
-        make_constant=True,
-        sufix=name,
-    )
-
-    bkg_x = RooAddPdf(
-        f"{name}_x",
-        "Chebychev + upsilon model background 2D - x",
-        RooArgList(
-            upsilon_model,
-            bkg_x_lin,
-        ),
-        RooArgList(upsilon_frac),
-        kTRUE,
+        name,
+        coeff_vars_x,
+        coeff_list_x,
+        upsilon_params,
     )
 
     coeff_vars_y = [
@@ -414,15 +676,10 @@ def build_background_bernstein_2d(
     )
 
     bkg._keepalive = {
-        "coeff_vars_x": coeff_vars_x,
+        **x_keepalive,
         "coeff_vars_y": coeff_vars_y,
-        "coeff_list_x": coeff_list_x,
         "coeff_list_y": coeff_list_y,
-        "bkg_x": bkg_x,
-        "bkg_x_lin": bkg_x_lin,
         "bkg_y": bkg_y,
-        "upsilon_frac": upsilon_frac,
-        "upsilon_model": upsilon_model,
     }
 
     return bkg
@@ -432,7 +689,7 @@ def build_background_johnson_2d(
     x,
     y,
     dummy_coeffs,
-    upsilon_params,
+    upsilon_params=None,
     name="background_johnson_2d",
 ):
     name = name
@@ -451,30 +708,12 @@ def build_background_johnson_2d(
     for v in coeff_vars_x:
         coeff_list_x.add(v)
 
-    upsilon_frac = RooRealVar(f"{name}_upsilon_frac", f"{name}_upsilon_frac", 0.2, 0, 1)
-    bkg_x_lin = RooChebychev(
-        f"{name}_chebchev_x", "Chebychev background 2D - x", x, coeff_list_x
-    )
-
-    upsilon_model, _, _, _ = build_upsilon_model(x, sufix=name)
-
-    set_pdf_parameters(
-        upsilon_model,
-        upsilon_params,
+    bkg_x, x_keepalive = _build_x_background_component(
         x,
-        make_constant=True,
-        sufix=name,
-    )
-
-    bkg_x = RooAddPdf(
-        f"{name}_x",
-        "Chebychev + upsilon model background 2D - x",
-        RooArgList(
-            upsilon_model,
-            bkg_x_lin,
-        ),
-        RooArgList(upsilon_frac),
-        kTRUE,
+        name,
+        coeff_vars_x,
+        coeff_list_x,
+        upsilon_params,
     )
 
     # Create parameters for the Johnson PDF
@@ -500,17 +739,12 @@ def build_background_johnson_2d(
     )
 
     bkg._keepalive = {
-        "coeff_vars_x": coeff_vars_x,
-        "coeff_list_x": coeff_list_x,
+        **x_keepalive,
         "mu": mu,
         "lam": lam,
         "gamma": gamma,
         "delta": delta,
-        "bkg_x": bkg_x,
-        "bkg_x_lin": bkg_x_lin,
         "bkg_y": bkg_y,
-        "upsilon_frac": upsilon_frac,
-        "upsilon_model": upsilon_model,
     }
 
     return bkg
@@ -520,7 +754,7 @@ def build_background_power_law_2d(
     x,
     y,
     exponents,
-    upsilon_params,
+    upsilon_params=None,
     name="background_power_law_2d",
     exponents_bounds=(-10.0, +10.0),
 ):
@@ -542,29 +776,12 @@ def build_background_power_law_2d(
     for v in coeff_vars_x:
         coeff_list_x.add(v)
 
-    upsilon_frac = RooRealVar(f"{name}_upsilon_frac", f"{name}_upsilon_frac", 0.2, 0, 1)
-    bkg_x_lin = RooChebychev(
-        f"{name}_x", "Chebychev background 2D - x", x, coeff_list_x
-    )
-
-    upsilon_model, _, _, _ = build_upsilon_model(x, sufix=name)
-
-    set_pdf_parameters(
-        upsilon_model,
-        upsilon_params,
+    bkg_x, x_keepalive = _build_x_background_component(
         x,
-        make_constant=True,
-        sufix=name,
-    )
-    bkg_x = RooAddPdf(
-        f"{name}_x",
-        "Chebychev + upsilon model background 2D - x",
-        RooArgList(
-            upsilon_model,
-            bkg_x_lin,
-        ),
-        RooArgList(upsilon_frac),
-        kTRUE,
+        name,
+        coeff_vars_x,
+        coeff_list_x,
+        upsilon_params,
     )
 
     formula = _get_power_law_formula(exponents).replace("x", "boson_mass")
@@ -601,15 +818,10 @@ def build_background_power_law_2d(
     )
 
     bkg._keepalive = {
-        "coeff_vars_x": coeff_vars_x,
-        "coeff_list_x": coeff_list_x,
+        **x_keepalive,
         "a_vars_y": a_vars_y,
         "args_y": args_y,
-        "bkg_x": bkg_x,
-        "bkg_x_lin": bkg_x_lin,
         "bkg_y": bkg_y,
-        "upsilon_frac": upsilon_frac,
-        "upsilon_model": upsilon_model,
     }
     return bkg
 
@@ -662,7 +874,7 @@ def build_background_models_2d(
     pdf_family: BkgPdfFamily,
     x,
     y,
-    upsilon_params,
+    upsilon_params=None,
     n_coeffs: int = 8,
     min_n_coeffs: int = 1,
     initial_coeff=None,

@@ -26,6 +26,7 @@ from .bkg_model import (
     build_background_cheb_2d,
     build_background_models_2d,
     compute_winner_and_start_indexes,
+    update_fit_quality,
 )
 from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
@@ -339,6 +340,9 @@ def run_fit_2d_data(args: Namespace):
                 )
                 test_bkg_pdf.fit_res.Print("v")
                 print("... done fitting.")
+                test_bkg_pdf.n_float_params = (
+                    test_bkg_pdf.fit_res.floatParsFinal().getSize()
+                )
 
                 os.system(
                     f"mkdir -p plots/fit_2d_data/control/{str(test_bkg_pdf.pdf_family).replace(' ', '_')}"
@@ -353,10 +357,12 @@ def run_fit_2d_data(args: Namespace):
                     pdf_family=family,
                     nbins=args.nbins,
                     is_data=True,
+                    nfloatpars=test_bkg_pdf.n_float_params,
                 )
 
                 # test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(data_sb).getVal()
                 test_bkg_pdf.NLL = eff_pdf.createNLL(data_sb).getVal()
+                update_fit_quality(test_bkg_pdf)
 
             print("\n\n=== Test Background-only fit (sidebands) ===")
             for i, test_bkg_pdf in enumerate(test_bkg_pdfs[family]):
@@ -367,7 +373,10 @@ def run_fit_2d_data(args: Namespace):
                 print(test_bkg_pdf)
 
             # compute winner function
-            start, winner = compute_winner_and_start_indexes(test_bkg_pdfs[family])
+            start, winner = compute_winner_and_start_indexes(
+                test_bkg_pdfs[family],
+                strict_mode=not args.relax_strict_mode,
+            )
             winners[family] = winner
 
             # Plots
