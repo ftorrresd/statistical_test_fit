@@ -273,7 +273,7 @@ def run_fit_2d(args: Namespace):
             # compute winner function
             start, winner = compute_winner_and_start_indexes(
                 test_bkg_pdfs[family],
-                strict_mode=not args.relax_strict_mode,
+                strict_mode=args.strict_mode,
             )
 
             # Plots

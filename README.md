@@ -69,7 +69,8 @@ Useful examples:
 python3 pseudodata.py --fits-to-run 1d
 python3 pseudodata.py --fits-to-run 2d
 python3 pseudodata.py --fits-to-run all --events 20000 --seed 42 --nbins 60
-python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1 --relax-strict-mode
+python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1
+python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1 --strict-mode
 ```
 
 CLI options:
@@ -79,7 +80,7 @@ CLI options:
 - `--cheb STR`: comma-separated Chebychev coefficients for the generated 1D background; default is `-0.2,0.2,-0.1`
 - `-s, --seed INT`: random seed for RooFit generation
 - `--nbins INT`: binning used in control and summary plots; default is `60`
-- `--relax-strict-mode`: if strict family selection fails, fall back to the best fit-quality-passing candidate instead of aborting
+- `--strict-mode`: abort if a family fails strict selection; the default is relaxed fallback to the best fit-quality-passing candidate
 
 ### Real-Data Workflow
 
@@ -94,21 +95,25 @@ Useful examples:
 ```bash
 python3 realdata.py --use-cache
 python3 realdata.py --nbins 60
-python3 realdata.py --use-cache --relax-strict-mode
+python3 realdata.py --use-cache --strict-mode
 ```
 
 CLI options:
 
 - `--nbins INT`: binning used in control and summary plots; default is `60`
 - `--use-cache`: reuse cached fit parameters and normalization JSON files instead of recomputing them
-- `--relax-strict-mode`: if strict family selection fails, fall back to the best fit-quality-passing candidate instead of aborting
+- `--strict-mode`: abort if a family fails strict selection; the default is relaxed fallback to the best fit-quality-passing candidate
 
 ## Workflow Notes
 
 - Both driver scripts delete files under `plots/` at startup, keeping only `.gitkeep`.
 - `realdata.py` deletes repo-root `*.json` cache files unless `--use-cache` is passed.
-- Strict model-family selection is enabled by default. A bad family raises a `RuntimeError` after printing a large warning block.
-- `--relax-strict-mode` keeps the workflow moving by selecting the best fit-quality-passing candidate even if no candidate passes the chi-square threshold.
+- `--use-cache` only affects the JSON-backed parameter reuse. The real-data workflow still rebuilds the resonant Higgs/Z workspaces and their plots on every run.
+- `dimuon_non_correlated()` snapshots `inputs/selected_Run2_dimuon_non_correlated_renamed_branch.root` on every real-data run, so `inputs/` is not effectively read-only.
+- Relaxed model-family selection is enabled by default, so a bad family falls back to the best fit-quality-passing candidate after printing a large warning block.
+- `--strict-mode` restores abort-on-failure behavior and raises a `RuntimeError` when a family cannot satisfy strict selection.
+- `fit_2d_data.py` builds the final `RooMultiPdf` in memory and prints the workspace, but does not write that final workspace / multipdf to disk.
+- The 2D toy flow currently generates pure background: `fit_2d.py` passes `0.0` Z and Higgs signal fractions into the generation model even though nominal `z_sigfrac` / `h_sigfrac` values are defined nearby.
 
 ## Outputs
 
@@ -122,6 +127,7 @@ Typical outputs include:
 - `resonant_background_fit_ZGamma.root`
 
 The real-data workflow also produces and reuses normalization and resonant-background cache files in the repo root.
+Those caches include `NormParams_CR*.json`, `resonant_background_model_Z_params.json`, and `upsilon_model_params.json`.
 
 ## Verification
 
@@ -134,10 +140,10 @@ python3 -m compileall pseudodata.py realdata.py statistical_test_fit
 Focused smoke commands:
 
 ```bash
-python3 pseudodata.py --fits-to-run 1d --events 1000 --seed 1 --relax-strict-mode
-python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1 --relax-strict-mode
-python3 pseudodata.py --events 5000 --seed 42 --nbins 60 --relax-strict-mode
-python3 realdata.py --use-cache --relax-strict-mode
+python3 pseudodata.py --fits-to-run 1d --events 1000 --seed 1
+python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1
+python3 pseudodata.py --events 5000 --seed 42 --nbins 60
+python3 realdata.py --use-cache
 ```
 
 ## Environment Notes

@@ -23,10 +23,10 @@ def main():
     parser.add_argument("--nbins", type=int, default=60)
     parser.add_argument("--use-cache", default=False, action="store_true")
     parser.add_argument(
-        "--relax-strict-mode",
+        "--strict-mode",
         action="store_true",
         default=False,
-        help="Allow relaxed model selection fallback instead of aborting when a family fails strict selection.",
+        help="Abort when a family fails strict selection instead of using the default relaxed fallback.",
     )
 
     args = parser.parse_args()
