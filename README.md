@@ -9,7 +9,7 @@ There are four top-level workflows:
 - `pseudodata.py`: toy studies for 1D and 2D background-model selection
 - `signal.py`: standalone signal-model fits for the six Run2 `H/Z -> Upsilon(nS) + gamma` samples
 - `resonant_background.py`: standalone resonant-background and control-region normalization workflow
-- `realdata.py`: real-data dimuon fit plus 2D sideband workflow with final `RooMultiPdf` construction
+- `non_resonant_background.py`: renamed from `realdata.py`; runs the dimuon fit plus the real-data non-resonant sideband workflow and final `RooMultiPdf` construction
 
 There is no `main.py` in this repository.
 
@@ -132,20 +132,20 @@ CLI options:
 - `--nbins INT`: binning used in the saved resonant-background plots; default is `60`
 - `--use-cache`: reuse `resonant_background_model_Z_params.json` and `NormParams_CR*.json` instead of recomputing them
 
-### Real-Data Workflow
+### Non-Resonant Background Workflow
 
 Default run:
 
 ```bash
-python3 realdata.py
+python3 non_resonant_background.py
 ```
 
 Useful examples:
 
 ```bash
-python3 realdata.py --use-cache
-python3 realdata.py --nbins 60
-python3 realdata.py --use-cache --strict-mode
+python3 non_resonant_background.py --use-cache
+python3 non_resonant_background.py --nbins 60
+python3 non_resonant_background.py --use-cache --strict-mode
 ```
 
 CLI options:
@@ -154,23 +154,23 @@ CLI options:
 - `--use-cache`: reuse cached dimuon fit parameters (`upsilon_model_params.json`) instead of recomputing them
 - `--strict-mode`: abort if a family fails strict selection; the default is relaxed fallback to the best fit-quality-passing candidate
 
-`realdata.py` now only runs the real-data pieces:
+`non_resonant_background.py` is the renamed `realdata.py` entrypoint and now only runs the real-data pieces:
 
 1. dimuon non-correlated fit
 2. real-data sideband fit and `RooMultiPdf` construction
 
-Signal and resonant-background preparation are standalone workflows and are no longer called by `realdata.py`:
+Signal and resonant-background preparation are standalone workflows and are no longer called by `non_resonant_background.py`:
 
 - `python3 signal.py`
 - `python3 resonant_background.py --use-cache`
 
 ## Workflow Notes
 
-- `pseudodata.py` and `realdata.py` delete files under `plots/` at startup, keeping only `.gitkeep`.
+- `pseudodata.py` and `non_resonant_background.py` delete files under `plots/` at startup, keeping only `.gitkeep`.
 - `signal.py` only clears `plots/signal_fit/`.
 - `resonant_background.py` only clears `plots/resonant_background/`.
-- `realdata.py` deletes repo-root `*.json` cache files unless `--use-cache` is passed.
-- `--use-cache` on `realdata.py` now only affects the dimuon JSON-backed parameter reuse (`upsilon_model_params.json`).
+- `non_resonant_background.py` deletes repo-root `*.json` cache files unless `--use-cache` is passed.
+- `--use-cache` on `non_resonant_background.py` now only affects the dimuon JSON-backed parameter reuse (`upsilon_model_params.json`).
 - `dimuon_non_correlated()` snapshots `inputs/selected_Run2_dimuon_non_correlated_renamed_branch.root` on every real-data run, so `inputs/` is not effectively read-only.
 - Relaxed model-family selection is enabled by default, so a bad family falls back to the best fit-quality-passing candidate after printing a large warning block.
 - `--strict-mode` restores abort-on-failure behavior and raises a `RuntimeError` when a family cannot satisfy strict selection.
@@ -196,7 +196,7 @@ Typical outputs include:
 - `resonant_background_fit_HiggsDalitz.root`
 - `resonant_background_fit_ZGamma.root`
 
-`realdata.py` only produces and reuses the dimuon cache in the repo root:
+`non_resonant_background.py` only produces and reuses the dimuon cache in the repo root:
 
 - `upsilon_model_params.json`
 
@@ -205,7 +205,7 @@ Typical outputs include:
 Minimal syntax check:
 
 ```bash
-python3 -m compileall pseudodata.py realdata.py signal.py resonant_background.py statistical_test_fit
+python3 -m compileall pseudodata.py non_resonant_background.py signal.py resonant_background.py statistical_test_fit
 ```
 
 Focused smoke commands:

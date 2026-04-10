@@ -18,7 +18,7 @@ RooMsgService.instance().setGlobalKillBelow(RooFit.WARNING)
 def main():
     # Set up the argument parser
     parser = argparse.ArgumentParser(
-        description="Background-only RooFit with a blinded signal region on real Data."
+        description="Non-resonant background RooFit with a blinded signal region on real data."
     )
     parser.add_argument("--nbins", type=int, default=60)
     parser.add_argument("--use-cache", default=False, action="store_true")
