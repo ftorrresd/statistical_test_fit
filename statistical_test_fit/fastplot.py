@@ -76,6 +76,7 @@ def fastplot(
     lw=2,
     line_shade=0,
     data_range=None,
+    plot_range=None,
     y_min=0,
     y_max=-999,
     is_data=True,
@@ -133,7 +134,10 @@ def fastplot(
     # nbins = get_optimal_bin_size(data.numEntries(), round_bins) if nbins is None else nbins
     # if isinstance(data, ROOT.RooDataHist):
     #     nbins = observable.getBins()
-    frame = observable.frame(ROOT.RooFit.Title("Fit Result"), ROOT.RooFit.Bins(nbins))
+    frame_args = [ROOT.RooFit.Title("Fit Result"), ROOT.RooFit.Bins(nbins)]
+    if plot_range is not None:
+        frame_args.append(ROOT.RooFit.Range(float(plot_range[0]), float(plot_range[1])))
+    frame = observable.frame(*frame_args)
 
     if isinstance(legend, list):
         assert len(legend) == 4, "Please provide four coordinates for the legend"

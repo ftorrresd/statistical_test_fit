@@ -1,5 +1,7 @@
+from argparse import Namespace
 from dataclasses import dataclass, field
 import json
+import os
 from enum import Enum
 from pprint import pprint
 
@@ -17,10 +19,23 @@ from ROOT import (  # type: ignore
 )
 
 from .fastplot import fastplot
+from .mass_ranges import (
+    BOSON_MASS_LOWER,
+    BOSON_MASS_UPPER,
+    RESONANT_CR_UPSILON_MASS_LOWER,
+    RESONANT_CR_UPSILON_MASS_UPPER,
+    UPSILON_MASS_LOWER,
+    UPSILON_MASS_UPPER,
+    get_signal_boson_plot_range,
+)
+from .normalization_fit import fit_and_plot
 from .ws_helper import *
 
 
-def build_resonant_background_Higgs_ws():
+PLOT_DIR = "plots/resonant_background"
+
+
+def build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=80):
     """
     Resonant Background Modeling
     """
@@ -33,7 +48,7 @@ def build_resonant_background_Higgs_ws():
 
     w.factory(
         "RooDoubleCB::resonant_background_model_Higgs_boson("
-        "boson_mass[57, 200], "
+        f"boson_mass[{BOSON_MASS_LOWER}, {BOSON_MASS_UPPER}], "
         "mean_boson[125, 57, 200], "
         "sigma_boson[2, 0.5, 4],"
         "alpha1_upsilon[3, 0, 10],"
@@ -45,7 +60,7 @@ def build_resonant_background_Higgs_ws():
 
     # upsilon model
     w.factory(
-        "RooBernstein::resonant_background_model_Higgs_upsilon(upsilon_mass[8, 12],{1,p1[5, 0, 10]})"
+        f"RooBernstein::resonant_background_model_Higgs_upsilon(upsilon_mass[{UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],{{1,p1[5, 0, 10]}})"
     )
 
     # 2D model
@@ -73,7 +88,6 @@ def build_resonant_background_Higgs_ws():
 
     # plot data the and the pdf
     print("\n\n--> Saving plot ")
-    nBins = 80
     w.var("boson_mass").SetTitle(r"m_{#mu#mu#gamma}")
     w.var("boson_mass").setUnit(r"GeV")
     w.var("upsilon_mass").SetTitle(r"m_{#mu#mu}")
@@ -87,10 +101,11 @@ def build_resonant_background_Higgs_ws():
         w.pdf("resonant_background_model_Higgs"),
         data,
         w.var("boson_mass"),
-        "plots/fit_2d_data/resonant_background_fit_HiggsDalitz_MC_m_mumugamma.pdf",
-        nbins=nBins,
+        f"{plot_dir}/resonant_background_fit_HiggsDalitz_MC_m_mumugamma.pdf",
+        nbins=nbins,
         legend=[0.6, 0.6, 0.9, 0.92],  # legend=[0.2, 0.6, 0.5, 0.92], #type: ignore
         is_data=False,
+        plot_range=get_signal_boson_plot_range("H"),
     )
 
     # plot upsilon mass fit
@@ -98,14 +113,14 @@ def build_resonant_background_Higgs_ws():
         w.pdf("resonant_background_model_Higgs"),
         data,
         w.var("upsilon_mass"),
-        "plots/fit_2d_data/resonant_background_fit_HiggsDalitz_MC_m_mumu.pdf",
+        f"{plot_dir}/resonant_background_fit_HiggsDalitz_MC_m_mumu.pdf",
         # components=[
         #             (upsilon_1S, 10),
         #             (upsilon_2S, 10),
         #             (upsilon_3S, 10),
         #             (background, 20)
         #             ],
-        nbins=nBins,
+        nbins=nbins,
         legend=[0.2, 0.7, 0.53, 0.9],  # legend=[0.6, 0.2, 0.93, 0.4], #type: ignore
         is_data=False,
     )
@@ -121,7 +136,7 @@ def build_resonant_background_Higgs_ws():
     w.SaveAs("resonant_background_fit_HiggsDalitz.root")
 
 
-def build_resonant_background_Z_ws():
+def build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=80):
     """
     Resonant Background Modeling
     """
@@ -131,8 +146,8 @@ def build_resonant_background_Z_ws():
     w = RooWorkspace("resonant_background_Z_ws")
 
     w.factory("weight[-100,100]")
-    w.factory("upsilon_mass[8, 12]")  # name[value, min, max]
-    w.factory("boson_mass[57, 200]")  # name[value, min, max]
+    w.factory(f"upsilon_mass[{UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}]")
+    w.factory(f"boson_mass[{BOSON_MASS_LOWER}, {BOSON_MASS_UPPER}]")
 
     resonant_background_model_Z = build_resonant_background_modeling_Z(
         w.var("boson_mass"),
@@ -141,7 +156,7 @@ def build_resonant_background_Z_ws():
 
     # upsilon model
     w.factory(
-        "RooBernstein::resonant_background_model_Z_upsilon(upsilon_mass[8, 12],{1,p1[5, 0, 10]})"
+        f"RooBernstein::resonant_background_model_Z_upsilon(upsilon_mass[{UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],{{1,p1[5, 0, 10]}})"
     )
 
     # 2D model
@@ -167,7 +182,6 @@ def build_resonant_background_Z_ws():
 
     # plot data the and the pdf
     print("\n\n--> Saving plot ")
-    nBins = 80
     w.var("boson_mass").SetTitle(r"m_{#mu#mu#gamma}")
     w.var("boson_mass").setUnit(r"GeV")
     w.var("upsilon_mass").SetTitle(r"m_{#mu#mu}")
@@ -181,10 +195,11 @@ def build_resonant_background_Z_ws():
         w.pdf("resonant_background_model_Z"),
         data,
         w.var("boson_mass"),
-        "plots/fit_2d_data/resonant_background_fit_Z_MC_m_mumugamma.pdf",
-        nbins=nBins,
+        f"{plot_dir}/resonant_background_fit_Z_MC_m_mumugamma.pdf",
+        nbins=nbins,
         legend=[0.6, 0.6, 0.9, 0.92],  # legend=[0.2, 0.6, 0.5, 0.92], #type: ignore
         is_data=False,
+        plot_range=get_signal_boson_plot_range("Z"),
     )
 
     # plot upsilon mass fit
@@ -192,14 +207,14 @@ def build_resonant_background_Z_ws():
         w.pdf("resonant_background_model_Z"),
         data,
         w.var("upsilon_mass"),
-        "plots/fit_2d_data/resonant_background_fit_Z_MC_m_mumu.pdf",
+        f"{plot_dir}/resonant_background_fit_Z_MC_m_mumu.pdf",
         # components=[
         #             (upsilon_1S, 10),
         #             (upsilon_2S, 10),
         #             (upsilon_3S, 10),
         #             (background, 20)
         #             ],
-        nbins=nBins,
+        nbins=nbins,
         legend=[0.2, 0.7, 0.53, 0.9],  # legend=[0.6, 0.2, 0.93, 0.4], #type: ignore
         is_data=False,
     )
@@ -284,7 +299,7 @@ def build_resonant_background_modeling_Z(boson_mass, sufix=None):
     return resonant_background_model_ZG_boson
 
 
-def resonant_background_modeling_Z(load_from_cache=False):
+def resonant_background_modeling_Z(load_from_cache=False, plot_dir=PLOT_DIR, nbins=80):
     """
     Resonant Background Modeling
     """
@@ -299,8 +314,8 @@ def resonant_background_modeling_Z(load_from_cache=False):
     w = RooWorkspace("resonant_background_ws")
 
     w.factory("weight[-100,100]")
-    w.factory("upsilon_mass[8, 12]")  # name[value, min, max]
-    w.factory("boson_mass[57, 200]")  # name[value, min, max]
+    w.factory(f"upsilon_mass[{UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}]")
+    w.factory(f"boson_mass[{BOSON_MASS_LOWER}, {BOSON_MASS_UPPER}]")
 
     # load data
     f = TFile.Open(input_file)
@@ -334,7 +349,6 @@ def resonant_background_modeling_Z(load_from_cache=False):
 
     # plot data the and the pdf
     print("\n\n--> Saving plot ")
-    nBins = 80
     w.var("boson_mass").SetTitle(r"m_{#mu#mu#gamma}")
     w.var("boson_mass").setUnit(r"GeV")
     w.var("upsilon_mass").SetTitle(r"m_{#mu#mu}")
@@ -345,14 +359,15 @@ def resonant_background_modeling_Z(load_from_cache=False):
         w.pdf("resonant_background_model_ZG_boson"),
         w.data("resonant_background_data"),
         w.var("boson_mass"),
-        "plots/fit_2d_data/resonant_background_fit_ZG_MC_m_mumugamma.pdf",
+        f"{plot_dir}/resonant_background_fit_ZG_MC_m_mumugamma.pdf",
         # components=[
         #             (w.pdf("resonant_background_model_boson_cb"), 10),
         #             (w.pdf("resonant_background_model_boson_gauss"), 10),
         #             ],
-        nbins=nBins,
+        nbins=nbins,
         legend=[0.6, 0.6, 0.9, 0.92],  # legend=[0.6, 0.6, 0.93, 0.92], #type:ignore
         is_data=False,
+        plot_range=get_signal_boson_plot_range("Z"),
     )
 
     print("data.sumEntries(): ", data.sumEntries())
@@ -404,7 +419,11 @@ class ControlRegion(Enum):
 
 
 def get_normalization_from_CR(
-    boson_parameters, control_region: ControlRegion, load_from_cache=False
+    boson_parameters,
+    control_region: ControlRegion,
+    load_from_cache=False,
+    plot_dir=PLOT_DIR,
+    nbins=40,
 ):
     """Resonant Background Modeling"""
     cached_norm_para = None
@@ -421,7 +440,7 @@ def get_normalization_from_CR(
     ### resonant model
     w.factory(
         "RooDoubleCB::resonant_background_model_res("
-        "boson_mass[57, 200], "
+        f"boson_mass[{BOSON_MASS_LOWER}, {BOSON_MASS_UPPER}], "
         "" + str(boson_parameters["resonant_background_model_ZG_mean_boson"]) + ", "
         "" + str(boson_parameters["resonant_background_model_ZG_sigma_boson"]) + ", "
         "" + str(boson_parameters["resonant_background_model_ZG_alpha1_boson"]) + ", "
@@ -447,7 +466,9 @@ def get_normalization_from_CR(
 
     w.factory("weight[-100,100]")
 
-    w.factory("upsilon_mass[4.,35.]")
+    w.factory(
+        f"upsilon_mass[{RESONANT_CR_UPSILON_MASS_LOWER},{RESONANT_CR_UPSILON_MASS_UPPER}]"
+    )
 
     # load data
     f = TFile.Open(input_file)
@@ -460,7 +481,7 @@ def get_normalization_from_CR(
     )
 
     data = data_.reduce(
-        f"(upsilon_mass < {control_region.value.upper} && upsilon_mass >= {control_region.value.lower} && boson_mass>57. && boson_mass<200.)"
+        f"(upsilon_mass < {control_region.value.upper} && upsilon_mass >= {control_region.value.lower} && boson_mass>{BOSON_MASS_LOWER} && boson_mass<{BOSON_MASS_UPPER})"
     )
     # data.Print()
     getattr(w, "import")(data)
@@ -490,7 +511,6 @@ def get_normalization_from_CR(
 
     # plot data the and the pdf
     print("\n\n--> Saving plot for ")
-    nBins = 40
     w.var("boson_mass").SetTitle(r"m_{#mu#mu#gamma}")
     w.var("boson_mass").setUnit(r"GeV")
 
@@ -499,7 +519,7 @@ def get_normalization_from_CR(
         w.pdf("resonant_background_model"),
         w.data("resonant_background_data"),
         w.var("boson_mass"),
-        f"plots/fit_2d_data/resonant_background_MC_data_{control_region.value.name}_fit_m_mumugamma.pdf",
+        f"{plot_dir}/resonant_background_MC_data_{control_region.value.name}_fit_m_mumugamma.pdf",
         components=[
             (w.pdf("resonant_background_model_res"), "Resonant component: RooDoubleCB"),
             (
@@ -507,7 +527,7 @@ def get_normalization_from_CR(
                 "Non-resonant component: RooJohnson",
             ),
         ],
-        nbins=nBins,
+        nbins=nbins,
         legend=[0.6, 0.6, 0.93, 0.92],  # type: ignore
         is_data=True,
         model_legend_name="Total model: RooAddPdf",
@@ -523,3 +543,52 @@ def get_normalization_from_CR(
         json.dump(NormPara, f, indent=4)
 
     return NormPara
+
+
+def run_resonant_background(args: Namespace):
+    os.makedirs(PLOT_DIR, exist_ok=True)
+
+    nbins = getattr(args, "nbins", 60)
+    load_from_cache = getattr(args, "use_cache", False)
+
+    build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=nbins)
+    build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=nbins)
+
+    z_resonant_bkg_parameters = resonant_background_modeling_Z(
+        load_from_cache=load_from_cache,
+        plot_dir=PLOT_DIR,
+        nbins=nbins,
+    )
+
+    normalizations_from_CR = [
+        get_normalization_from_CR(
+            z_resonant_bkg_parameters,
+            control_region,
+            load_from_cache=load_from_cache,
+            plot_dir=PLOT_DIR,
+            nbins=nbins,
+        )
+        for control_region in ControlRegion
+    ]
+
+    normalization_extrapolation = fit_and_plot(
+        [c.value.midpoint for c in ControlRegion],
+        [r["normalization"] for r in normalizations_from_CR],
+        [r["normalization_unc"] for r in normalizations_from_CR],
+        x0=10.0,
+        output_pdf=f"{PLOT_DIR}/normalization_extrapolation.pdf",
+        x_lines=[
+            ControlRegion.CR1.value.upper,
+            ControlRegion.CR2.value.lower,
+            ControlRegion.CR2.value.upper,
+            ControlRegion.CR3.value.upper,
+        ],
+        point_labels=["CR1", "CR2", "CR3", "CR4"],
+    )
+    print(f"Extrapolated normalization: {normalization_extrapolation}")
+
+    return {
+        "z_boson_params": z_resonant_bkg_parameters,
+        "normalizations_from_cr": normalizations_from_CR,
+        "normalization_extrapolation": normalization_extrapolation,
+    }

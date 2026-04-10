@@ -5,7 +5,6 @@ from functools import wraps
 from argparse import Namespace
 
 from ROOT import (  # type: ignore
-    RooAddPdf,  # type: ignore
     RooArgList,  # type: ignore
     RooArgSet,  # type: ignore
     RooCategory,  # type: ignore
@@ -13,9 +12,7 @@ from ROOT import (  # type: ignore
     RooEffProd,  # type: ignore
     RooFit,  # type: ignore
     RooFormulaVar,  # type: ignore
-    RooGaussian,  # type: ignore
     RooMultiPdf,  # type: ignore
-    RooProdPdf,  # type: ignore
     RooRealVar,  # type: ignore
     RooWorkspace,  # type: ignore
     TFile,  # type: ignore
@@ -31,71 +28,19 @@ from .bkg_model import (
 from .bkg_pdf_families import BkgPdfFamily
 from .chi2_test import ChiSquareResult
 from .dimuon_non_correlated import dimuon_non_correlated
-from .make_plots import DataType, ProjDim, make_plots_2d
-from .normalization_fit import fit_and_plot
-from .resonant_bkg_modeling import (
-    ControlRegion,
-    get_normalization_from_CR,
-    build_resonant_background_Higgs_ws,
-    build_resonant_background_Z_ws,
-    resonant_background_modeling_Z,
+from .mass_ranges import (
+    BOSON_MASS_LOWER,
+    BOSON_MASS_UPPER,
+    LEFT_SIDEBAND_LOWER,
+    LEFT_SIDEBAND_UPPER,
+    MIDDLE_SIDEBAND_LOWER,
+    MIDDLE_SIDEBAND_UPPER,
+    RIGHT_SIDEBAND_LOWER,
+    RIGHT_SIDEBAND_UPPER,
+    UPSILON_MASS_LOWER,
+    UPSILON_MASS_UPPER,
 )
-from .resonant_bkg_modeling import build_resonant_background_modeling_Z
-from .ws_helper import set_pdf_parameters
-
-
-def get_z_resonant_frac(
-    *,
-    extrapolation,
-    n_total,
-    n_sb,
-    Z_resonant_bkg_parameters,
-    left_lower,
-    left_upper,
-    middle_lower,
-    middle_upper,
-    right_lower,
-    right_upper,
-) -> float:
-    name = "NORM"
-
-    _boson_mass = RooRealVar("boson_mass", "boson_mass", left_lower, right_upper)
-    _boson_mass.setRange("LEFT", left_lower, left_upper)
-    _boson_mass.setRange("MIDDLE", middle_lower, middle_upper)
-    _boson_mass.setRange("RIGHT", right_lower, right_upper)
-    _boson_mass.setRange("FULL", left_lower, right_upper)
-
-    resonant_background_model_Z = build_resonant_background_modeling_Z(
-        _boson_mass, sufix=name
-    )
-    set_pdf_parameters(
-        resonant_background_model_Z,
-        Z_resonant_bkg_parameters,
-        _boson_mass,
-        make_constant=True,
-        sufix=name,
-    )
-
-    integral_sb = resonant_background_model_Z.createIntegral(
-        RooArgSet(_boson_mass),
-        RooFit.Range("LEFT,MIDDLE,RIGHT"),
-        RooFit.NormSet(RooArgSet(_boson_mass)),  # ensures normalization
-    )
-    print("Normalized integral over SBs:", integral_sb.getVal())
-    print(
-        "Total resonant events over SBs (SB integral x extrapolation):",
-        integral_sb.getVal() * extrapolation,
-    )
-    print(
-        "SB integral x extrapolation / n_total:",
-        integral_sb.getVal() * extrapolation / n_total,
-    )
-    print(
-        "SB integral x extrapolation / n_sb:",
-        integral_sb.getVal() * extrapolation / n_sb,
-    )
-
-    return integral_sb.getVal() * extrapolation / n_sb
+from .make_plots import DataType, ProjDim, make_plots_2d
 
 
 def execution_time(func):
@@ -117,24 +62,17 @@ def run_fit_2d_data(args: Namespace):
     w = RooWorkspace("ws")
 
     # Limits
-    upsilon_mass_lower = 8.0
-    upsilon_mass_upper = 12.0
+    upsilon_mass_lower = UPSILON_MASS_LOWER
+    upsilon_mass_upper = UPSILON_MASS_UPPER
 
-    # left_lower = 50.0
-    left_lower = 57.0
-    # left_upper = 80.0
-    # left_upper = 75.0
-    left_upper = 75.0
+    left_lower = LEFT_SIDEBAND_LOWER
+    left_upper = LEFT_SIDEBAND_UPPER
 
-    # middle_lower = 100.0
-    middle_lower = 105.0
-    middle_upper = 115.0
+    middle_lower = MIDDLE_SIDEBAND_LOWER
+    middle_upper = MIDDLE_SIDEBAND_UPPER
 
-    right_lower = 135.0
-    right_upper = 200.0
-
-    z_sigfrac = 0.05
-    h_sigfrac = 0.05 / 2.0
+    right_lower = RIGHT_SIDEBAND_LOWER
+    right_upper = RIGHT_SIDEBAND_UPPER
 
     outprefix = "bkg_only"
 
@@ -150,60 +88,6 @@ def run_fit_2d_data(args: Namespace):
     pprint(upsilon_params)
     print("\n\n")
 
-    # build higss resonant bkg
-    build_resonant_background_Higgs_ws()
-    build_resonant_background_Z_ws()
-
-    Z_resonant_bkg_parameters = resonant_background_modeling_Z(
-        load_from_cache=LOAD_FROM_CACHE
-    )
-
-    normalizations_from_CR = []
-    normalizations_from_CR.append(
-        get_normalization_from_CR(
-            Z_resonant_bkg_parameters,
-            ControlRegion.CR1,
-            load_from_cache=LOAD_FROM_CACHE,
-        )
-    )
-    normalizations_from_CR.append(
-        get_normalization_from_CR(
-            Z_resonant_bkg_parameters,
-            ControlRegion.CR2,
-            load_from_cache=LOAD_FROM_CACHE,
-        )
-    )
-    normalizations_from_CR.append(
-        get_normalization_from_CR(
-            Z_resonant_bkg_parameters,
-            ControlRegion.CR3,
-            load_from_cache=LOAD_FROM_CACHE,
-        )
-    )
-    normalizations_from_CR.append(
-        get_normalization_from_CR(
-            Z_resonant_bkg_parameters,
-            ControlRegion.CR4,
-            load_from_cache=LOAD_FROM_CACHE,
-        )
-    )
-
-    normalization_extrapolation = fit_and_plot(
-        [c.value.midpoint for c in ControlRegion],
-        [r["normalization"] for r in normalizations_from_CR],
-        [r["normalization_unc"] for r in normalizations_from_CR],
-        x0=10.0,
-        output_pdf="plots/fit_2d_data/normalization_extrapolation.pdf",
-        x_lines=[
-            ControlRegion.CR1.value.upper,
-            ControlRegion.CR2.value.lower,
-            ControlRegion.CR2.value.upper,
-            ControlRegion.CR3.value.upper,
-        ],
-        point_labels=["CR1", "CR2", "CR3", "CR4"],
-    )
-    print(f"Extrapolated normalization: {normalization_extrapolation}")
-
     # Observable
     upsilon_mass = RooRealVar(
         "upsilon_mass", "upsilon_mass", upsilon_mass_lower, upsilon_mass_upper
@@ -211,7 +95,9 @@ def run_fit_2d_data(args: Namespace):
     upsilon_mass.SetTitle("m_{#mu#mu}")  # LaTeX-style title
     upsilon_mass.setUnit("GeV")  # physical unit
 
-    boson_mass = RooRealVar("boson_mass", "boson_mass", left_lower, right_upper)
+    boson_mass = RooRealVar(
+        "boson_mass", "boson_mass", BOSON_MASS_LOWER, BOSON_MASS_UPPER
+    )
     boson_mass.SetTitle("m_{#mu#mu#gamma}")  # LaTeX-style title
     boson_mass.setUnit("GeV")  # physical unit
 
@@ -241,19 +127,6 @@ def run_fit_2d_data(args: Namespace):
     # data_sb = data_full.reduce(RooFit.Cut(cut_expr))
     data_sb = data_full.reduce(RooFit.Cut(cut_expr))
     print(f"Sideband entries: {data_sb.numEntries()} (out of {data_full.numEntries()})")
-
-    _ = get_z_resonant_frac(
-        extrapolation=normalization_extrapolation.y0,
-        n_total=data_full.numEntries(),
-        n_sb=data_sb.numEntries(),
-        Z_resonant_bkg_parameters=Z_resonant_bkg_parameters,
-        left_lower=left_lower,
-        left_upper=left_upper,
-        middle_lower=middle_lower,
-        middle_upper=middle_upper,
-        right_lower=right_lower,
-        right_upper=right_upper,
-    )
 
     test_bkg_pdfs: dict[BkgPdfFamily, list[BkgModel]] = {}
     for family in BkgPdfFamily:

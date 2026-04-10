@@ -4,10 +4,12 @@
 
 This repository contains RooFit-based background studies for `H/Z -> Upsilon(nS) + gamma`.
 
-There are two top-level workflows:
+There are four top-level workflows:
 
 - `pseudodata.py`: toy studies for 1D and 2D background-model selection
-- `realdata.py`: real-data 2D workflow with auxiliary fits and `RooMultiPdf` construction
+- `signal.py`: standalone signal-model fits for the six Run2 `H/Z -> Upsilon(nS) + gamma` samples
+- `resonant_background.py`: standalone resonant-background and control-region normalization workflow
+- `realdata.py`: real-data dimuon fit plus 2D sideband workflow with final `RooMultiPdf` construction
 
 There is no `main.py` in this repository.
 
@@ -82,6 +84,54 @@ CLI options:
 - `--nbins INT`: binning used in control and summary plots; default is `60`
 - `--strict-mode`: abort if a family fails strict selection; the default is relaxed fallback to the best fit-quality-passing candidate
 
+### Signal Workflow
+
+Run the standalone signal-model fits:
+
+```bash
+python3 signal.py
+```
+
+CLI options:
+
+- `--nbins INT`: binning used in the saved signal projection plots; default is `60`
+
+Inputs used for the signal model:
+
+- `inputs/mass_H_HToUps1SG_Run2.root`
+- `inputs/mass_H_HToUps2SG_Run2.root`
+- `inputs/mass_H_HToUps3SG_Run2.root`
+- `inputs/mass_Z_ZToUpsilon1SGamma_Run2.root`
+- `inputs/mass_Z_ZToUpsilon2SGamma_Run2.root`
+- `inputs/mass_Z_ZToUpsilon3SGamma_Run2.root`
+
+The signal RooFit model follows `from_mauricio/HZUpsilonPhotonRun2Statistics/signal_modeling.py` in shape:
+
+- boson: `RooCBShape + Gaussian` combined with `RSUM`
+- upsilon: `RooDoubleCB`
+- full signal model: `PROD(signal_model_boson, signal_model_upsilon)`
+
+This repo uses the existing project ranges for the observables:
+
+- `boson_mass`: `57` to `200` GeV
+- `upsilon_mass`: `8` to `12` GeV
+
+Saved plots are zoomed to more useful windows around the Z/H peak and the selected Upsilon state.
+
+### Resonant-Background Workflow
+
+Run the resonant-background workflow on its own:
+
+```bash
+python3 resonant_background.py
+python3 resonant_background.py --use-cache
+```
+
+CLI options:
+
+- `--nbins INT`: binning used in the saved resonant-background plots; default is `60`
+- `--use-cache`: reuse `resonant_background_model_Z_params.json` and `NormParams_CR*.json` instead of recomputing them
+
 ### Real-Data Workflow
 
 Default run:
@@ -101,14 +151,26 @@ python3 realdata.py --use-cache --strict-mode
 CLI options:
 
 - `--nbins INT`: binning used in control and summary plots; default is `60`
-- `--use-cache`: reuse cached fit parameters and normalization JSON files instead of recomputing them
+- `--use-cache`: reuse cached dimuon fit parameters (`upsilon_model_params.json`) instead of recomputing them
 - `--strict-mode`: abort if a family fails strict selection; the default is relaxed fallback to the best fit-quality-passing candidate
+
+`realdata.py` now only runs the real-data pieces:
+
+1. dimuon non-correlated fit
+2. real-data sideband fit and `RooMultiPdf` construction
+
+Signal and resonant-background preparation are standalone workflows and are no longer called by `realdata.py`:
+
+- `python3 signal.py`
+- `python3 resonant_background.py --use-cache`
 
 ## Workflow Notes
 
-- Both driver scripts delete files under `plots/` at startup, keeping only `.gitkeep`.
+- `pseudodata.py` and `realdata.py` delete files under `plots/` at startup, keeping only `.gitkeep`.
+- `signal.py` only clears `plots/signal_fit/`.
+- `resonant_background.py` only clears `plots/resonant_background/`.
 - `realdata.py` deletes repo-root `*.json` cache files unless `--use-cache` is passed.
-- `--use-cache` only affects the JSON-backed parameter reuse. The real-data workflow still rebuilds the resonant Higgs/Z workspaces and their plots on every run.
+- `--use-cache` on `realdata.py` now only affects the dimuon JSON-backed parameter reuse (`upsilon_model_params.json`).
 - `dimuon_non_correlated()` snapshots `inputs/selected_Run2_dimuon_non_correlated_renamed_branch.root` on every real-data run, so `inputs/` is not effectively read-only.
 - Relaxed model-family selection is enabled by default, so a bad family falls back to the best fit-quality-passing candidate after printing a large warning block.
 - `--strict-mode` restores abort-on-failure behavior and raises a `RuntimeError` when a family cannot satisfy strict selection.
@@ -122,19 +184,28 @@ Typical outputs include:
 - `plots/fit_1d/`
 - `plots/fit_2d/`
 - `plots/fit_2d_data/`
+- `plots/signal_fit/`
+- `plots/resonant_background/`
 - `upsilon_model_params.json`
+- `signal_workspace_H_HToUps1SG_Run2.root`
+- `signal_workspace_H_HToUps2SG_Run2.root`
+- `signal_workspace_H_HToUps3SG_Run2.root`
+- `signal_workspace_Z_ZToUpsilon1SGamma_Run2.root`
+- `signal_workspace_Z_ZToUpsilon2SGamma_Run2.root`
+- `signal_workspace_Z_ZToUpsilon3SGamma_Run2.root`
 - `resonant_background_fit_HiggsDalitz.root`
 - `resonant_background_fit_ZGamma.root`
 
-The real-data workflow also produces and reuses normalization and resonant-background cache files in the repo root.
-Those caches include `NormParams_CR*.json`, `resonant_background_model_Z_params.json`, and `upsilon_model_params.json`.
+`realdata.py` only produces and reuses the dimuon cache in the repo root:
+
+- `upsilon_model_params.json`
 
 ## Verification
 
 Minimal syntax check:
 
 ```bash
-python3 -m compileall pseudodata.py realdata.py statistical_test_fit
+python3 -m compileall pseudodata.py realdata.py signal.py resonant_background.py statistical_test_fit
 ```
 
 Focused smoke commands:
@@ -143,7 +214,8 @@ Focused smoke commands:
 python3 pseudodata.py --fits-to-run 1d --events 1000 --seed 1
 python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1
 python3 pseudodata.py --events 5000 --seed 42 --nbins 60
-python3 realdata.py --use-cache
+python3 signal.py
+python3 resonant_background.py --use-cache
 ```
 
 ## Environment Notes

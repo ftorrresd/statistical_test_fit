@@ -1,4 +1,10 @@
-__all__ = ["run_fit_1d", "run_fit_2d", "run_fit_2d_data"]
+__all__ = [
+    "run_fit_1d",
+    "run_fit_2d",
+    "run_fit_2d_data",
+    "run_signal_modeling",
+    "run_resonant_background",
+]
 
 
 def __getattr__(name):
@@ -16,5 +22,15 @@ def __getattr__(name):
         from .fit_2d_data import run_fit_2d_data
 
         return run_fit_2d_data
+
+    if name == "run_signal_modeling":
+        from .signal_modeling import run_signal_modeling
+
+        return run_signal_modeling
+
+    if name == "run_resonant_background":
+        from .resonant_bkg_modeling import run_resonant_background
+
+        return run_resonant_background
 
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
