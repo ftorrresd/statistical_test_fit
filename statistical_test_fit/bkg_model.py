@@ -331,6 +331,25 @@ def _compute_lrt_pvalue(
     return q, delta_n_float_params, pval
 
 
+def compute_lrt_summary(
+    simple_model: BkgModel,
+    complex_model: BkgModel,
+    tol: float = 1e-6,
+) -> dict[str, Any]:
+    q, delta_n_float_params, pval = _compute_lrt_pvalue(
+        simple_model,
+        complex_model,
+        tol=tol,
+    )
+    assert simple_model.NLL is not None and complex_model.NLL is not None
+    return {
+        "delta_nll": simple_model.NLL - complex_model.NLL,
+        "two_delta_nll": q,
+        "delta_n_float_params": delta_n_float_params,
+        "pvalue": pval,
+    }
+
+
 def compute_winner_and_start_indexes(
     test_bkg_models: list[BkgModel],
     strict_mode: bool = True,

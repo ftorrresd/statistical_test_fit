@@ -1,3 +1,4 @@
+import json
 from pprint import pprint
 import os
 import time
@@ -20,6 +21,7 @@ from ROOT import (  # type: ignore
 
 from .bkg_model import (
     BkgModel,
+    compute_lrt_summary,
     compute_winner_and_start_indexes,
 )
 from .bkg_pdf_families import BkgPdfFamily
@@ -44,6 +46,154 @@ from .non_resonant_parallel import (
     reconstruct_non_resonant_candidate,
 )
 from .parallel_utils import ParallelJob, run_parallel_jobs, run_serial_jobs
+
+
+NON_RESONANT_SUMMARY_PATH = "plots/fit_2d_data/non_resonant_fit_summary.json"
+
+
+def _build_non_resonant_family_summary(
+    family: BkgPdfFamily,
+    test_bkg_pdfs: list[BkgModel],
+    candidate_results,
+    start: int,
+    winner: int,
+    plot_files: dict[str, str],
+):
+    assert len(test_bkg_pdfs) == len(candidate_results)
+
+    candidate_summaries = []
+    for idx, (test_bkg_pdf, candidate_result) in enumerate(
+        zip(test_bkg_pdfs, candidate_results)
+    ):
+        candidate_summaries.append(
+            {
+                "index": idx,
+                "label": candidate_result.spec.label,
+                "model_name": candidate_result.model_name,
+                "pdf_family": family.value,
+                "scan_order": candidate_result.spec.scan_order,
+                "n_params": candidate_result.n_params,
+                "n_float_params": candidate_result.n_float_params,
+                "fit_ok": candidate_result.fit_ok,
+                "fit_quality_reason": candidate_result.fit_quality_reason,
+                "fit_status": candidate_result.fit_status,
+                "fit_cov_qual": candidate_result.fit_cov_qual,
+                "fit_edm": candidate_result.fit_edm,
+                "chi_square": candidate_result.chi_square_result,
+                "NLL": candidate_result.NLL,
+                "params": candidate_result.params_dict,
+                "is_start": idx == start,
+                "is_winner": idx == winner,
+            }
+        )
+
+    lrt_scan = []
+    for idx in range(1, len(test_bkg_pdfs)):
+        simple_model = test_bkg_pdfs[idx - 1]
+        complex_model = test_bkg_pdfs[idx]
+        comparison = {
+            "simple_index": idx - 1,
+            "simple_model_name": simple_model.model.GetName(),
+            "complex_index": idx,
+            "complex_model_name": complex_model.model.GetName(),
+        }
+        try:
+            comparison.update(compute_lrt_summary(simple_model, complex_model))
+        except ValueError as exc:
+            comparison["error"] = str(exc)
+        lrt_scan.append(comparison)
+
+    return {
+        "family": family.value,
+        "family_label": str(family),
+        "plots": plot_files,
+        "selection": {
+            "start_index": start,
+            "start_model_name": candidate_results[start].model_name,
+            "winner_index": winner,
+            "winner_model_name": candidate_results[winner].model_name,
+        },
+        "candidates": candidate_summaries,
+        "lrt_scan": lrt_scan,
+    }
+
+
+def _write_non_resonant_summary(
+    *,
+    args: Namespace,
+    upsilon_params,
+    data_full,
+    data_sb,
+    candidate_results_by_family,
+    test_bkg_pdfs_by_family: dict[BkgPdfFamily, list[BkgModel]],
+    family_summaries,
+):
+    summary = {
+        "workflow": "non_resonant_fit",
+        "summary_path": NON_RESONANT_SUMMARY_PATH,
+        "plots_dir": "plots/fit_2d_data",
+        "input_file": "inputs/mass_Run2.root",
+        "nbins": args.nbins,
+        "workers": getattr(args, "workers", None),
+        "use_cache": bool(args.use_cache),
+        "strict_mode": bool(args.strict_mode),
+        "selection_thresholds": {
+            "chi2_pvalue_min": 0.05,
+            "lrt_pvalue_min": 0.05,
+        },
+        "mass_windows": {
+            "upsilon_mass": {
+                "lower": UPSILON_MASS_LOWER,
+                "upper": UPSILON_MASS_UPPER,
+            },
+            "boson_mass": {
+                "lower": BOSON_MASS_LOWER,
+                "upper": BOSON_MASS_UPPER,
+            },
+            "sidebands": {
+                "left": {
+                    "lower": LEFT_SIDEBAND_LOWER,
+                    "upper": LEFT_SIDEBAND_UPPER,
+                },
+                "middle": {
+                    "lower": MIDDLE_SIDEBAND_LOWER,
+                    "upper": MIDDLE_SIDEBAND_UPPER,
+                },
+                "right": {
+                    "lower": RIGHT_SIDEBAND_LOWER,
+                    "upper": RIGHT_SIDEBAND_UPPER,
+                },
+            },
+        },
+        "plot_style": {
+            "winner_line_style": "solid",
+            "other_candidate_line_style": "dashed",
+        },
+        "entries": {
+            "full": int(data_full.numEntries()),
+            "sidebands": int(data_sb.numEntries()),
+        },
+        "upsilon_model_params": upsilon_params,
+        "families": {},
+    }
+
+    for family in BkgPdfFamily:
+        if len(test_bkg_pdfs_by_family[family]) == 0:
+            continue
+        summary["families"][family.value] = _build_non_resonant_family_summary(
+            family,
+            test_bkg_pdfs_by_family[family],
+            candidate_results_by_family[family],
+            family_summaries[family]["start"],
+            family_summaries[family]["winner"],
+            family_summaries[family]["plots"],
+        )
+
+    os.makedirs(os.path.dirname(NON_RESONANT_SUMMARY_PATH), exist_ok=True)
+    with open(NON_RESONANT_SUMMARY_PATH, "w") as summary_file:
+        json.dump(summary, summary_file, indent=4)
+
+    print(f"\nSaved non-resonant summary to: {NON_RESONANT_SUMMARY_PATH}")
 
 
 def execution_time(func):
@@ -151,8 +301,11 @@ def run_fit_2d_data(args: Namespace):
     print(f"Sideband entries: {data_sb.numEntries()} (out of {data_full.numEntries()})")
 
     test_bkg_pdfs: dict[BkgPdfFamily, list[BkgModel]] = {}
+    candidate_results_by_family = {}
+    family_summaries = {}
     for family in BkgPdfFamily:
         test_bkg_pdfs[family] = []
+        candidate_results_by_family[family] = []
 
     candidate_specs = build_non_resonant_candidate_specs(
         upsilon_params=upsilon_params,
@@ -178,6 +331,7 @@ def run_fit_2d_data(args: Namespace):
 
     for spec in candidate_specs:
         result = candidate_results[spec.key]
+        candidate_results_by_family[spec.pdf_family].append(result)
         test_bkg_pdfs[spec.pdf_family].append(
             reconstruct_non_resonant_candidate(result, upsilon_mass, boson_mass)
         )
@@ -209,6 +363,11 @@ def run_fit_2d_data(args: Namespace):
                 strict_mode=args.strict_mode,
             )
             winners[family] = winner
+            family_summaries[family] = {
+                "start": start,
+                "winner": winner,
+                "plots": {},
+            }
 
             # Plots
             plot_file_name = make_plots_2d(
@@ -235,6 +394,7 @@ def run_fit_2d_data(args: Namespace):
                 # components=[("Z Resonant BKG", test_bkg_pdfs[family][0].model)],
             )
             print(f"\nPlot saved to: {plot_file_name}")
+            family_summaries[family]["plots"]["mumugamma"] = plot_file_name
 
             plot_file_name = make_plots_2d(
                 ProjDim.X,
@@ -259,11 +419,22 @@ def run_fit_2d_data(args: Namespace):
                 winner=winner,
             )
             print(f"\nPlot saved to: {plot_file_name}")
+            family_summaries[family]["plots"]["mumu"] = plot_file_name
 
             # Optional: estimate expected background count in the blinded window (from fitted pdf)
             # Compute integral of background over blind window, normalized over full x.
             boson_mass.setRange("BLIND_LEFT", left_upper, middle_lower)
             boson_mass.setRange("BLIND_RIGHT", middle_upper, right_lower)
+
+    _write_non_resonant_summary(
+        args=args,
+        upsilon_params=upsilon_params,
+        data_full=data_full,
+        data_sb=data_sb,
+        candidate_results_by_family=candidate_results_by_family,
+        test_bkg_pdfs_by_family=test_bkg_pdfs,
+        family_summaries=family_summaries,
+    )
 
     pdf_index = RooCategory("pdfIndex", "pdfIndex")
     getattr(w, "import")(pdf_index)

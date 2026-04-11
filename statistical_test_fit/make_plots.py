@@ -12,6 +12,7 @@ from ROOT import (
     kDashed,  # type: ignore
     kGray,  # type: ignore
     kRed,  # type: ignore
+    kSolid,  # type: ignore
 )
 from typing_extensions import ReadOnly
 
@@ -29,6 +30,13 @@ def _format_model_label(test_bkg_pdf: BkgModel) -> str:
     if test_bkg_pdf.n_float_params is not None:
         label += f" ({test_bkg_pdf.n_float_params} floated)"
     return label
+
+
+def _plot_order(n_candidates: int, winner: Optional[int]) -> list[int]:
+    order = [idx for idx in range(n_candidates) if idx != winner]
+    if winner is not None and 0 <= winner < n_candidates:
+        order.append(winner)
+    return order
 
 
 def get_ROOT_colors(data_type):
@@ -239,22 +247,24 @@ def make_plots_2d(
             )
 
     ROOT_COLORS = get_ROOT_colors(data_type)
-    for idx, test_bkg_pdf in enumerate(test_bkg_pdfs):
-        c = next(ROOT_COLORS)
+    color_by_idx = {idx: next(ROOT_COLORS) for idx in range(len(test_bkg_pdfs))}
+    for idx in _plot_order(len(test_bkg_pdfs), winner):
+        test_bkg_pdf = test_bkg_pdfs[idx]
+        line_style = kSolid if idx == winner else kDashed
         if proj_dim == ProjDim.Y:
             test_bkg_pdf.model.plotOn(
                 frame,
                 RooFit.NormRange("LEFT,MIDDLE,RIGHT"),
                 RooFit.Name(_curve_name_for_model(test_bkg_pdf, idx)),
-                RooFit.LineColor(c),
-                RooFit.LineStyle(kDashed),
+                RooFit.LineColor(color_by_idx[idx]),
+                RooFit.LineStyle(line_style),
             )
         else:
             test_bkg_pdf.model.plotOn(
                 frame,
                 RooFit.Name(_curve_name_for_model(test_bkg_pdf, idx)),
-                RooFit.LineColor(c),
-                RooFit.LineStyle(kDashed),
+                RooFit.LineColor(color_by_idx[idx]),
+                RooFit.LineStyle(line_style),
             )
 
     leg = TLegend(0.4, 0.5, 0.88, 0.88)
