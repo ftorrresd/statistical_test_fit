@@ -2,6 +2,9 @@
 
 from __future__ import print_function
 
+import math
+from enum import Enum
+
 import ROOT
 
 DEFAULT_PALETTE = [
@@ -13,6 +16,12 @@ DEFAULT_PALETTE = [
     ROOT.kYellow,
 ]
 DEFAULT_STYLES = [0, 1001, 3004, 3005, 3009, 3006]
+
+
+class ResidualMode(Enum):
+    PULLS = "pulls"
+    DIFF = "diff"
+    RELATIVE_DIFF = "relative_diff"
 
 
 def set_root_style(font_scale=1.0, label_scale=1.0):
@@ -82,6 +91,7 @@ def fastplot(
     is_data=True,
     model_legend_name="Fit",
     show_residuals=True,
+    residual_mode=ResidualMode.RELATIVE_DIFF,
 ):
     """Generic plot function
 
@@ -129,6 +139,8 @@ def fastplot(
             Range to plot
         show_residuals (bool):
             Draw a residual panel below the main plot
+        residual_mode (ResidualMode):
+            Residual strategy for the lower panel
 
     Todo:
         * Change or remove extra_info
@@ -136,6 +148,9 @@ def fastplot(
     set_root_style(font_scale, label_scale)
     if nbins is None:
         nbins = 60
+
+    if not isinstance(residual_mode, ResidualMode):
+        raise TypeError("residual_mode must be a ResidualMode enum value")
 
     # Use a slightly finer display binning for plotting only.
     plot_nbins = max(nbins + 10, int(round(1.5 * nbins)))
@@ -182,10 +197,69 @@ def fastplot(
         y_values = graph.GetY()
         for i in range(graph.GetN()):
             y = float(y_values[i])
-            if y != y:
+            if not math.isfinite(y):
                 continue
             max_abs = max(max_abs, abs(y))
         return max_abs
+
+    def _build_residual_hist(residual_source):
+        if residual_mode == ResidualMode.PULLS:
+            return residual_source.pullHist(
+                "DataResidual",
+                "ModelResidual",
+                average,
+            )
+
+        residual_hist = residual_source.residHist(
+            "DataResidual",
+            "ModelResidual",
+            False,
+            average,
+        )
+        if residual_mode == ResidualMode.DIFF:
+            return residual_hist
+
+        model_curve = residual_source.getCurve("ModelResidual")
+        if model_curve is None:
+            raise RuntimeError("Could not find model curve for residual panel")
+
+        curve_scale = _max_abs_graph_y(model_curve)
+        min_fit_abs = max(1e-12, 1e-9 * curve_scale)
+        for i in range(residual_hist.GetN() - 1, -1, -1):
+            x = float(residual_hist.GetX()[i])
+            residual_y = float(residual_hist.GetY()[i])
+            fit_y = float(model_curve.Eval(x))
+            if (
+                not math.isfinite(residual_y)
+                or not math.isfinite(fit_y)
+                or abs(fit_y) <= min_fit_abs
+            ):
+                residual_hist.RemovePoint(i)
+                continue
+
+            residual_hist.SetPoint(i, x, residual_y / fit_y)
+            residual_hist.SetPointEYlow(
+                i,
+                residual_hist.GetErrorYlow(i) / abs(fit_y),
+            )
+            residual_hist.SetPointEYhigh(
+                i,
+                residual_hist.GetErrorYhigh(i) / abs(fit_y),
+            )
+
+        return residual_hist
+
+    def _residual_axis_title():
+        if residual_mode == ResidualMode.PULLS:
+            return "(Data - Fit) / #sigma"
+        if residual_mode == ResidualMode.DIFF:
+            return "Data - Fit"
+        return "(Data - Fit) / Fit"
+
+    def _default_residual_extent():
+        if residual_mode == ResidualMode.PULLS:
+            return 3.5
+        return 1.0
 
     # nbins = get_optimal_bin_size(data.numEntries(), round_bins) if nbins is None else nbins
     # if isinstance(data, ROOT.RooDataHist):
@@ -281,11 +355,7 @@ def fastplot(
         _plot_data(residual_source, "DataResidual")
         _plot_model(residual_source, "ModelResidual")
 
-        residual_hist = residual_source.pullHist(
-            "DataResidual",
-            "ModelResidual",
-            average,
-        )
+        residual_hist = _build_residual_hist(residual_source)
         for i in range(residual_hist.GetN()):
             residual_hist.SetPointEXlow(i, bin_half_width)
             residual_hist.SetPointEXhigh(i, bin_half_width)
@@ -293,13 +363,15 @@ def fastplot(
         residual_frame = _build_frame("")
         residual_frame.addPlotable(residual_hist, "PE1")
         residual_frame.SetTitle("")
-        residual_frame.SetYTitle("(Data - Fit) / #sigma")
+        residual_frame.SetYTitle(_residual_axis_title())
         residual_frame.GetYaxis().CenterTitle()
         residual_frame.GetYaxis().SetNdivisions(505)
 
         max_abs_residual = _max_abs_graph_y(residual_hist)
         residual_extent = (
-            max(3.5, 1.15 * max_abs_residual) if max_abs_residual > 0 else 3.5
+            max(_default_residual_extent(), 1.15 * max_abs_residual)
+            if max_abs_residual > 0
+            else _default_residual_extent()
         )
         residual_frame.SetMinimum(-residual_extent)
         residual_frame.SetMaximum(residual_extent)
