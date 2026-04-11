@@ -9,12 +9,14 @@
 - `pseudodata.py` defaults to `--fits-to-run all`, which runs 1D first and 2D second in the same process. Use `--fits-to-run 1d` or `--fits-to-run 2d` when debugging; a 1D failure prevents the 2D step from starting.
 - The top-level scripts only parse args, clear outputs, load ROOT libs, and dispatch into `statistical_test_fit/`. Most real logic lives in `statistical_test_fit/fit_1d.py`, `fit_2d.py`, `fit_2d_data.py`, `signal_modeling.py`, and `resonant_bkg_modeling.py`.
 - `statistical_test_fit/__init__.py` uses lazy `__getattr__` imports on purpose so pseudodata runs do not pull in the heavier real-data stack at import time.
+- `signal.py`, `resonant_background.py`, and `non_resonant_background.py` accept `--workers`; they list planned jobs first and then update a progress bar as each worker finishes.
 
 ## Workflow Gotchas
 - `pseudodata.py` and `non_resonant_background.py` delete all files under `plots/` except `.gitkeep` at startup. `signal.py` only clears `plots/signal_fit/`, and `resonant_background.py` only clears `plots/resonant_background/`.
 - `run_fit_2d_data()` still deletes repo-root `*.json` caches unless `--use-cache` is passed. Use `python3 non_resonant_background.py --use-cache` for iterative work if you want to preserve `upsilon_model_params.json`.
 - Relaxed background-family selection is on by default. Add `--strict-mode` to either driver if a family should abort the run instead of falling back to the best fit-quality-passing candidate.
 - Signal modeling uses the six Run2 files under `inputs/mass_H_HToUps*` and `inputs/mass_Z_ZToUpsilon*`; the signal shapes intentionally mirror `from_mauricio/HZUpsilonPhotonRun2Statistics/signal_modeling.py`, but the observable windows are signal-specific here: Z uses `boson_mass` 70-120, Higgs uses `boson_mass` 100-150, and `upsilon_mass` stays 8-12.
+- The multiprocessing implementation uses `ProcessPoolExecutor` with `spawn`. Worker functions import/configure ROOT inside the worker body; do not move ROOT imports back to module scope in the worker/orchestration helper modules.
 - `non_resonant_background.py` is the renamed `realdata.py` entrypoint. It no longer runs signal modeling or resonant-background modeling; run those explicitly via `python3 signal.py` and `python3 resonant_background.py --use-cache` when needed.
 - Do not run `python3 non_resonant_background.py` unless the user explicitly asks for it; it is intentionally treated as a long-running manual workflow.
 - `dimuon_non_correlated()` snapshots `inputs/selected_Run2_dimuon_non_correlated_renamed_branch.root` on every real-data run; `inputs/` is not effectively read-only.

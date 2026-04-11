@@ -95,6 +95,7 @@ python3 signal.py
 CLI options:
 
 - `--nbins INT`: binning used in the saved signal projection plots; default is `60`
+- `--workers INT`: number of worker processes for the six independent signal fits; default is `min(os.cpu_count(), 6)`
 
 Inputs used for the signal model:
 
@@ -118,6 +119,7 @@ The signal fit uses signal-specific boson windows while keeping the repo-wide Up
 - `upsilon_mass`: `8` to `12` GeV
 
 Saved plots are zoomed to more useful windows around the Z/H peak and the selected Upsilon state.
+`signal.py` lists the six jobs before starting and updates a progress bar as each sample finishes.
 
 ### Resonant-Background Workflow
 
@@ -132,6 +134,15 @@ CLI options:
 
 - `--nbins INT`: binning used in the saved resonant-background plots; default is `60`
 - `--use-cache`: reuse `resonant_background_model_Z_params.json` and `NormParams_CR*.json` instead of recomputing them
+- `--workers INT`: number of worker processes for the independent resonant-background stages
+
+`resonant_background.py` runs in stages:
+
+1. Higgs workspace, Z workspace, and Z boson fit in parallel
+2. CR1-CR4 normalization fits in parallel
+3. normalization extrapolation in the parent process
+
+Each stage prints its job list first and updates a progress bar as jobs complete.
 
 ### Non-Resonant Background Workflow
 
@@ -152,6 +163,7 @@ python3 non_resonant_background.py --use-cache --strict-mode
 CLI options:
 
 - `--nbins INT`: binning used in control and summary plots; default is `60`
+- `--workers INT`: number of worker processes for the parallel background-candidate scan
 - `--use-cache`: reuse cached dimuon fit parameters (`upsilon_model_params.json`) instead of recomputing them
 - `--strict-mode`: abort if a family fails strict selection; the default is relaxed fallback to the best fit-quality-passing candidate
 
@@ -159,6 +171,9 @@ CLI options:
 
 1. dimuon non-correlated fit
 2. real-data sideband fit and `RooMultiPdf` construction
+
+`non_resonant_background.py` runs the dimuon fit serially, then fits the independent background candidates in parallel and finally rebuilds the winning PDFs in the parent process for plotting and `RooMultiPdf` assembly.
+It prints the job list for each stage and shows a progress bar as jobs complete.
 
 Signal and resonant-background preparation are standalone workflows and are no longer called by `non_resonant_background.py`:
 

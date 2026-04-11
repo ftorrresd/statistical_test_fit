@@ -20,13 +20,9 @@ from ROOT import (  # type: ignore
 
 from .bkg_model import (
     BkgModel,
-    build_background_cheb_2d,
-    build_background_models_2d,
     compute_winner_and_start_indexes,
-    update_fit_quality,
 )
 from .bkg_pdf_families import BkgPdfFamily
-from .chi2_test import ChiSquareResult
 from .dimuon_non_correlated import dimuon_non_correlated
 from .mass_ranges import (
     BOSON_MASS_LOWER,
@@ -41,6 +37,13 @@ from .mass_ranges import (
     UPSILON_MASS_UPPER,
 )
 from .make_plots import DataType, ProjDim, make_plots_2d
+from .non_resonant_parallel import (
+    build_non_resonant_candidate_jobs,
+    build_non_resonant_candidate_specs,
+    fit_non_resonant_candidate_job,
+    reconstruct_non_resonant_candidate,
+)
+from .parallel_utils import ParallelJob, run_parallel_jobs, run_serial_jobs
 
 
 def execution_time(func):
@@ -80,10 +83,29 @@ def run_fit_2d_data(args: Namespace):
     if not LOAD_FROM_CACHE:
         os.system("rm -rf *.json")
 
-    # build upsilon models
-    upsilon_params = dimuon_non_correlated(
-        upsilon_mass_lower, upsilon_mass_upper, load_from_cache=LOAD_FROM_CACHE
-    )
+    def _run_dimuon_fit(payload):
+        return dimuon_non_correlated(
+            payload["upsilon_mass_lower"],
+            payload["upsilon_mass_upper"],
+            load_from_cache=payload["load_from_cache"],
+        )
+
+    dimuon_jobs = [
+        ParallelJob(
+            key="dimuon_fit",
+            label="Dimuon non-correlated fit",
+            payload={
+                "upsilon_mass_lower": upsilon_mass_lower,
+                "upsilon_mass_upper": upsilon_mass_upper,
+                "load_from_cache": LOAD_FROM_CACHE,
+            },
+        )
+    ]
+    upsilon_params = run_serial_jobs(
+        "Non-resonant setup",
+        dimuon_jobs,
+        _run_dimuon_fit,
+    )["dimuon_fit"]
     print("\n\nUpsilon Parameters:")
     pprint(upsilon_params)
     print("\n\n")
@@ -132,43 +154,33 @@ def run_fit_2d_data(args: Namespace):
     for family in BkgPdfFamily:
         test_bkg_pdfs[family] = []
 
-    # build the many bkg models
-    test_bkg_pdfs |= build_background_models_2d(
-        BkgPdfFamily.JOHNSON,
-        upsilon_mass,
-        boson_mass,
-        # min_n_coeffs=1,
-        # n_coeffs=3,
+    candidate_specs = build_non_resonant_candidate_specs(
         upsilon_params=upsilon_params,
+        nbins=args.nbins,
+        input_file="inputs/mass_Run2.root",
+        upsilon_mass_lower=upsilon_mass_lower,
+        upsilon_mass_upper=upsilon_mass_upper,
+        boson_mass_lower=BOSON_MASS_LOWER,
+        boson_mass_upper=BOSON_MASS_UPPER,
+        left_lower=left_lower,
+        left_upper=left_upper,
+        middle_lower=middle_lower,
+        middle_upper=middle_upper,
+        right_lower=right_lower,
+        right_upper=right_upper,
     )
-    test_bkg_pdfs |= build_background_models_2d(
-        BkgPdfFamily.CHEBYCHEV,
-        upsilon_mass,
-        boson_mass,
-        min_n_coeffs=3,
-        n_coeffs=10,
-        upsilon_params=upsilon_params,
+    candidate_results = run_parallel_jobs(
+        "Non-resonant candidate fits",
+        build_non_resonant_candidate_jobs(candidate_specs),
+        fit_non_resonant_candidate_job,
+        workers=getattr(args, "workers", None),
     )
-    test_bkg_pdfs |= build_background_models_2d(
-        BkgPdfFamily.BERNSTEIN,
-        upsilon_mass,
-        boson_mass,
-        min_n_coeffs=3,
-        n_coeffs=10,
-        upsilon_params=upsilon_params,
-    )
-    # test_bkg_pdfs |= build_background_models_2d(
-    #     BkgPdfFamily.POWER_LAW,
-    #     upsilon_mass,
-    #     boson_mass,
-    #     min_n_coeffs=1,
-    #     n_coeffs=2,
-    #     upsilon_params=upsilon_params,
-    #     initial_coeff=4.0,
-    # )
-    # test_bkg_pdfs |= build_background_models(
-    #     BkgPdfFamily.EXPONENTIAL, x, initial_coeff=-150_000
-    # )
+
+    for spec in candidate_specs:
+        result = candidate_results[spec.key]
+        test_bkg_pdfs[spec.pdf_family].append(
+            reconstruct_non_resonant_candidate(result, upsilon_mass, boson_mass)
+        )
 
     winners = {}
     for family in BkgPdfFamily:
@@ -181,61 +193,7 @@ def run_fit_2d_data(args: Namespace):
             print("##############################################")
             print()
             for test_bkg_pdf in test_bkg_pdfs[family]:
-                # sideband acceptance (depends only on boson_mass)
-                lu = RooRealVar("lu", "left_upper", left_upper)
-                rl = RooRealVar("rl", "right_lower", right_lower)
-                ml = RooRealVar("ml", "middle_lower", middle_lower)
-                mu = RooRealVar("mu", "middle_upper", middle_upper)
-                for v in (lu, rl, ml, mu):
-                    v.setConstant(True)
-
-                # acceptance: 1 in sidebands, 0 in the blinded window
-                acc = RooFormulaVar(
-                    "acc",
-                    "(boson_mass < lu) || (boson_mass > rl) || "
-                    "((boson_mass > ml) && (boson_mass < mu))",
-                    RooArgList(boson_mass, lu, rl, ml, mu),
-                )
-
-                # Apply acceptance to your 2D pdf (shape depends on upsilon_mass, boson_mass)
-                # eff_pdf(upsilon_mass, boson_mass) ∝ pdf(upsilon_mass, boson_mass) * acc(boson_mass)
-                eff_pdf = RooEffProd(
-                    "eff_pdf", "pdf * acceptance", test_bkg_pdf.model, acc
-                )
-
-                print(f"Will fit PDF: {test_bkg_pdf.model.GetName()}")
-                test_bkg_pdf.fit_res = eff_pdf.fitTo(
-                    data_sb,
-                    RooFit.Save(True),
-                    RooFit.PrintLevel(-1),
-                    RooFit.Verbose(False),
-                    RooFit.Minimizer("Minuit2", "Migrad"),
-                )
-                test_bkg_pdf.fit_res.Print("v")
-                print("... done fitting.")
-                test_bkg_pdf.n_float_params = (
-                    test_bkg_pdf.fit_res.floatParsFinal().getSize()
-                )
-
-                os.system(
-                    f"mkdir -p plots/fit_2d_data/control/{str(test_bkg_pdf.pdf_family).replace(' ', '_')}"
-                )
-
-                test_bkg_pdf.chi_square_res = ChiSquareResult.compute_chi_square_2d(
-                    test_bkg_pdf.model,
-                    data_sb,
-                    upsilon_mass,
-                    boson_mass,
-                    outprefix=f"test_bkg_pdf_{test_bkg_pdf.n_params}",
-                    pdf_family=family,
-                    nbins=args.nbins,
-                    is_data=True,
-                    nfloatpars=test_bkg_pdf.n_float_params,
-                )
-
-                # test_bkg_pdf.NLL = test_bkg_pdf.model.createNLL(data_sb).getVal()
-                test_bkg_pdf.NLL = eff_pdf.createNLL(data_sb).getVal()
-                update_fit_quality(test_bkg_pdf)
+                print(f"Completed worker fit for PDF: {test_bkg_pdf.model.GetName()}")
 
             print("\n\n=== Test Background-only fit (sidebands) ===")
             for i, test_bkg_pdf in enumerate(test_bkg_pdfs[family]):

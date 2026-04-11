@@ -1,6 +1,5 @@
 import math
 from pprint import pprint
-import random
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -40,6 +39,9 @@ class BkgModel:
     chi_square_res: Optional[ChiSquareResult] = None
     NLL: Optional[float] = None
     fit_res: Optional[Any] = None
+    fit_status: Optional[int] = None
+    fit_cov_qual: Optional[int] = None
+    fit_edm: Optional[float] = None
     fit_ok: Optional[bool] = None
     fit_quality_reason: Optional[str] = None
 
@@ -52,8 +54,11 @@ class BkgModel:
             and (self.NLL is not None)
             and (self.n_params is not None)
             and (self.n_float_params is not None)
-            and (self.fit_res is not None)
             and (self.fit_ok is not None)
+            and (
+                (self.fit_res is not None)
+                or ((self.fit_status is not None) and (self.fit_cov_qual is not None))
+            )
         )
 
     def __hash__(self) -> int:
@@ -95,6 +100,16 @@ class BkgModel:
 
             string_repr.append(f"Chi2 test results: {self.chi_square_res}")
             string_repr.append(f"NLL: {self.NLL}")
+        elif self.fit_status is not None and self.fit_cov_qual is not None:
+            string_repr.append(
+                f"Status: {self.fit_status}  (0=OK)   CovQual: {self.fit_cov_qual}  (3=good)"
+            )
+            if self.fit_edm is not None:
+                string_repr.append(f" EDM: {self.fit_edm:.3e}")
+            if self.chi_square_res is not None:
+                string_repr.append(f"Chi2 test results: {self.chi_square_res}")
+            if self.NLL is not None:
+                string_repr.append(f"NLL: {self.NLL}")
 
         return "\n".join(string_repr)
 
@@ -149,6 +164,10 @@ def update_fit_quality(test_bkg_model: BkgModel) -> None:
         )
 
     test_bkg_model.n_float_params = test_bkg_model.fit_res.floatParsFinal().getSize()
+    test_bkg_model.fit_status = test_bkg_model.fit_res.status()
+    test_bkg_model.fit_cov_qual = test_bkg_model.fit_res.covQual()
+    if hasattr(test_bkg_model.fit_res, "edm"):
+        test_bkg_model.fit_edm = test_bkg_model.fit_res.edm()
 
     fit_ok, fit_quality_reason = _assess_fit_result(test_bkg_model.fit_res)
     if test_bkg_model.NLL is None or not math.isfinite(test_bkg_model.NLL):
@@ -558,8 +577,11 @@ def build_background_cheb_2d(
     cheb_coeffs,
     upsilon_params=None,
     name="background_chebychev_2d",
+    x_coeffs=None,
 ):
     name = f"{name}_{len(cheb_coeffs)}"
+    if x_coeffs is None:
+        x_coeffs = [0.0]
     coeff_vars_x = [
         RooRealVar(
             f"c_{name}_x{i}",
@@ -568,7 +590,7 @@ def build_background_cheb_2d(
             -1.0,
             1.0,
         )
-        for i, v in enumerate([random.uniform(-1, 1)], start=1)
+        for i, v in enumerate(x_coeffs, start=1)
     ]
     coeff_list_x = RooArgList()
     for v in coeff_vars_x:
@@ -626,10 +648,13 @@ def build_background_bernstein_2d(
     upsilon_params=None,
     name="background_bernstein_2d",
     force_positive=True,
+    x_coeffs=None,
 ):
     name = f"{name}_{len(bern_coeffs)}"
     lo = 0.0 if force_positive else -10.0
     hi = 10.0
+    if x_coeffs is None:
+        x_coeffs = [0.0]
 
     coeff_vars_x = [
         RooRealVar(
@@ -639,7 +664,7 @@ def build_background_bernstein_2d(
             -1.0,
             1.0,
         )
-        for i, v in enumerate([random.uniform(-1, 1)], start=1)
+        for i, v in enumerate(x_coeffs, start=1)
     ]
     coeff_list_x = RooArgList()
     for v in coeff_vars_x:
@@ -697,8 +722,11 @@ def build_background_johnson_2d(
     dummy_coeffs,
     upsilon_params=None,
     name="background_johnson_2d",
+    x_coeffs=None,
 ):
     name = name
+    if x_coeffs is None:
+        x_coeffs = [0.0]
 
     coeff_vars_x = [
         RooRealVar(
@@ -708,7 +736,7 @@ def build_background_johnson_2d(
             -1.0,
             1.0,
         )
-        for i, v in enumerate([random.uniform(-1, 1)], start=1)
+        for i, v in enumerate(x_coeffs, start=1)
     ]
     coeff_list_x = RooArgList()
     for v in coeff_vars_x:
@@ -763,10 +791,13 @@ def build_background_power_law_2d(
     upsilon_params=None,
     name="background_power_law_2d",
     exponents_bounds=(-10.0, +10.0),
+    x_coeffs=None,
 ):
     name = f"{name}_{len(exponents)}"
     if not (len(exponents) >= 1):
         raise ValueError("At least one exponent should be provided")
+    if x_coeffs is None:
+        x_coeffs = [0.0]
 
     coeff_vars_x = [
         RooRealVar(
@@ -776,7 +807,7 @@ def build_background_power_law_2d(
             -1.0,
             1.0,
         )
-        for i, v in enumerate([random.uniform(-1, 1)], start=1)
+        for i, v in enumerate(x_coeffs, start=1)
     ]
     coeff_list_x = RooArgList()
     for v in coeff_vars_x:
@@ -885,6 +916,7 @@ def build_background_models_2d(
     n_coeffs: int = 8,
     min_n_coeffs: int = 1,
     initial_coeff=None,
+    x_initial_coeff: float = 0.0,
 ):
     test_bkg_pdfs = {}
     test_bkg_pdfs[pdf_family] = []
@@ -921,6 +953,7 @@ def build_background_models_2d(
                         y,
                         [initial_coeff] * i,
                         upsilon_params,
+                        x_coeffs=[x_initial_coeff],
                     ),
                     pdf_family=pdf_family,
                     scan_order=i,
@@ -934,9 +967,62 @@ def build_background_models_2d(
                     y,
                     [0.0],
                     upsilon_params,
+                    x_coeffs=[x_initial_coeff],
                 ),
                 pdf_family=BkgPdfFamily.JOHNSON,
             )
         )
 
     return test_bkg_pdfs
+
+
+def build_background_model_2d_candidate(
+    pdf_family: BkgPdfFamily,
+    x,
+    y,
+    *,
+    scan_order: Optional[int],
+    upsilon_params=None,
+    initial_coeff: float = 0.0,
+    x_initial_coeff: float = 0.0,
+):
+    if pdf_family == BkgPdfFamily.JOHNSON:
+        return build_background_johnson_2d(
+            x,
+            y,
+            [0.0],
+            upsilon_params,
+            x_coeffs=[x_initial_coeff],
+        )
+
+    if scan_order is None:
+        raise ValueError(f"scan_order is required for {pdf_family}")
+
+    if pdf_family == BkgPdfFamily.CHEBYCHEV:
+        return build_background_cheb_2d(
+            x,
+            y,
+            [initial_coeff] * scan_order,
+            upsilon_params,
+            x_coeffs=[x_initial_coeff],
+        )
+
+    if pdf_family == BkgPdfFamily.BERNSTEIN:
+        return build_background_bernstein_2d(
+            x,
+            y,
+            [initial_coeff] * scan_order,
+            upsilon_params,
+            x_coeffs=[x_initial_coeff],
+        )
+
+    if pdf_family == BkgPdfFamily.POWER_LAW:
+        return build_background_power_law_2d(
+            x,
+            y,
+            [initial_coeff] * scan_order,
+            upsilon_params,
+            x_coeffs=[x_initial_coeff],
+        )
+
+    raise ValueError(f"Invalid PDF Family: {pdf_family}")

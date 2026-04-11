@@ -29,6 +29,12 @@ from .mass_ranges import (
     get_signal_boson_plot_range,
 )
 from .normalization_fit import fit_and_plot
+from .parallel_utils import ParallelJob, run_parallel_jobs, run_serial_jobs
+from .resonant_parallel import (
+    build_resonant_cr_jobs,
+    build_resonant_stage1_jobs,
+    run_resonant_job,
+)
 from .ws_helper import *
 
 
@@ -550,41 +556,63 @@ def run_resonant_background(args: Namespace):
 
     nbins = getattr(args, "nbins", 60)
     load_from_cache = getattr(args, "use_cache", False)
+    workers = getattr(args, "workers", None)
 
-    build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=nbins)
-    build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=nbins)
-
-    z_resonant_bkg_parameters = resonant_background_modeling_Z(
-        load_from_cache=load_from_cache,
-        plot_dir=PLOT_DIR,
-        nbins=nbins,
+    stage1_results = run_parallel_jobs(
+        "Resonant stage 1",
+        build_resonant_stage1_jobs(
+            nbins=nbins,
+            plot_dir=PLOT_DIR,
+            load_from_cache=load_from_cache,
+        ),
+        run_resonant_job,
+        workers=workers,
     )
 
-    normalizations_from_CR = [
-        get_normalization_from_CR(
-            z_resonant_bkg_parameters,
-            control_region,
-            load_from_cache=load_from_cache,
-            plot_dir=PLOT_DIR,
+    z_resonant_bkg_parameters = stage1_results["z_boson_parameters"]
+
+    cr_results = run_parallel_jobs(
+        "Resonant control regions",
+        build_resonant_cr_jobs(
+            boson_parameters=z_resonant_bkg_parameters,
             nbins=nbins,
-        )
-        for control_region in ControlRegion
+            plot_dir=PLOT_DIR,
+            load_from_cache=load_from_cache,
+        ),
+        run_resonant_job,
+        workers=workers,
+    )
+    normalizations_from_CR = [
+        cr_results[control_region.name] for control_region in ControlRegion
     ]
 
-    normalization_extrapolation = fit_and_plot(
-        [c.value.midpoint for c in ControlRegion],
-        [r["normalization"] for r in normalizations_from_CR],
-        [r["normalization_unc"] for r in normalizations_from_CR],
-        x0=10.0,
-        output_pdf=f"{PLOT_DIR}/normalization_extrapolation.pdf",
-        x_lines=[
-            ControlRegion.CR1.value.upper,
-            ControlRegion.CR2.value.lower,
-            ControlRegion.CR2.value.upper,
-            ControlRegion.CR3.value.upper,
+    def _run_extrapolation(_payload):
+        return fit_and_plot(
+            [c.value.midpoint for c in ControlRegion],
+            [r["normalization"] for r in normalizations_from_CR],
+            [r["normalization_unc"] for r in normalizations_from_CR],
+            x0=10.0,
+            output_pdf=f"{PLOT_DIR}/normalization_extrapolation.pdf",
+            x_lines=[
+                ControlRegion.CR1.value.upper,
+                ControlRegion.CR2.value.lower,
+                ControlRegion.CR2.value.upper,
+                ControlRegion.CR3.value.upper,
+            ],
+            point_labels=["CR1", "CR2", "CR3", "CR4"],
+        )
+
+    normalization_extrapolation = run_serial_jobs(
+        "Resonant extrapolation",
+        [
+            ParallelJob(
+                key="normalization_extrapolation",
+                label="Normalization extrapolation",
+                payload=None,
+            )
         ],
-        point_labels=["CR1", "CR2", "CR3", "CR4"],
-    )
+        _run_extrapolation,
+    )["normalization_extrapolation"]
     print(f"Extrapolated normalization: {normalization_extrapolation}")
 
     return {

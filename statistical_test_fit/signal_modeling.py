@@ -2,25 +2,14 @@ from argparse import Namespace
 from dataclasses import dataclass
 import os
 
-from ROOT import (  # type: ignore
-    RooArgSet,  # type: ignore
-    RooDataSet,  # type: ignore
-    RooFit,  # type: ignore
-    RooWorkspace,  # type: ignore
-    TFile,  # type: ignore
-)
-
-from .fastplot import fastplot
 from .mass_ranges import (
-    BOSON_MASS_LOWER,
-    BOSON_MASS_UPPER,
     UPSILON_MASS_LOWER,
     UPSILON_MASS_SEEDS,
     UPSILON_MASS_UPPER,
     get_signal_boson_plot_range,
     get_signal_upsilon_plot_range,
 )
-from .ws_helper import set_constant
+from .parallel_utils import ParallelJob, run_parallel_jobs
 
 
 PLOT_DIR = "plots/signal_fit"
@@ -37,6 +26,21 @@ class SignalSample:
         return self.input_file.replace("inputs/mass_", "").replace(".root", "")
 
 
+@dataclass(frozen=True)
+class SignalFitJob:
+    sample: SignalSample
+    nbins: int
+    plot_dir: str
+
+    @property
+    def key(self) -> str:
+        return self.sample.inner_file_name
+
+    @property
+    def label(self) -> str:
+        return f"{self.sample.process} {self.sample.state}"
+
+
 SIGNAL_SAMPLES = [
     SignalSample("H", "1S", "inputs/mass_H_HToUps1SG_Run2.root"),
     SignalSample("H", "2S", "inputs/mass_H_HToUps2SG_Run2.root"),
@@ -47,11 +51,11 @@ SIGNAL_SAMPLES = [
 ]
 
 
-def _build_signal_model(w: RooWorkspace, sample: SignalSample) -> None:
+def _build_signal_model(w, sample: SignalSample) -> None:
     if sample.process == "Z":
         w.factory(
             "RooCBShape::signal_model_boson_cb("
-            f"boson_mass[70,120], "
+            "boson_mass[70,120], "
             "mean_boson[91.1876, 70, 120], "
             "sigma_boson[2, 0.6, 2], "
             "alpha_boson[3, 0, 3],"
@@ -79,7 +83,7 @@ def _build_signal_model(w: RooWorkspace, sample: SignalSample) -> None:
     elif sample.process == "H":
         w.factory(
             "RooCBShape::signal_model_boson_cb("
-            f"boson_mass[100,150], "
+            "boson_mass[100,150], "
             "mean_boson[125, 100, 150], "
             "sigma_boson[1.5, 1, 5], "
             "alpha_boson[1.5, 1, 3],"
@@ -116,7 +120,24 @@ def _build_signal_model(w: RooWorkspace, sample: SignalSample) -> None:
     w.factory("weight[-100,100]")
 
 
-def _fit_signal_sample(sample: SignalSample, nbins: int) -> dict[str, str]:
+def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
+    from .root_runtime import configure_root
+
+    configure_root()
+
+    from ROOT import (  # type: ignore
+        RooArgSet,  # type: ignore
+        RooDataSet,  # type: ignore
+        RooFit,  # type: ignore
+        RooWorkspace,  # type: ignore
+        TFile,  # type: ignore
+    )
+
+    from .fastplot import fastplot
+    from .ws_helper import set_constant
+
+    sample = job.sample
+
     print("\n\n##############################################")
     print(
         f"################## SIGNAL {sample.process} {sample.state} ##################"
@@ -152,7 +173,7 @@ def _fit_signal_sample(sample: SignalSample, nbins: int) -> dict[str, str]:
     w.pdf("signal_model_boson_gauss").SetTitle(r"Gaussian Component")
     w.pdf("signal_model_boson_cb").SetTitle(r"CB Component")
 
-    boson_plot = f"{PLOT_DIR}/signal_fit_boson_{sample.inner_file_name}.pdf"
+    boson_plot = f"{job.plot_dir}/signal_fit_boson_{sample.inner_file_name}.pdf"
     fastplot(
         w.pdf("signal_model"),
         w.data("signal_data"),
@@ -162,7 +183,7 @@ def _fit_signal_sample(sample: SignalSample, nbins: int) -> dict[str, str]:
             (w.pdf("signal_model_boson_cb"), "CB Component"),
             (w.pdf("signal_model_boson_gauss"), "Gaussian Component"),
         ],
-        nbins=nbins,
+        nbins=job.nbins,
         legend=[0.2, 0.6, 0.5, 0.92]
         if sample.process == "H"
         else [0.6, 0.6, 0.93, 0.92],
@@ -170,13 +191,13 @@ def _fit_signal_sample(sample: SignalSample, nbins: int) -> dict[str, str]:
         plot_range=get_signal_boson_plot_range(sample.process),
     )
 
-    upsilon_plot = f"{PLOT_DIR}/signal_fit_upsilon_{sample.inner_file_name}.pdf"
+    upsilon_plot = f"{job.plot_dir}/signal_fit_upsilon_{sample.inner_file_name}.pdf"
     fastplot(
         w.pdf("signal_model"),
         w.data("signal_data"),
         w.var("upsilon_mass"),
         upsilon_plot,
-        nbins=nbins,
+        nbins=job.nbins,
         legend=[0.65, 0.7, 0.9, 0.92],
         is_data=False,
         plot_range=get_signal_upsilon_plot_range(sample.state),
@@ -203,4 +224,19 @@ def _fit_signal_sample(sample: SignalSample, nbins: int) -> dict[str, str]:
 def run_signal_modeling(args: Namespace):
     os.makedirs(PLOT_DIR, exist_ok=True)
     nbins = getattr(args, "nbins", 60)
-    return [_fit_signal_sample(sample, nbins=nbins) for sample in SIGNAL_SAMPLES]
+    workers = getattr(args, "workers", None)
+    jobs = [
+        ParallelJob(
+            key=sample.inner_file_name,
+            label=f"{sample.process} {sample.state}",
+            payload=SignalFitJob(sample=sample, nbins=nbins, plot_dir=PLOT_DIR),
+        )
+        for sample in SIGNAL_SAMPLES
+    ]
+    results = run_parallel_jobs(
+        "Signal fits",
+        jobs,
+        _fit_signal_sample,
+        workers=workers,
+    )
+    return [results[sample.inner_file_name] for sample in SIGNAL_SAMPLES]

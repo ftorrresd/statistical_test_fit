@@ -25,31 +25,23 @@ if __name__ != "__main__":
 else:
     import argparse
 
-    from ROOT import (  # type: ignore
-        RooFit,  # type: ignore
-        RooMsgService,  # type: ignore
-        gROOT,  # type: ignore
-        gSystem,  # type: ignore
-    )
-
-    from statistical_test_fit import run_signal_modeling
-
-    gROOT.SetBatch(True)
-    RooMsgService.instance().setGlobalKillBelow(RooFit.WARNING)
-
     def main():
+        from statistical_test_fit.root_runtime import configure_root
+
         parser = argparse.ArgumentParser(
             description="Signal RooFit modeling for H/Z -> Upsilon(nS) + photon."
         )
         parser.add_argument("--nbins", type=int, default=60)
+        parser.add_argument("--workers", type=int, default=None)
         args = parser.parse_args()
 
         os.system("mkdir -p plots")
         os.system("mkdir -p plots/signal_fit")
         os.system(r'find plots/signal_fit -type f ! -name ".gitkeep" -delete')
 
-        gSystem.Load("libRooFit")
-        gSystem.Load("libHiggsAnalysisCombinedLimit")
+        configure_root()
+
+        from statistical_test_fit import run_signal_modeling
 
         run_signal_modeling(args)
 
