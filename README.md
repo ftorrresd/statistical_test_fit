@@ -111,9 +111,10 @@ The signal RooFit model follows `from_mauricio/HZUpsilonPhotonRun2Statistics/sig
 - upsilon: `RooDoubleCB`
 - full signal model: `PROD(signal_model_boson, signal_model_upsilon)`
 
-This repo uses the existing project ranges for the observables:
+The signal fit uses signal-specific boson windows while keeping the repo-wide Upsilon range:
 
-- `boson_mass`: `57` to `200` GeV
+- Z signal boson fit: `70` to `120` GeV
+- Higgs signal boson fit: `100` to `150` GeV
 - `upsilon_mass`: `8` to `12` GeV
 
 Saved plots are zoomed to more useful windows around the Z/H peak and the selected Upsilon state.

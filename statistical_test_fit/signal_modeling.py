@@ -51,7 +51,6 @@ def _build_signal_model(w: RooWorkspace, sample: SignalSample) -> None:
     if sample.process == "Z":
         w.factory(
             "RooCBShape::signal_model_boson_cb("
-            # f"boson_mass[{BOSON_MASS_LOWER}, {BOSON_MASS_UPPER}], "
             f"boson_mass[70,120], "
             "mean_boson[91.1876, 70, 120], "
             "sigma_boson[2, 0.6, 2], "
@@ -80,7 +79,6 @@ def _build_signal_model(w: RooWorkspace, sample: SignalSample) -> None:
     elif sample.process == "H":
         w.factory(
             "RooCBShape::signal_model_boson_cb("
-            # f"boson_mass[{BOSON_MASS_LOWER}, {BOSON_MASS_UPPER}], "
             f"boson_mass[100,150], "
             "mean_boson[125, 100, 150], "
             "sigma_boson[1.5, 1, 5], "
