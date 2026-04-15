@@ -1,0 +1,30 @@
+# Datacard for ZToUpsilon1SPhoton
+# Process: Z, Upsilon state: 1S
+imax 1 number of channels
+jmax 2 number of backgrounds
+kmax * number of nuisance parameters
+------------
+shapes signal ZToUpsilon1SPhoton workspace.root combined_workspace:ZToUpsilon1SPhoton_signal_pdf
+shapes non_resonant_bkg ZToUpsilon1SPhoton workspace.root combined_workspace:ZToUpsilon1SPhoton_non_resonant_background_pdf
+shapes resonant_bkg ZToUpsilon1SPhoton workspace.root combined_workspace:ZToUpsilon1SPhoton_resonant_background_pdf
+shapes data_obs ZToUpsilon1SPhoton workspace.root combined_workspace:ZToUpsilon1SPhoton_data_obs
+------------
+bin ZToUpsilon1SPhoton
+observation -1
+------------
+bin ZToUpsilon1SPhoton ZToUpsilon1SPhoton ZToUpsilon1SPhoton
+process signal non_resonant_bkg resonant_bkg
+process 0 1 2
+rate 1 1 1
+------------
+lumi lnN 1.025 - 1.025
+HZ_xs_sc lnN 1.033 - 1.05
+HZ_xs_pdf lnN 1.0173 - 1.05
+br_peak lnN - - 1.0
+pu_r lnN 1.0065 - 1.0062
+trg lnN 1.045 - 1.047
+muon_id lnN 1.048 - 1.045
+ph_id lnN 1.011 - 1.011
+ele_veto lnN 1.0102 - 1.0102
+------------
+ZToUpsilon1SPhoton_pdfindex discrete

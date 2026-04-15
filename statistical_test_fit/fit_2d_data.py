@@ -49,15 +49,65 @@ from .parallel_utils import ParallelJob, run_parallel_jobs, run_serial_jobs
 
 
 NON_RESONANT_SUMMARY_PATH = "plots/fit_2d_data/non_resonant_fit_summary.json"
+NON_RESONANT_WORKSPACE_PATH = "non_resonant_background_workspace.root"
+NON_RESONANT_WORKSPACE_NAME = "non_resonant_background_ws"
+
+
+def _estimate_non_resonant_initial_norm(
+    test_bkg_pdf: BkgModel,
+    boson_mass,
+    sideband_entries: int,
+) -> float:
+    bkg_y = test_bkg_pdf.model._keepalive["bkg_y"]
+    sideband_integral = bkg_y.createIntegral(
+        RooArgSet(boson_mass),
+        RooFit.Range("LEFT,MIDDLE,RIGHT"),
+    ).getVal()
+    full_integral = bkg_y.createIntegral(
+        RooArgSet(boson_mass),
+        RooFit.Range("FULL"),
+    ).getVal()
+    if sideband_integral <= 0.0:
+        raise RuntimeError(
+            f"Non-resonant sideband integral is non-positive for {test_bkg_pdf.model.GetName()}."
+        )
+    return float(sideband_entries * full_integral / sideband_integral)
+
+
+def _evaluate_family_selection(
+    test_bkg_pdfs: list[BkgModel],
+    strict_mode: bool,
+) -> dict[str, object]:
+    try:
+        start, winner = compute_winner_and_start_indexes(
+            test_bkg_pdfs,
+            strict_mode=strict_mode,
+        )
+    except RuntimeError as exc:
+        return {
+            "status": "error",
+            "message": str(exc),
+        }
+
+    return {
+        "status": "ok",
+        "start_index": start,
+        "start_model_name": test_bkg_pdfs[start].model.GetName(),
+        "winner_index": winner,
+        "winner_model_name": test_bkg_pdfs[winner].model.GetName(),
+    }
 
 
 def _build_non_resonant_family_summary(
     family: BkgPdfFamily,
     test_bkg_pdfs: list[BkgModel],
     candidate_results,
-    start: int,
-    winner: int,
+    strict_selection: dict[str, object],
+    relaxed_selection: dict[str, object],
+    current_selection_mode: str,
     plot_files: dict[str, str],
+    boson_mass,
+    sideband_entries: int,
 ):
     assert len(test_bkg_pdfs) == len(candidate_results)
 
@@ -65,6 +115,11 @@ def _build_non_resonant_family_summary(
     for idx, (test_bkg_pdf, candidate_result) in enumerate(
         zip(test_bkg_pdfs, candidate_results)
     ):
+        initial_norm_estimate = _estimate_non_resonant_initial_norm(
+            test_bkg_pdf,
+            boson_mass,
+            sideband_entries,
+        )
         candidate_summaries.append(
             {
                 "index": idx,
@@ -82,8 +137,11 @@ def _build_non_resonant_family_summary(
                 "chi_square": candidate_result.chi_square_result,
                 "NLL": candidate_result.NLL,
                 "params": candidate_result.params_dict,
-                "is_start": idx == start,
-                "is_winner": idx == winner,
+                "initial_norm_estimate": initial_norm_estimate,
+                "is_start": strict_selection.get("status") == "ok"
+                and idx == strict_selection.get("start_index"),
+                "is_winner": strict_selection.get("status") == "ok"
+                and idx == strict_selection.get("winner_index"),
             }
         )
 
@@ -107,15 +165,28 @@ def _build_non_resonant_family_summary(
         "family": family.value,
         "family_label": str(family),
         "plots": plot_files,
-        "selection": {
-            "start_index": start,
-            "start_model_name": candidate_results[start].model_name,
-            "winner_index": winner,
-            "winner_model_name": candidate_results[winner].model_name,
+        "current_selection_mode": current_selection_mode,
+        "selection": strict_selection
+        if current_selection_mode == "strict"
+        else relaxed_selection,
+        "selections": {
+            "strict": strict_selection,
+            "relaxed": relaxed_selection,
         },
         "candidates": candidate_summaries,
         "lrt_scan": lrt_scan,
     }
+
+
+def _make_multipdf_readable_label(
+    *,
+    family: str,
+    selection_role: str,
+    scan_order: int | None,
+) -> str:
+    if family == BkgPdfFamily.JOHNSON.value:
+        return "johnson_nominal"
+    return f"{family}_{selection_role}_order{scan_order}"
 
 
 def _write_non_resonant_summary(
@@ -127,10 +198,12 @@ def _write_non_resonant_summary(
     candidate_results_by_family,
     test_bkg_pdfs_by_family: dict[BkgPdfFamily, list[BkgModel]],
     family_summaries,
+    final_multipdf_states,
 ):
     summary = {
         "workflow": "non_resonant_fit",
         "summary_path": NON_RESONANT_SUMMARY_PATH,
+        "workspace_path": NON_RESONANT_WORKSPACE_PATH,
         "plots_dir": "plots/fit_2d_data",
         "input_file": "inputs/mass_Run2.root",
         "nbins": args.nbins,
@@ -174,6 +247,11 @@ def _write_non_resonant_summary(
             "sidebands": int(data_sb.numEntries()),
         },
         "upsilon_model_params": upsilon_params,
+        "final_multipdf": {
+            "category_name": "pdfIndex",
+            "state_label_note": "RooMultiPdf auto-generates workspace labels as _pdfN. See readable_label for the human-friendly mapping.",
+            "states": final_multipdf_states,
+        },
         "families": {},
     }
 
@@ -184,9 +262,12 @@ def _write_non_resonant_summary(
             family,
             test_bkg_pdfs_by_family[family],
             candidate_results_by_family[family],
-            family_summaries[family]["start"],
-            family_summaries[family]["winner"],
+            family_summaries[family]["strict_selection"],
+            family_summaries[family]["relaxed_selection"],
+            family_summaries[family]["current_selection_mode"],
             family_summaries[family]["plots"],
+            family_summaries[family]["boson_mass"],
+            int(data_sb.numEntries()),
         )
 
     os.makedirs(os.path.dirname(NON_RESONANT_SUMMARY_PATH), exist_ok=True)
@@ -212,7 +293,7 @@ def execution_time(func):
 
 @execution_time
 def run_fit_2d_data(args: Namespace):
-    w = RooWorkspace("ws")
+    w = RooWorkspace(NON_RESONANT_WORKSPACE_NAME)
 
     # Limits
     upsilon_mass_lower = UPSILON_MASS_LOWER
@@ -287,6 +368,7 @@ def run_fit_2d_data(args: Namespace):
         ),
     )
     getattr(w, "import")(data_full)
+    f.Close()
 
     # Named ranges for sidebands
     boson_mass.setRange("LEFT", left_lower, left_upper)
@@ -337,6 +419,7 @@ def run_fit_2d_data(args: Namespace):
         )
 
     winners = {}
+    strict_selection_failures = []
     for family in BkgPdfFamily:
         if len(test_bkg_pdfs[family]) > 0:
             print()
@@ -357,17 +440,40 @@ def run_fit_2d_data(args: Namespace):
 
                 print(test_bkg_pdf)
 
-            # compute winner function
-            start, winner = compute_winner_and_start_indexes(
+            strict_selection = _evaluate_family_selection(
                 test_bkg_pdfs[family],
-                strict_mode=args.strict_mode,
+                strict_mode=True,
             )
-            winners[family] = winner
+            relaxed_selection = _evaluate_family_selection(
+                test_bkg_pdfs[family],
+                strict_mode=False,
+            )
+            current_selection_mode = "strict" if args.strict_mode else "relaxed"
+            current_selection = (
+                strict_selection
+                if current_selection_mode == "strict"
+                else relaxed_selection
+            )
             family_summaries[family] = {
-                "start": start,
-                "winner": winner,
+                "strict_selection": strict_selection,
+                "relaxed_selection": relaxed_selection,
+                "current_selection_mode": current_selection_mode,
                 "plots": {},
+                "boson_mass": boson_mass,
             }
+
+            if current_selection["status"] != "ok":
+                message = str(current_selection["message"])
+                print(
+                    f"\nNo {current_selection_mode} winner available for {family}: {message}"
+                )
+                if args.strict_mode and family != BkgPdfFamily.JOHNSON:
+                    strict_selection_failures.append(f"{family.value}: {message}")
+                continue
+
+            start = int(current_selection["start_index"])
+            winner = int(current_selection["winner_index"])
+            winners[family] = winner
 
             # Plots
             plot_file_name = make_plots_2d(
@@ -426,6 +532,50 @@ def run_fit_2d_data(args: Namespace):
             boson_mass.setRange("BLIND_LEFT", left_upper, middle_lower)
             boson_mass.setRange("BLIND_RIGHT", middle_upper, right_lower)
 
+    final_multipdf_states = []
+
+    johnson_candidates = test_bkg_pdfs.get(BkgPdfFamily.JOHNSON, [])
+    if johnson_candidates:
+        johnson_result = candidate_results_by_family[BkgPdfFamily.JOHNSON][0]
+        final_multipdf_states.append(
+            {
+                "index": len(final_multipdf_states),
+                "workspace_label": f"_pdf{len(final_multipdf_states)}",
+                "readable_label": _make_multipdf_readable_label(
+                    family=BkgPdfFamily.JOHNSON.value,
+                    selection_role="nominal",
+                    scan_order=johnson_result.spec.scan_order,
+                ),
+                "pdf_name": johnson_candidates[0].model.GetName(),
+                "pdf_family": BkgPdfFamily.JOHNSON.value,
+                "selection_role": "nominal",
+                "scan_order": johnson_result.spec.scan_order,
+                "candidate_label": johnson_result.spec.label,
+            }
+        )
+
+    for family in (BkgPdfFamily.BERNSTEIN, BkgPdfFamily.CHEBYCHEV):
+        if family not in winners:
+            continue
+        winner_index = winners[family]
+        winner_result = candidate_results_by_family[family][winner_index]
+        final_multipdf_states.append(
+            {
+                "index": len(final_multipdf_states),
+                "workspace_label": f"_pdf{len(final_multipdf_states)}",
+                "readable_label": _make_multipdf_readable_label(
+                    family=family.value,
+                    selection_role="winner",
+                    scan_order=winner_result.spec.scan_order,
+                ),
+                "pdf_name": test_bkg_pdfs[family][winner_index].model.GetName(),
+                "pdf_family": family.value,
+                "selection_role": "winner",
+                "scan_order": winner_result.spec.scan_order,
+                "candidate_label": winner_result.spec.label,
+            }
+        )
+
     _write_non_resonant_summary(
         args=args,
         upsilon_params=upsilon_params,
@@ -434,26 +584,40 @@ def run_fit_2d_data(args: Namespace):
         candidate_results_by_family=candidate_results_by_family,
         test_bkg_pdfs_by_family=test_bkg_pdfs,
         family_summaries=family_summaries,
+        final_multipdf_states=final_multipdf_states,
     )
 
-    pdf_index = RooCategory("pdfIndex", "pdfIndex")
-    getattr(w, "import")(pdf_index)
-    pdf_list = RooArgList()
+    getattr(w, "import")(data_sb, RooFit.Rename("data_sidebands"))
     for family in BkgPdfFamily:
-        if len(test_bkg_pdfs[family]) > 0:
-            w.cat("pdfIndex").defineType(family.value)
-            print(f"--> Adding winner for {family}")
-            getattr(w, "import")(test_bkg_pdfs[family][winners[family]].model)
-            # pdf_list.add(w.pdf(family.value))
-            pdf_list.add(w.pdf(test_bkg_pdfs[family][winners[family]].model.GetName()))
+        for test_bkg_pdf in test_bkg_pdfs[family]:
+            getattr(w, "import")(test_bkg_pdf.model)
 
-    multi_pdf = RooMultiPdf(
-        "multiPdf",
-        "multiPdf",
-        w.cat("pdfIndex"),
-        pdf_list,
-    )
-    getattr(w, "import")(multi_pdf)
+    if final_multipdf_states:
+        pdf_index = RooCategory("pdfIndex", "pdfIndex")
+        getattr(w, "import")(pdf_index)
+        pdf_list = RooArgList()
+        for state in final_multipdf_states:
+            pdf_list.add(w.pdf(state["pdf_name"]))
+
+        multi_pdf = RooMultiPdf(
+            "multiPdf",
+            "multiPdf",
+            w.cat("pdfIndex"),
+            pdf_list,
+        )
+        getattr(w, "import")(multi_pdf)
+        w.cat("pdfIndex").setIndex(0)
+
+    w.writeToFile(NON_RESONANT_WORKSPACE_PATH)
+    print(f"Saved non-resonant workspace to: {NON_RESONANT_WORKSPACE_PATH}")
 
     w.Print("v")
-    print("pdfIndex: ", w.cat("pdfIndex").states())
+    if w.cat("pdfIndex"):
+        print("pdfIndex: ", w.cat("pdfIndex").states())
+
+    if strict_selection_failures:
+        raise RuntimeError(
+            "Strict non-resonant selection failed for scanned families: "
+            + "; ".join(strict_selection_failures)
+            + ". The candidate workspace and summary were still written."
+        )

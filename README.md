@@ -6,10 +6,10 @@ This repository contains RooFit-based background studies for `H/Z -> Upsilon(nS)
 
 There are four top-level workflows:
 
-- `pseudodata.py`: toy studies for 1D and 2D background-model selection
-- `signal.py`: standalone signal-model fits for the six Run2 `H/Z -> Upsilon(nS) + gamma` samples
-- `resonant_background.py`: standalone resonant-background and control-region normalization workflow
-- `non_resonant_background.py`: renamed from `realdata.py`; runs the dimuon fit plus the real-data non-resonant sideband workflow and final `RooMultiPdf` construction
+- `scripts/pseudodata.py`: toy studies for 1D and 2D background-model selection
+- `scripts/signal.py`: standalone signal-model fits for the six Run2 `H/Z -> Upsilon(nS) + gamma` samples
+- `scripts/resonant_background.py`: standalone resonant-background and control-region normalization workflow
+- `scripts/non_resonant_background.py`: renamed from `realdata.py`; runs the dimuon fit plus the real-data non-resonant sideband workflow and final `RooMultiPdf` construction
 
 There is no `main.py` in this repository.
 
@@ -56,7 +56,7 @@ Run from the repository root.
 Default run:
 
 ```bash
-python3 pseudodata.py
+python3 scripts/pseudodata.py
 ```
 
 Important behavior:
@@ -68,11 +68,11 @@ Important behavior:
 Useful examples:
 
 ```bash
-python3 pseudodata.py --fits-to-run 1d
-python3 pseudodata.py --fits-to-run 2d
-python3 pseudodata.py --fits-to-run all --events 20000 --seed 42 --nbins 60
-python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1
-python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1 --strict-mode
+python3 scripts/pseudodata.py --fits-to-run 1d
+python3 scripts/pseudodata.py --fits-to-run 2d
+python3 scripts/pseudodata.py --fits-to-run all --events 20000 --seed 42 --nbins 60
+python3 scripts/pseudodata.py --fits-to-run 2d --events 1000 --seed 1
+python3 scripts/pseudodata.py --fits-to-run 2d --events 1000 --seed 1 --strict-mode
 ```
 
 CLI options:
@@ -89,7 +89,7 @@ CLI options:
 Run the standalone signal-model fits:
 
 ```bash
-python3 signal.py
+python3 scripts/signal.py
 ```
 
 CLI options:
@@ -126,14 +126,14 @@ Saved plots are zoomed to more useful windows around the Z/H peak and the select
 Run the resonant-background workflow on its own:
 
 ```bash
-python3 resonant_background.py
-python3 resonant_background.py --use-cache
+python3 scripts/resonant_background.py
+python3 scripts/resonant_background.py --skip-cache
 ```
 
 CLI options:
 
 - `--nbins INT`: binning used in the saved resonant-background plots; default is `60`
-- `--use-cache`: reuse `resonant_background_model_Z_params.json` and `NormParams_CR*.json` instead of recomputing them
+- `--skip-cache`: recompute `resonant_background_model_Z_params.json` and `NormParams_CR*.json` instead of using the default cache-backed behavior
 - `--workers INT`: number of worker processes for the independent resonant-background stages
 
 `resonant_background.py` runs in stages:
@@ -149,15 +149,15 @@ Each stage prints its job list first and updates a progress bar as jobs complete
 Default run:
 
 ```bash
-python3 non_resonant_background.py
+python3 scripts/non_resonant_background.py
 ```
 
 Useful examples:
 
 ```bash
-python3 non_resonant_background.py --use-cache
-python3 non_resonant_background.py --nbins 60
-python3 non_resonant_background.py --use-cache --strict-mode
+python3 scripts/non_resonant_background.py --use-cache
+python3 scripts/non_resonant_background.py --nbins 60
+python3 scripts/non_resonant_background.py --use-cache --strict-mode
 ```
 
 CLI options:
@@ -167,26 +167,27 @@ CLI options:
 - `--use-cache`: reuse cached dimuon fit parameters (`upsilon_model_params.json`) instead of recomputing them
 - `--strict-mode`: abort if a family fails strict selection; the default is relaxed fallback to the best fit-quality-passing candidate
 
-`non_resonant_background.py` is the renamed `realdata.py` entrypoint and now only runs the real-data pieces:
+`scripts/non_resonant_background.py` is the renamed `realdata.py` entrypoint and now only runs the real-data pieces:
 
 1. dimuon non-correlated fit
 2. real-data sideband fit and `RooMultiPdf` construction
 
-`non_resonant_background.py` runs the dimuon fit serially, then fits the independent background candidates in parallel and finally rebuilds the winning PDFs in the parent process for plotting and `RooMultiPdf` assembly.
+`scripts/non_resonant_background.py` runs the dimuon fit serially, then fits the independent background candidates in parallel and finally rebuilds the winning PDFs in the parent process for plotting and `RooMultiPdf` assembly.
 It prints the job list for each stage and shows a progress bar as jobs complete.
 
 Signal and resonant-background preparation are standalone workflows and are no longer called by `non_resonant_background.py`:
 
-- `python3 signal.py`
-- `python3 resonant_background.py --use-cache`
+- `python3 scripts/signal.py`
+- `python3 scripts/resonant_background.py`
 
 ## Workflow Notes
 
-- `pseudodata.py` and `non_resonant_background.py` delete files under `plots/` at startup, keeping only `.gitkeep`.
-- `signal.py` only clears `plots/signal_fit/`.
-- `resonant_background.py` only clears `plots/resonant_background/`.
-- `non_resonant_background.py` deletes repo-root `*.json` cache files unless `--use-cache` is passed.
-- `--use-cache` on `non_resonant_background.py` now only affects the dimuon JSON-backed parameter reuse (`upsilon_model_params.json`).
+- `scripts/pseudodata.py` only clears `plots/fit_1d`, `plots/fit_2d`, and `plots/fit_2d_data` at startup.
+- `scripts/non_resonant_background.py` only clears `plots/fit_1d`, `plots/fit_2d`, and `plots/fit_2d_data` at startup.
+- `scripts/signal.py` only clears `plots/signal_fit/`.
+- `scripts/resonant_background.py` only clears `plots/resonant_background/`.
+- `scripts/non_resonant_background.py` deletes repo-root `*.json` cache files unless `--use-cache` is passed.
+- `--use-cache` on `scripts/non_resonant_background.py` now only affects the dimuon JSON-backed parameter reuse (`upsilon_model_params.json`).
 - `dimuon_non_correlated()` snapshots `inputs/selected_Run2_dimuon_non_correlated_renamed_branch.root` on every real-data run, so `inputs/` is not effectively read-only.
 - Relaxed model-family selection is enabled by default, so a bad family falls back to the best fit-quality-passing candidate after printing a large warning block.
 - `--strict-mode` restores abort-on-failure behavior and raises a `RuntimeError` when a family cannot satisfy strict selection.

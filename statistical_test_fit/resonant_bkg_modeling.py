@@ -39,6 +39,8 @@ from .ws_helper import *
 
 
 PLOT_DIR = "plots/resonant_background"
+RESONANT_SUMMARY_PATH = f"{PLOT_DIR}/resonant_background_summary.json"
+RESONANT_Z_PARAMS_CACHE = "resonant_background_model_Z_params.json"
 
 
 def build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=80):
@@ -85,7 +87,7 @@ def build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=80):
         RooFit.Import(f.Events),
         RooFit.WeightVar(w.var("weight")),
     )
-    # getattr(w, "import")(data)
+    getattr(w, "import")(data)
 
     # fit to data
     fit_result = w.pdf("resonant_background_model_Higgs").fitTo(
@@ -140,6 +142,13 @@ def build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=80):
     print("data.sumEntries(): ", data.sumEntries())
 
     w.SaveAs("resonant_background_fit_HiggsDalitz.root")
+    f.Close()
+
+    return {
+        "workspace": "resonant_background_fit_HiggsDalitz.root",
+        "workspace_name": "resonant_background_Higgs_ws",
+        "data_sum_entries": float(data.sumEntries()),
+    }
 
 
 def build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=80):
@@ -179,7 +188,7 @@ def build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=80):
         RooFit.Import(f.Events),
         RooFit.WeightVar(w.var("weight")),
     )
-    # getattr(w, "import")(data)
+    getattr(w, "import")(data)
 
     # fit to data
     fit_result = w.pdf("resonant_background_model_Z").fitTo(
@@ -234,6 +243,13 @@ def build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=80):
     print("data.sumEntries(): ", data.sumEntries())
 
     w.SaveAs("resonant_background_fit_ZGamma.root")
+    f.Close()
+
+    return {
+        "workspace": "resonant_background_fit_ZGamma.root",
+        "workspace_name": "resonant_background_Z_ws",
+        "data_sum_entries": float(data.sumEntries()),
+    }
 
 
 def build_resonant_background_modeling_Z(boson_mass, sufix=None):
@@ -312,8 +328,16 @@ def resonant_background_modeling_Z(load_from_cache=False, plot_dir=PLOT_DIR, nbi
     cached_resonant_background_model_Z_params = None
 
     if load_from_cache:
-        with open("resonant_background_model_Z_params.json", "r") as f:
-            cached_resonant_background_model_Z_params = json.load(f)
+        try:
+            with open(RESONANT_Z_PARAMS_CACHE, "r") as f:
+                cached_resonant_background_model_Z_params = json.load(f)
+            print(
+                f"-- > Loaded Z resonant boson parameters from cache: {RESONANT_Z_PARAMS_CACHE}"
+            )
+        except FileNotFoundError:
+            print(
+                f"-- > Cache requested but {RESONANT_Z_PARAMS_CACHE} was not found. Recomputing Z resonant boson parameters."
+            )
 
     input_file = "inputs/mass_Z_ZGTo2MuG_MMuMu-2To15_Run2.root"
 
@@ -393,7 +417,7 @@ def resonant_background_modeling_Z(load_from_cache=False, plot_dir=PLOT_DIR, nbi
     print("\n\n--> Fit parameters ")
     pprint(resonant_background_model_Z_params)
 
-    with open("resonant_background_model_Z_params.json", "w") as f:
+    with open(RESONANT_Z_PARAMS_CACHE, "w") as f:
         json.dump(resonant_background_model_Z_params, f, indent=4)
 
     return resonant_background_model_Z_params
@@ -434,8 +458,13 @@ def get_normalization_from_CR(
     """Resonant Background Modeling"""
     cached_norm_para = None
     if load_from_cache:
-        with open(f"NormParams_{control_region.value.name}.json", "r") as f:
-            cached_norm_para = json.load(f)
+        try:
+            with open(f"NormParams_{control_region.value.name}.json", "r") as f:
+                cached_norm_para = json.load(f)
+        except FileNotFoundError:
+            print(
+                f"-- > Cache requested but NormParams_{control_region.value.name}.json was not found. Recomputing {control_region.value.name}."
+            )
 
     input_file = "inputs/selected_Run2_resonant_background_modeling_MC_data_.root"
 
@@ -615,8 +644,35 @@ def run_resonant_background(args: Namespace):
     )["normalization_extrapolation"]
     print(f"Extrapolated normalization: {normalization_extrapolation}")
 
+    summary = {
+        "workflow": "resonant_background",
+        "summary_path": RESONANT_SUMMARY_PATH,
+        "plots_dir": PLOT_DIR,
+        "nbins": nbins,
+        "workers": workers,
+        "use_cache": bool(load_from_cache),
+        "stage1_results": stage1_results,
+        "control_regions": cr_results,
+        "normalization_extrapolation": {
+            "coeffs": list(normalization_extrapolation.coeffs),
+            "cov": [list(row) for row in normalization_extrapolation.cov],
+            "chi2": float(normalization_extrapolation.chi2),
+            "dof": int(normalization_extrapolation.dof),
+            "y0": float(normalization_extrapolation.y0),
+            "sy0": float(normalization_extrapolation.sy0),
+        },
+        "process_initial_norms": {
+            "H": float(stage1_results["higgs_workspace"]["data_sum_entries"]),
+            "Z": float(normalization_extrapolation.y0),
+        },
+    }
+    with open(RESONANT_SUMMARY_PATH, "w") as summary_file:
+        json.dump(summary, summary_file, indent=4)
+    print(f"Saved resonant summary to: {RESONANT_SUMMARY_PATH}")
+
     return {
         "z_boson_params": z_resonant_bkg_parameters,
         "normalizations_from_cr": normalizations_from_CR,
         "normalization_extrapolation": normalization_extrapolation,
+        "summary_path": RESONANT_SUMMARY_PATH,
     }

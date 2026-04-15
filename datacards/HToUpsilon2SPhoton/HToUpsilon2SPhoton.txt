@@ -1,0 +1,30 @@
+# Datacard for HToUpsilon2SPhoton
+# Process: H, Upsilon state: 2S
+imax 1 number of channels
+jmax 2 number of backgrounds
+kmax * number of nuisance parameters
+------------
+shapes signal HToUpsilon2SPhoton workspace.root combined_workspace:HToUpsilon2SPhoton_signal_pdf
+shapes non_resonant_bkg HToUpsilon2SPhoton workspace.root combined_workspace:HToUpsilon2SPhoton_non_resonant_background_pdf
+shapes resonant_bkg HToUpsilon2SPhoton workspace.root combined_workspace:HToUpsilon2SPhoton_resonant_background_pdf
+shapes data_obs HToUpsilon2SPhoton workspace.root combined_workspace:HToUpsilon2SPhoton_data_obs
+------------
+bin HToUpsilon2SPhoton
+observation -1
+------------
+bin HToUpsilon2SPhoton HToUpsilon2SPhoton HToUpsilon2SPhoton
+process signal non_resonant_bkg resonant_bkg
+process 0 1 2
+rate 1 1 1
+------------
+lumi lnN 1.025 - 1.025
+HZ_xs_sc lnN 0.933/1.046 - 0.933/1.046
+HZ_xs_pdf lnN 1.032 - 1.032
+br_peak lnN - - 1.06
+pu_r lnN 1.006 - 1.009
+trg lnN 1.055 - 1.061
+muon_id lnN 1.0435 - 1.0435
+ph_id lnN 1.012 - 1.012
+ele_veto lnN 1.0104 - 1.0104
+------------
+HToUpsilon2SPhoton_pdfindex discrete

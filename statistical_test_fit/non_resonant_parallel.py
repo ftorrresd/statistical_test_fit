@@ -294,7 +294,12 @@ def reconstruct_non_resonant_candidate(
         initial_coeff=result.spec.initial_coeff,
         x_initial_coeff=result.spec.x_initial_coeff,
     )
-    set_pdf_parameters(model, result.params_dict, RooArgSet(upsilon_mass, boson_mass))
+    set_pdf_parameters(
+        model,
+        result.params_dict,
+        RooArgSet(upsilon_mass, boson_mass),
+        make_constant=True,
+    )
 
     reconstructed = BkgModel(
         model=model,

@@ -1,6 +1,20 @@
 import argparse
-import os
+import sys
 from enum import Enum
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+
+def _clear_plot_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for child in path.rglob("*"):
+        if child.is_file() and child.name != ".gitkeep":
+            child.unlink()
+
 
 from ROOT import (  # type: ignore
     RooFit,  # type: ignore
@@ -62,12 +76,11 @@ def main():
 
     args = parser.parse_args()
 
-    # clear plots dir
-    os.system("mkdir -p plots")
-    os.system("mkdir -p plots/fit_1d")
-    os.system("mkdir -p plots/fit_2d")
-    os.system("mkdir -p plots/fit_2d_data")
-    os.system(r'find plots -type f ! -name ".gitkeep" -delete')
+    # clear only the workflow-specific plot directories
+    (REPO_ROOT / "plots").mkdir(parents=True, exist_ok=True)
+    _clear_plot_dir(REPO_ROOT / "plots" / "fit_1d")
+    _clear_plot_dir(REPO_ROOT / "plots" / "fit_2d")
+    _clear_plot_dir(REPO_ROOT / "plots" / "fit_2d_data")
 
     gSystem.Load("libRooFit")
     gSystem.Load("libHiggsAnalysisCombinedLimit")

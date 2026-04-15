@@ -88,14 +88,15 @@ def run_resonant_job(payload: ResonantJobPayload):
     )
 
     if payload.kind == "higgs_workspace":
-        build_resonant_background_Higgs_ws(
+        return build_resonant_background_Higgs_ws(
             plot_dir=payload.plot_dir, nbins=payload.nbins
         )
-        return {"workspace": "resonant_background_fit_HiggsDalitz.root"}
 
     if payload.kind == "z_workspace":
-        build_resonant_background_Z_ws(plot_dir=payload.plot_dir, nbins=payload.nbins)
-        return {"workspace": "resonant_background_fit_ZGamma.root"}
+        return build_resonant_background_Z_ws(
+            plot_dir=payload.plot_dir,
+            nbins=payload.nbins,
+        )
 
     if payload.kind == "z_boson_parameters":
         return resonant_background_modeling_Z(
