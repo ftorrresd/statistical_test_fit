@@ -11,6 +11,10 @@ There are four top-level workflows:
 - `scripts/resonant_background.py`: standalone resonant-background and control-region normalization workflow
 - `scripts/non_resonant_background.py`: renamed from `realdata.py`; runs the dimuon fit plus the real-data non-resonant sideband workflow and final `RooMultiPdf` construction
 
+There is also one packaging step for Combine inputs:
+
+- `scripts/build_bundled_workspace.py`: writes one shared RooWorkspace plus one single simultaneous parametric datacard covering `H_1S`, `H_2S`, `H_3S`, `Z_1S`, `Z_2S`, `Z_3S`, `non_resonant_bkg`, `resonant_H_bkg`, and `resonant_Z_bkg`
+
 There is no `main.py` in this repository.
 
 ## Setup
@@ -180,6 +184,37 @@ Signal and resonant-background preparation are standalone workflows and are no l
 - `python3 scripts/signal.py`
 - `python3 scripts/resonant_background.py`
 
+### Single Datacard Builder
+
+After the signal, resonant-background, and non-resonant-background inputs exist, build the single simultaneous Combine workspace and card with:
+
+```bash
+python3 scripts/build_bundled_workspace.py
+```
+
+Useful example:
+
+```bash
+python3 scripts/build_bundled_workspace.py --strict-mode --output-dir datacards
+```
+
+CLI options:
+
+- `--output-dir PATH`: directory where `workspace.root`, `datacard.txt`, and a generated `README.md` summary are written
+- `--workspace-name STR`: RooWorkspace name stored in the ROOT file; default is `combined_workspace`
+- `--workspace-file-name STR`: bundled ROOT filename; default is `workspace.root`
+- `--datacard-file-name STR`: datacard filename; default is `datacard.txt`
+- `--strict-mode`: require strict non-resonant family selection instead of the default relaxed selection
+- `--skip-validation`: skip the validation step
+- `--signal-mass-label STR`: mass label passed to `text2workspace.py` and `combine` during validation; default is `125`
+
+By default the builder also validates the produced card by running:
+
+- `text2workspace.py`
+- `combine -M AsymptoticLimits --run blind`
+
+Validation outputs are written next to the datacard as `validation.log`, `validation_workspace.root`, and the usual `higgsCombine*.root` file when the smoke run succeeds.
+
 ## Workflow Notes
 
 - `scripts/pseudodata.py` only clears `plots/fit_1d`, `plots/fit_2d`, and `plots/fit_2d_data` at startup.
@@ -222,17 +257,18 @@ Typical outputs include:
 Minimal syntax check:
 
 ```bash
-python3 -m compileall pseudodata.py non_resonant_background.py signal.py resonant_background.py statistical_test_fit
+python3 -m compileall scripts/pseudodata.py scripts/non_resonant_background.py scripts/signal.py scripts/resonant_background.py scripts/build_bundled_workspace.py statistical_test_fit
 ```
 
 Focused smoke commands:
 
 ```bash
-python3 pseudodata.py --fits-to-run 1d --events 1000 --seed 1
-python3 pseudodata.py --fits-to-run 2d --events 1000 --seed 1
-python3 pseudodata.py --events 5000 --seed 42 --nbins 60
-python3 signal.py
-python3 resonant_background.py --use-cache
+python3 scripts/pseudodata.py --fits-to-run 1d --events 1000 --seed 1
+python3 scripts/pseudodata.py --fits-to-run 2d --events 1000 --seed 1
+python3 scripts/pseudodata.py --events 5000 --seed 42 --nbins 60
+python3 scripts/signal.py
+python3 scripts/resonant_background.py --use-cache
+python3 scripts/build_bundled_workspace.py --output-dir /tmp/statistical_test_fit_single_card
 ```
 
 ## Environment Notes

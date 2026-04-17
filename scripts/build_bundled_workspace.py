@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -23,7 +22,6 @@ from ROOT import (  # type: ignore
     RooArgList,  # type: ignore
     RooArgSet,  # type: ignore
     RooCategory,  # type: ignore
-    RooDataSet,  # type: ignore
     RooFit,  # type: ignore
     RooMultiPdf,  # type: ignore
     RooRealVar,  # type: ignore
@@ -48,8 +46,13 @@ from statistical_test_fit.ws_helper import freeze_pdf_params
 
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "datacards"
-WORKSPACE_NAME = "combined_workspace"
-CENTRAL_WORKSPACE_FILENAME = "workspace.root"
+DEFAULT_WORKSPACE_NAME = "combined_workspace"
+DEFAULT_WORKSPACE_FILENAME = "workspace.root"
+DEFAULT_DATACARD_FILENAME = "datacard.txt"
+ANALYSIS_BIN_NAME = "cat1"
+NON_RESONANT_PROCESS_NAME = "non_resonant_bkg"
+RESONANT_H_PROCESS_NAME = "resonant_H_bkg"
+RESONANT_Z_PROCESS_NAME = "resonant_Z_bkg"
 NON_RESONANT_WORKSPACE_PATH = REPO_ROOT / "non_resonant_background_workspace.root"
 NON_RESONANT_WORKSPACE_NAME = "non_resonant_background_ws"
 NON_RESONANT_SUMMARY_PATH = (
@@ -75,13 +78,13 @@ RESONANT_CONFIG = {
         "root_path": REPO_ROOT / "resonant_background_fit_HiggsDalitz.root",
         "workspace_name": "resonant_background_Higgs_ws",
         "source_pdf": "resonant_background_model_Higgs",
-        "source_data": "resonant_background_data",
+        "public_process": RESONANT_H_PROCESS_NAME,
     },
     "Z": {
         "root_path": REPO_ROOT / "resonant_background_fit_ZGamma.root",
         "workspace_name": "resonant_background_Z_ws",
         "source_pdf": "resonant_background_model_Z",
-        "source_data": "resonant_background_data",
+        "public_process": RESONANT_Z_PROCESS_NAME,
     },
 }
 
@@ -112,34 +115,50 @@ COPIED_SYSTEMATICS: dict[str, list[tuple[str, str, str, str, str]]] = {
 
 
 @dataclass(frozen=True)
-class ChannelSpec:
-    name: str
+class SignalProcessSpec:
     process: str
     state: str
     signal_workspace_path: Path
+
+    @property
+    def combine_name(self) -> str:
+        return f"{self.process}_{self.state}"
+
+    @property
+    def channel_label(self) -> str:
+        return (
+            f"HToUpsilon{self.state}Photon"
+            if self.process == "H"
+            else f"ZToUpsilon{self.state}Photon"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Bundle persisted H/Z -> Upsilon(nS)+Photon workspaces into a single "
-            "Combine-ready RooWorkspace and write one datacard per analysis channel."
+            "Bundle the persisted H/Z -> Upsilon(nS)+Photon workspaces into one "
+            "Combine-ready RooWorkspace and write a single simultaneous parametric datacard."
         )
     )
     parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
-        help="Directory where datacards, copied workspace ROOT files, and README are written.",
+        help="Directory where the bundled workspace, datacard, and README are written.",
     )
     parser.add_argument(
         "--workspace-name",
-        default=WORKSPACE_NAME,
+        default=DEFAULT_WORKSPACE_NAME,
         help="Name of the bundled RooWorkspace stored in the ROOT file.",
     )
     parser.add_argument(
         "--workspace-file-name",
-        default=CENTRAL_WORKSPACE_FILENAME,
+        default=DEFAULT_WORKSPACE_FILENAME,
         help="Filename of the bundled ROOT workspace file.",
+    )
+    parser.add_argument(
+        "--datacard-file-name",
+        default=DEFAULT_DATACARD_FILENAME,
+        help="Filename of the simultaneous datacard written next to the workspace.",
     )
     parser.add_argument(
         "--strict-mode",
@@ -198,40 +217,6 @@ def ensure_file(path: Path, hint: str | None = None) -> None:
     raise FileNotFoundError(message)
 
 
-def boson_obs_name(channel: str) -> str:
-    return f"{channel}_boson_mass"
-
-
-def upsilon_obs_name(channel: str) -> str:
-    return f"{channel}_upsilon_mass"
-
-
-def make_channel_specs() -> list[ChannelSpec]:
-    signal_paths: dict[tuple[str, str], Path] = {}
-    for sample in SIGNAL_SAMPLES:
-        signal_paths[(sample.process, sample.state)] = (
-            REPO_ROOT / f"signal_workspace_{sample.inner_file_name}.root"
-        )
-
-    channels: list[ChannelSpec] = []
-    for process in ("H", "Z"):
-        for state in ("1S", "2S", "3S"):
-            channel_name = (
-                f"HToUpsilon{state}Photon"
-                if process == "H"
-                else f"ZToUpsilon{state}Photon"
-            )
-            channels.append(
-                ChannelSpec(
-                    name=channel_name,
-                    process=process,
-                    state=state,
-                    signal_workspace_path=signal_paths[(process, state)],
-                )
-            )
-    return channels
-
-
 def load_json(path: Path) -> dict[str, Any]:
     with path.open() as handle:
         return json.load(handle)
@@ -249,18 +234,16 @@ def open_workspace(path: Path, workspace_name: str) -> tuple[Any, Any]:
     return root_file, workspace
 
 
-def ensure_channel_observables(workspace: RooWorkspace, channel: str) -> None:
-    boson_name = boson_obs_name(channel)
-    upsilon_name = upsilon_obs_name(channel)
-    if not workspace.var(boson_name):
-        workspace.factory(f"{boson_name}[{BOSON_MASS_LOWER},{BOSON_MASS_UPPER}]")
-    if not workspace.var(upsilon_name):
-        workspace.factory(f"{upsilon_name}[{UPSILON_MASS_LOWER},{UPSILON_MASS_UPPER}]")
+def ensure_shared_observables(workspace: RooWorkspace) -> None:
+    if not workspace.var("boson_mass"):
+        workspace.factory(f"boson_mass[{BOSON_MASS_LOWER},{BOSON_MASS_UPPER}]")
+    if not workspace.var("upsilon_mass"):
+        workspace.factory(f"upsilon_mass[{UPSILON_MASS_LOWER},{UPSILON_MASS_UPPER}]")
 
-    boson_mass = workspace.var(boson_name)
-    upsilon_mass = workspace.var(upsilon_name)
+    boson_mass = workspace.var("boson_mass")
+    upsilon_mass = workspace.var("upsilon_mass")
     if not boson_mass or not upsilon_mass:
-        raise RuntimeError(f"Failed to create observables for {channel}")
+        raise RuntimeError("Failed to create shared observables")
 
     boson_mass.SetTitle("m_{#mu#mu#gamma}")
     boson_mass.setUnit("GeV")
@@ -279,12 +262,11 @@ def pdf_names(workspace: RooWorkspace) -> set[str]:
     return {pdf.GetName() for pdf in list(workspace.allPdfs())}
 
 
-def import_pdf_from_workspace(
+def import_pdf_with_shared_observables(
     target_workspace: RooWorkspace,
     source_workspace,
     source_pdf_name: str,
     target_pdf_name: str,
-    channel: str,
     role_tag: str,
 ) -> str:
     source_pdf = source_workspace.pdf(source_pdf_name)
@@ -300,8 +282,7 @@ def import_pdf_from_workspace(
         clone,
         ROOT.RooFit.RenameAllNodes(role_tag),
         ROOT.RooFit.RenameAllVariablesExcept(role_tag, "boson_mass,upsilon_mass"),
-        ROOT.RooFit.RenameVariable("boson_mass", boson_obs_name(channel)),
-        ROOT.RooFit.RenameVariable("upsilon_mass", upsilon_obs_name(channel)),
+        ROOT.RooFit.RecycleConflictNodes(),
     )
     after_names = pdf_names(target_workspace)
 
@@ -328,13 +309,11 @@ def import_pdf_from_workspace(
     return target_pdf_name
 
 
-def import_dataset_from_workspace(
+def import_dataset_with_shared_observables(
     target_workspace: RooWorkspace,
     source_workspace,
     source_dataset_name: str,
     target_dataset_name: str,
-    channel: str,
-    dataset_role: str,
 ) -> str:
     source_data = source_workspace.data(source_dataset_name)
     if source_data is None:
@@ -343,14 +322,10 @@ def import_dataset_from_workspace(
         )
 
     clone = source_data.Clone(f"{target_dataset_name}_clone")
-    import_options = [
-        RooFit.Rename(target_dataset_name),
-        RooFit.RenameVariable("boson_mass", boson_obs_name(channel)),
-        RooFit.RenameVariable("upsilon_mass", upsilon_obs_name(channel)),
-    ]
+    import_options = [RooFit.Rename(target_dataset_name)]
     if source_data.get().find("weight"):
         import_options.append(
-            RooFit.RenameVariable("weight", f"{channel}_{dataset_role}_weight")
+            RooFit.RenameVariable("weight", f"{target_dataset_name}_weight")
         )
     getattr(target_workspace, "import")(clone, *import_options)
     return target_dataset_name
@@ -366,6 +341,18 @@ def signal_norm_from_workspace(signal_workspace_path: Path) -> float:
     value = float(data.sumEntries())
     root_file.Close()
     return value
+
+
+def make_signal_specs() -> list[SignalProcessSpec]:
+    return [
+        SignalProcessSpec(
+            process=sample.process,
+            state=sample.state,
+            signal_workspace_path=REPO_ROOT
+            / f"signal_workspace_{sample.inner_file_name}.root",
+        )
+        for sample in SIGNAL_SAMPLES
+    ]
 
 
 def build_nonres_candidate_selection(
@@ -465,103 +452,77 @@ def build_nonres_candidate_selection(
     }
 
 
-def nonres_alias_name(channel: str, candidate: dict[str, Any]) -> str:
+def nonres_candidate_alias_name(candidate: dict[str, Any]) -> str:
     family = candidate["pdf_family"]
     if family == "johnson":
-        return f"{channel}_non_resonant_background_johnson_nominal_pdf"
+        return f"{NON_RESONANT_PROCESS_NAME}_johnson_nominal_pdf"
     order = candidate["scan_order"]
-    return f"{channel}_non_resonant_background_{family}_order{order}_pdf"
-
-
-def make_signal_dataset_name(channel: str) -> str:
-    return f"{channel}_signal_data"
-
-
-def make_resonant_dataset_name(channel: str) -> str:
-    return f"{channel}_resonant_background_data"
-
-
-def make_nonres_sideband_dataset_name(channel: str) -> str:
-    return f"{channel}_non_resonant_sidebands"
+    return f"{NON_RESONANT_PROCESS_NAME}_{family}_order{order}_pdf"
 
 
 def import_signal_artifacts(
     target_workspace: RooWorkspace,
-    channel: ChannelSpec,
+    signal_spec: SignalProcessSpec,
 ) -> dict[str, Any]:
-    log(f"Importing signal artifacts for {channel.name}")
+    log(f"Importing signal PDF for {signal_spec.combine_name}")
     root_file, source_workspace = open_workspace(
-        channel.signal_workspace_path,
+        signal_spec.signal_workspace_path,
         SIGNAL_WORKSPACE_NAME,
     )
-    ensure_channel_observables(target_workspace, channel.name)
-    import_pdf_from_workspace(
+    ensure_shared_observables(target_workspace)
+    import_pdf_with_shared_observables(
         target_workspace,
         source_workspace,
         SIGNAL_SOURCE_PDF_NAME,
-        f"{channel.name}_signal_pdf",
-        channel.name,
-        f"__{channel.name}__signal",
-    )
-    import_dataset_from_workspace(
-        target_workspace,
-        source_workspace,
-        SIGNAL_SOURCE_DATA_NAME,
-        make_signal_dataset_name(channel.name),
-        channel.name,
-        "signal",
+        signal_spec.combine_name,
+        f"__{signal_spec.combine_name}__signal",
     )
 
     signal_norm = RooRealVar(
-        f"{channel.name}_signal_pdf_norm",
-        f"{channel.name}_signal_pdf_norm",
-        signal_norm_from_workspace(channel.signal_workspace_path),
+        f"{signal_spec.combine_name}_norm",
+        f"{signal_spec.combine_name}_norm",
+        signal_norm_from_workspace(signal_spec.signal_workspace_path),
     )
     signal_norm.setConstant(True)
     getattr(target_workspace, "import")(signal_norm)
     root_file.Close()
 
     return {
-        "source_workspace": relative_to_repo(channel.signal_workspace_path),
-        "pdf": f"{channel.name}_signal_pdf",
-        "dataset": make_signal_dataset_name(channel.name),
+        "process": signal_spec.combine_name,
+        "channel_label": signal_spec.channel_label,
+        "source_workspace": relative_to_repo(signal_spec.signal_workspace_path),
+        "pdf": signal_spec.combine_name,
+        "norm_name": signal_norm.GetName(),
         "norm": float(signal_norm.getVal()),
+        "norm_status": "fixed",
     }
 
 
 def import_resonant_artifacts(
     target_workspace: RooWorkspace,
-    channel: ChannelSpec,
+    process: str,
     resonant_summary: dict[str, Any],
 ) -> dict[str, Any]:
-    log(f"Importing resonant-background artifacts for {channel.name}")
-    source_info = RESONANT_CONFIG[channel.process]
+    log(f"Importing resonant background PDF for {process}")
+    source_info = RESONANT_CONFIG[process]
     root_file, source_workspace = open_workspace(
         source_info["root_path"],
         source_info["workspace_name"],
     )
-    ensure_channel_observables(target_workspace, channel.name)
-    import_pdf_from_workspace(
+    ensure_shared_observables(target_workspace)
+    public_process = str(source_info["public_process"])
+    import_pdf_with_shared_observables(
         target_workspace,
         source_workspace,
-        source_info["source_pdf"],
-        f"{channel.name}_resonant_background_pdf",
-        channel.name,
-        f"__{channel.name}__resonant",
-    )
-    import_dataset_from_workspace(
-        target_workspace,
-        source_workspace,
-        source_info["source_data"],
-        make_resonant_dataset_name(channel.name),
-        channel.name,
-        "resonant",
+        str(source_info["source_pdf"]),
+        public_process,
+        f"__{public_process}__resonant",
     )
 
-    initial_norm = float(resonant_summary["process_initial_norms"][channel.process])
+    initial_norm = float(resonant_summary["process_initial_norms"][process])
     resonant_norm = RooRealVar(
-        f"{channel.name}_resonant_background_pdf_norm",
-        f"{channel.name}_resonant_background_pdf_norm",
+        f"{public_process}_norm",
+        f"{public_process}_norm",
         initial_norm,
         0.0,
         max(initial_norm * 10.0, 10.0),
@@ -571,61 +532,49 @@ def import_resonant_artifacts(
     root_file.Close()
 
     return {
+        "process": public_process,
         "source_workspace": relative_to_repo(source_info["root_path"]),
-        "pdf": f"{channel.name}_resonant_background_pdf",
-        "dataset": make_resonant_dataset_name(channel.name),
+        "pdf": public_process,
+        "norm_name": resonant_norm.GetName(),
         "norm": float(resonant_norm.getVal()),
+        "norm_status": "floating",
     }
 
 
 def import_non_resonant_artifacts(
     target_workspace: RooWorkspace,
-    channel: ChannelSpec,
     nonres_workspace,
     nonres_selection: dict[str, Any],
 ) -> dict[str, Any]:
-    log(f"Importing non-resonant artifacts for {channel.name}")
-    import_dataset_from_workspace(
+    log("Importing observed data and non-resonant background PDFs")
+    ensure_shared_observables(target_workspace)
+    import_dataset_with_shared_observables(
         target_workspace,
         nonres_workspace,
         "data_obs",
-        f"{channel.name}_data_obs",
-        channel.name,
         "data_obs",
     )
-    import_dataset_from_workspace(
-        target_workspace,
-        nonres_workspace,
-        "data_sidebands",
-        make_nonres_sideband_dataset_name(channel.name),
-        channel.name,
-        "non_resonant_sidebands",
-    )
-    ensure_channel_observables(target_workspace, channel.name)
 
-    category = RooCategory(f"{channel.name}_pdfindex", f"{channel.name}_pdfindex")
+    category = RooCategory("pdfindex", "pdfindex")
     getattr(target_workspace, "import")(category)
 
     multipdf_inputs = RooArgList()
     candidate_aliases: list[str] = []
     state_mappings: list[dict[str, Any]] = []
+    observables = RooArgSet(
+        target_workspace.var("upsilon_mass"),
+        target_workspace.var("boson_mass"),
+    )
     for candidate in nonres_selection["selected_candidates"]:
-        alias_name = nonres_alias_name(channel.name, candidate)
-        import_pdf_from_workspace(
+        alias_name = nonres_candidate_alias_name(candidate)
+        import_pdf_with_shared_observables(
             target_workspace,
             nonres_workspace,
             candidate["model_name"],
             alias_name,
-            channel.name,
-            f"__{channel.name}__{candidate['model_name']}",
+            f"__{alias_name}",
         )
-        freeze_pdf_params(
-            target_workspace.pdf(alias_name),
-            RooArgSet(
-                target_workspace.var(upsilon_obs_name(channel.name)),
-                target_workspace.var(boson_obs_name(channel.name)),
-            ),
-        )
+        freeze_pdf_params(target_workspace.pdf(alias_name), observables)
         multipdf_inputs.add(target_workspace.pdf(alias_name))
         candidate_aliases.append(alias_name)
         state_mappings.append(
@@ -642,21 +591,20 @@ def import_non_resonant_artifacts(
         )
 
     if not candidate_aliases:
-        raise RuntimeError(
-            f"No non-resonant candidates were selected for {channel.name}"
-        )
+        raise RuntimeError("No non-resonant candidates were selected")
+
     multipdf = RooMultiPdf(
-        f"{channel.name}_non_resonant_background_pdf",
-        f"{channel.name}_non_resonant_background_pdf",
-        target_workspace.cat(f"{channel.name}_pdfindex"),
+        NON_RESONANT_PROCESS_NAME,
+        NON_RESONANT_PROCESS_NAME,
+        target_workspace.cat("pdfindex"),
         multipdf_inputs,
     )
     getattr(target_workspace, "import")(multipdf)
-    target_workspace.cat(f"{channel.name}_pdfindex").setIndex(0)
+    target_workspace.cat("pdfindex").setIndex(0)
 
     nonres_norm = RooRealVar(
-        f"{channel.name}_non_resonant_background_pdf_norm",
-        f"{channel.name}_non_resonant_background_pdf_norm",
+        f"{NON_RESONANT_PROCESS_NAME}_norm",
+        f"{NON_RESONANT_PROCESS_NAME}_norm",
         float(nonres_selection["johnson_initial_norm"]),
         0.0,
         max(float(nonres_selection["full_entries"]) * 10.0, 10.0),
@@ -665,66 +613,165 @@ def import_non_resonant_artifacts(
     getattr(target_workspace, "import")(nonres_norm)
 
     return {
+        "process": NON_RESONANT_PROCESS_NAME,
         "source_workspace": relative_to_repo(NON_RESONANT_WORKSPACE_PATH),
-        "pdf": f"{channel.name}_non_resonant_background_pdf",
-        "dataset": f"{channel.name}_data_obs",
-        "sideband_dataset": make_nonres_sideband_dataset_name(channel.name),
+        "dataset": "data_obs",
+        "pdf": NON_RESONANT_PROCESS_NAME,
+        "norm_name": nonres_norm.GetName(),
         "norm": float(nonres_norm.getVal()),
+        "norm_status": "floating",
         "mode": nonres_selection["mode_key"],
         "candidates": candidate_aliases,
         "state_mappings": state_mappings,
     }
 
 
-def write_datacard(channel_dir: Path, channel: ChannelSpec) -> Path:
-    systematics = COPIED_SYSTEMATICS[channel.process]
-    lines = [
-        f"# Datacard for {channel.name}",
-        f"# Process: {channel.process}, Upsilon state: {channel.state}",
-        "imax 1 number of channels",
-        "jmax 2 number of backgrounds",
-        "kmax * number of nuisance parameters",
-        "------------",
-        f"shapes signal {channel.name} {CENTRAL_WORKSPACE_FILENAME} {WORKSPACE_NAME}:{channel.name}_signal_pdf",
-        f"shapes non_resonant_bkg {channel.name} {CENTRAL_WORKSPACE_FILENAME} {WORKSPACE_NAME}:{channel.name}_non_resonant_background_pdf",
-        f"shapes resonant_bkg {channel.name} {CENTRAL_WORKSPACE_FILENAME} {WORKSPACE_NAME}:{channel.name}_resonant_background_pdf",
-        f"shapes data_obs {channel.name} {CENTRAL_WORKSPACE_FILENAME} {WORKSPACE_NAME}:{channel.name}_data_obs",
-        "------------",
-        f"bin {channel.name}",
-        "observation -1",
-        "------------",
-        f"bin {channel.name} {channel.name} {channel.name}",
-        "process signal non_resonant_bkg resonant_bkg",
-        "process 0 1 2",
-        "rate 1 1 1",
-        "------------",
+def combined_process_names(signal_specs: list[SignalProcessSpec]) -> list[str]:
+    return [spec.combine_name for spec in signal_specs] + [
+        NON_RESONANT_PROCESS_NAME,
+        RESONANT_H_PROCESS_NAME,
+        RESONANT_Z_PROCESS_NAME,
     ]
+
+
+def combined_process_ids(signal_specs: list[SignalProcessSpec]) -> list[int]:
+    signal_ids = [0] + [-index for index in range(1, len(signal_specs))]
+    return signal_ids + [1, 2, 3]
+
+
+def build_systematics_rows(
+    signal_specs: list[SignalProcessSpec],
+) -> list[tuple[str, str, list[str]]]:
+    h_signals = [spec.combine_name for spec in signal_specs if spec.process == "H"]
+    z_signals = [spec.combine_name for spec in signal_specs if spec.process == "Z"]
+    process_order = combined_process_names(signal_specs)
+    h_systematics = {
+        name: (pdf_type, signal_value, nonres_value, resonant_value)
+        for name, pdf_type, signal_value, nonres_value, resonant_value in COPIED_SYSTEMATICS[
+            "H"
+        ]
+    }
+    z_systematics = {
+        name: (pdf_type, signal_value, nonres_value, resonant_value)
+        for name, pdf_type, signal_value, nonres_value, resonant_value in COPIED_SYSTEMATICS[
+            "Z"
+        ]
+    }
+
+    rows: list[tuple[str, str, list[str]]] = []
     for (
         nuisance_name,
-        nuisance_pdf,
-        signal_value,
-        nonres_value,
-        resonant_value,
-    ) in systematics:
+        h_pdf_type,
+        h_signal_value,
+        _,
+        h_resonant_value,
+    ) in COPIED_SYSTEMATICS["H"]:
+        if nuisance_name not in z_systematics:
+            raise RuntimeError(f"Missing Z systematic row for {nuisance_name!r}")
+        z_pdf_type, z_signal_value, _, z_resonant_value = z_systematics[nuisance_name]
+        if z_pdf_type != h_pdf_type:
+            raise RuntimeError(
+                f"Systematic {nuisance_name!r} has inconsistent types between H and Z"
+            )
+
+        if (h_signal_value, h_resonant_value) == (z_signal_value, z_resonant_value):
+            values = []
+            for process_name in process_order:
+                if process_name in h_signals or process_name in z_signals:
+                    values.append(h_signal_value)
+                elif process_name == NON_RESONANT_PROCESS_NAME:
+                    values.append("-")
+                elif process_name == RESONANT_H_PROCESS_NAME:
+                    values.append(h_resonant_value)
+                elif process_name == RESONANT_Z_PROCESS_NAME:
+                    values.append(z_resonant_value)
+                else:
+                    raise RuntimeError(f"Unsupported process name {process_name!r}")
+            rows.append((nuisance_name, h_pdf_type, values))
+            continue
+
+        h_values = []
+        z_values = []
+        for process_name in process_order:
+            if process_name in h_signals:
+                h_values.append(h_signal_value)
+                z_values.append("-")
+            elif process_name in z_signals:
+                h_values.append("-")
+                z_values.append(z_signal_value)
+            elif process_name == NON_RESONANT_PROCESS_NAME:
+                h_values.append("-")
+                z_values.append("-")
+            elif process_name == RESONANT_H_PROCESS_NAME:
+                h_values.append(h_resonant_value)
+                z_values.append("-")
+            elif process_name == RESONANT_Z_PROCESS_NAME:
+                h_values.append("-")
+                z_values.append(z_resonant_value)
+            else:
+                raise RuntimeError(f"Unsupported process name {process_name!r}")
+
+        rows.append((f"{nuisance_name}_H", h_pdf_type, h_values))
+        rows.append((f"{nuisance_name}_Z", z_pdf_type, z_values))
+
+    return rows
+
+
+def write_datacard(
+    output_dir: Path,
+    datacard_file_name: str,
+    workspace_file_name: str,
+    workspace_name: str,
+    signal_specs: list[SignalProcessSpec],
+) -> tuple[Path, list[str]]:
+    process_names = combined_process_names(signal_specs)
+    process_ids = combined_process_ids(signal_specs)
+    systematics_rows = build_systematics_rows(signal_specs)
+
+    lines = [
+        "# Single simultaneous datacard for H/Z -> Upsilon(nS) + photon",
+        f"# Bin: {ANALYSIS_BIN_NAME}",
+        "imax 1 number of channels",
+        f"jmax {len(process_names) - 1} number of processes minus 1",
+        "kmax * number of nuisance parameters",
+        "------------",
+        f"shapes data_obs {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:data_obs",
+    ]
+    for signal_spec in signal_specs:
         lines.append(
-            f"{nuisance_name} {nuisance_pdf} {signal_value} {nonres_value} {resonant_value}"
+            f"shapes {signal_spec.combine_name} {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:{signal_spec.combine_name}"
         )
     lines.extend(
         [
+            f"shapes {NON_RESONANT_PROCESS_NAME} {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:{NON_RESONANT_PROCESS_NAME}",
+            f"shapes {RESONANT_H_PROCESS_NAME} {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:{RESONANT_H_PROCESS_NAME}",
+            f"shapes {RESONANT_Z_PROCESS_NAME} {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:{RESONANT_Z_PROCESS_NAME}",
             "------------",
-            f"{channel.name}_pdfindex discrete",
-            "",
+            f"bin {ANALYSIS_BIN_NAME}",
+            "observation -1",
+            "------------",
+            "bin " + " ".join([ANALYSIS_BIN_NAME] * len(process_names)),
+            "process " + " ".join(process_names),
+            "process " + " ".join(str(process_id) for process_id in process_ids),
+            "rate " + " ".join(["1"] * len(process_names)),
+            "------------",
         ]
     )
-    datacard_path = channel_dir / f"{channel.name}.txt"
+    for nuisance_name, nuisance_pdf, values in systematics_rows:
+        lines.append(f"{nuisance_name} {nuisance_pdf} " + " ".join(values))
+    lines.extend(["------------", "pdfindex discrete", ""])
+
+    datacard_path = output_dir / datacard_file_name
     datacard_path.write_text("\n".join(lines), encoding="ascii")
-    return datacard_path
+    return datacard_path, lines
 
 
-def validate_channel(
-    channel_dir: Path, channel_name: str, mass_label: str
+def validate_datacard(
+    output_dir: Path,
+    datacard_file_name: str,
+    mass_label: str,
 ) -> dict[str, Any]:
-    datacard_path = channel_dir / f"{channel_name}.txt"
+    datacard_path = output_dir / datacard_file_name
     text2workspace_cmd = [
         "text2workspace.py",
         datacard_path.name,
@@ -735,7 +782,7 @@ def validate_channel(
     ]
     text2workspace_res = subprocess.run(
         text2workspace_cmd,
-        cwd=channel_dir,
+        cwd=output_dir,
         capture_output=True,
         text=True,
     )
@@ -755,11 +802,11 @@ def validate_channel(
             "-m",
             mass_label,
             "-n",
-            f".{channel_name}_validate",
+            ".validate",
         ]
         combine_res = subprocess.run(
             combine_cmd,
-            cwd=channel_dir,
+            cwd=output_dir,
             capture_output=True,
             text=True,
         )
@@ -768,7 +815,7 @@ def validate_channel(
         combine_returncode = combine_res.returncode
 
     log_lines = [
-        f"# Validation log for {channel_name}",
+        "# Validation log for single simultaneous datacard",
         "",
         "## text2workspace.py",
         f"Command: {' '.join(text2workspace_cmd)}",
@@ -787,8 +834,19 @@ def validate_channel(
         "```",
         "",
     ]
-    log_path = channel_dir / "validation.log"
+    log_path = output_dir / "validation.log"
     log_path.write_text("\n".join(log_lines), encoding="ascii")
+
+    produced_files = [log_path]
+    validation_workspace_path = output_dir / "validation_workspace.root"
+    if validation_workspace_path.exists():
+        produced_files.append(validation_workspace_path)
+    combine_root_path = (
+        output_dir / f"higgsCombine.validate.AsymptoticLimits.mH{mass_label}.root"
+    )
+    if combine_root_path.exists():
+        produced_files.append(combine_root_path)
+
     return {
         "text2workspace_status": "ok"
         if text2workspace_res.returncode == 0
@@ -797,6 +855,7 @@ def validate_channel(
         "text2workspace_returncode": text2workspace_res.returncode,
         "combine_returncode": combine_returncode,
         "log": relative_to_repo(log_path),
+        "produced_files": produced_files,
     }
 
 
@@ -814,7 +873,7 @@ def collect_parameter_rows(workspace: RooWorkspace) -> list[list[Any]]:
     rows: list[list[Any]] = []
     for variable in sorted(list(workspace.allVars()), key=lambda item: item.GetName()):
         name = variable.GetName()
-        if name.endswith("_boson_mass") or name.endswith("_upsilon_mass"):
+        if name in {"boson_mass", "upsilon_mass"}:
             status = "observable"
         else:
             status = "fixed" if variable.isConstant() else "floating"
@@ -842,148 +901,120 @@ def collect_parameter_rows(workspace: RooWorkspace) -> list[list[Any]]:
     return rows
 
 
-def collect_channel_parameter_rows(
-    parameter_rows: list[list[Any]],
-    channels: list[ChannelSpec],
-) -> dict[str, list[list[Any]]]:
-    return {
-        channel.name: [row for row in parameter_rows if channel.name in str(row[0])]
-        for channel in channels
-    }
-
-
 def write_summary_readme(
     output_dir: Path,
     workspace_name: str,
     workspace_file_name: str,
+    datacard_file_name: str,
     workspace: RooWorkspace,
-    channels: list[ChannelSpec],
-    channel_reports: dict[str, dict[str, Any]],
+    signal_specs: list[SignalProcessSpec],
+    signal_reports: list[dict[str, Any]],
+    resonant_reports: list[dict[str, Any]],
+    nonres_report: dict[str, Any],
     nonres_selection: dict[str, Any],
-    resonant_summary: dict[str, Any],
-    validation_results: dict[str, dict[str, Any]],
+    datacard_lines: list[str],
+    validation_result: dict[str, Any] | None,
     produced_files: list[Path],
-    placeholders: list[str],
-    missing_inputs: list[str],
 ) -> None:
     object_lists = collect_workspace_objects(workspace)
     parameter_rows = collect_parameter_rows(workspace)
-    channel_parameter_rows = collect_channel_parameter_rows(parameter_rows, channels)
+    systematics_rows = build_systematics_rows(signal_specs)
 
-    channel_rows = []
-    state_mapping_rows = []
-    for channel in channels:
-        report = channel_reports[channel.name]
-        state_summary = ", ".join(
-            f"{state['workspace_label']}={state['readable_label']}"
-            for state in report["non_resonant"]["state_mappings"]
-        )
-        channel_rows.append(
+    signal_rows = [
+        [
+            report["process"],
+            report["channel_label"],
+            report["pdf"],
+            report["norm_name"],
+            f"{report['norm']:.8g}",
+            report["norm_status"],
+            report["source_workspace"],
+        ]
+        for report in signal_reports
+    ]
+    background_rows = [
+        [
+            nonres_report["process"],
+            nonres_report["pdf"],
+            nonres_report["norm_name"],
+            f"{nonres_report['norm']:.8g}",
+            nonres_report["norm_status"],
+            nonres_report["source_workspace"],
+        ]
+    ] + [
+        [
+            report["process"],
+            report["pdf"],
+            report["norm_name"],
+            f"{report['norm']:.8g}",
+            report["norm_status"],
+            report["source_workspace"],
+        ]
+        for report in resonant_reports
+    ]
+    state_mapping_rows = [
+        [
+            state["index"],
+            state["workspace_label"],
+            state["readable_label"],
+            state["pdf_name"],
+            state["source_model_name"],
+        ]
+        for state in nonres_report["state_mappings"]
+    ]
+    systematics_table_rows = [
+        [name, pdf_type, *values] for name, pdf_type, values in systematics_rows
+    ]
+    validation_rows = (
+        [
             [
-                channel.name,
-                channel.process,
-                channel.state,
-                f"{report['signal']['norm']:.8g}",
-                f"{report['resonant']['norm']:.8g}",
-                f"{report['non_resonant']['norm']:.8g}",
-                report["non_resonant"]["mode"],
-                state_summary,
-                ", ".join(
-                    Path(name).stem for name in report["non_resonant"]["candidates"]
-                ),
+                validation_result["text2workspace_status"],
+                validation_result["combine_status"],
+                validation_result["log"],
             ]
-        )
-        for state in report["non_resonant"]["state_mappings"]:
-            state_mapping_rows.append(
-                [
-                    channel.name,
-                    state["index"],
-                    state["workspace_label"],
-                    state["readable_label"],
-                    state["pdf_name"],
-                ]
-            )
-
-    validation_rows = []
-    for channel in channels:
-        if channel.name in validation_results:
-            result = validation_results[channel.name]
-            validation_rows.append(
-                [
-                    channel.name,
-                    result["text2workspace_status"],
-                    result["combine_status"],
-                    result["log"],
-                ]
-            )
-        else:
-            validation_rows.append([channel.name, "skipped", "skipped", "-"])
-
-    systematics_rows = []
-    for process in ("H", "Z"):
-        for (
-            nuisance_name,
-            nuisance_pdf,
-            signal_value,
-            nonres_value,
-            resonant_value,
-        ) in COPIED_SYSTEMATICS[process]:
-            systematics_rows.append(
-                [
-                    process,
-                    nuisance_name,
-                    nuisance_pdf,
-                    signal_value,
-                    nonres_value,
-                    resonant_value,
-                    relative_to_repo(LEGACY_SYSTEMATICS_SOURCE),
-                ]
-            )
+        ]
+        if validation_result
+        else [["skipped", "skipped", "-"]]
+    )
 
     lines = [
-        "# Bundled Datacards",
+        "# Bundled Single Datacard",
         "",
         "## Summary",
         f"- Bundled ROOT file: `{workspace_file_name}`",
         f"- RooWorkspace name: `{workspace_name}`",
-        "- Observable policy: full-range in every channel",
+        f"- Datacard: `{datacard_file_name}`",
+        f"- Analysis bin: `{ANALYSIS_BIN_NAME}`",
+        "- One shared observed dataset is used for the full simultaneous model.",
+        "- Six signal processes are exposed as independent Combine-facing PDFs: `H_1S`, `H_2S`, `H_3S`, `Z_1S`, `Z_2S`, `Z_3S`.",
+        "- Background processes are `non_resonant_bkg`, `resonant_H_bkg`, and `resonant_Z_bkg`.",
+        "- Signal yields use workspace-side `*_norm` objects fixed to the nominal MC weighted yields.",
+        "- Background yields use floating workspace-side `*_norm` objects.",
+        f"- Non-resonant selection mode used by the bundler: `{nonres_selection['mode_key']}`.",
+        "",
+        "## Observable Layout",
         f"- `upsilon_mass`: `{UPSILON_MASS_LOWER}` to `{UPSILON_MASS_UPPER}` GeV",
         f"- `boson_mass`: `{BOSON_MASS_LOWER}` to `{BOSON_MASS_UPPER}` GeV",
-        f"- Non-resonant selection mode used by the bundler: `{nonres_selection['mode_key']}`",
-        "- `pseudodata.py` is intentionally excluded from production datacard inputs and treated as a toy-study workflow only.",
+        "- Named boson ranges kept in the workspace: `LEFT`, `MIDDLE`, `RIGHT`, `FULL`.",
         "",
-        "## Naming Convention Chosen",
-        "- Channels use the required names: `HToUpsilon1SPhoton`, `HToUpsilon2SPhoton`, `HToUpsilon3SPhoton`, `ZToUpsilon1SPhoton`, `ZToUpsilon2SPhoton`, `ZToUpsilon3SPhoton`.",
-        "- Public Combine-facing PDFs are named `CHANNEL_signal_pdf`, `CHANNEL_resonant_background_pdf`, and `CHANNEL_non_resonant_background_pdf`.",
-        "- Public normalizations are named `CHANNEL_signal_pdf_norm`, `CHANNEL_resonant_background_pdf_norm`, and `CHANNEL_non_resonant_background_pdf_norm`.",
-        "- Public observed datasets are named `CHANNEL_data_obs`.",
-        "- Public discrete categories are named `CHANNEL_pdfindex`.",
-        "- `RooMultiPdf` auto-generates category state labels as `_pdfN`; the readable state names are recorded below.",
-        "",
-        "## Collision-Avoidance Strategy",
-        "- The bundler imports cloned source PDFs and datasets from persisted workspaces, not refitted or reconstructed models.",
-        "- Imported dependency graphs are renamed deterministically with channel/role tags to avoid collisions in one shared workspace.",
-        "- If a required source object or unique target name is missing, the bundler fails loudly.",
-        "",
-        "## Workspace Layout",
-        "- One shared workspace contains all six channels.",
-        "- Each channel has its own observable pair, observed dataset, signal dataset, resonant dataset, signal PDF, resonant PDF, non-resonant candidate PDFs, and final non-resonant `RooMultiPdf`.",
-        "- The final non-resonant `RooMultiPdf` contains Johnson nominal plus the selected winner and immediate neighbor orders for the Bernstein and Chebychev families.",
-        "",
-        "## Channel Inputs",
+        "## Signal Processes",
         markdown_table(
             [
-                "Channel",
                 "Process",
-                "State",
-                "Signal norm",
-                "Resonant init",
-                "Non-res init",
-                "Non-res mode",
-                "RooMultiPdf states",
-                "Non-res candidates",
+                "Legacy channel label",
+                "PDF",
+                "Norm",
+                "Norm value",
+                "Status",
+                "Source workspace",
             ],
-            channel_rows,
+            signal_rows,
+        ),
+        "",
+        "## Background Processes",
+        markdown_table(
+            ["Process", "PDF", "Norm", "Norm value", "Status", "Source workspace"],
+            background_rows,
         ),
         "",
         "## Non-Resonant Candidate Selection",
@@ -1003,9 +1034,38 @@ def write_summary_readme(
         "",
         "## RooMultiPdf State Mapping",
         markdown_table(
-            ["Channel", "Index", "Workspace label", "Readable label", "Imported PDF"],
+            [
+                "Index",
+                "Workspace label",
+                "Readable label",
+                "Imported PDF",
+                "Source model",
+            ],
             state_mapping_rows,
         ),
+        "",
+        "## Systematics Written To The Single Card",
+        markdown_table(
+            [
+                "Nuisance",
+                "Type",
+                "H_1S",
+                "H_2S",
+                "H_3S",
+                "Z_1S",
+                "Z_2S",
+                "Z_3S",
+                NON_RESONANT_PROCESS_NAME,
+                RESONANT_H_PROCESS_NAME,
+                RESONANT_Z_PROCESS_NAME,
+            ],
+            systematics_table_rows,
+        ),
+        "",
+        "## Datacard Contents",
+        "```text",
+        *datacard_lines,
+        "```",
         "",
         "## Imported Objects",
         "### Datasets",
@@ -1034,102 +1094,45 @@ def write_summary_readme(
         "```",
         "",
         "## Parameters",
-        "",
-        "## Copied Systematics And Sources",
         markdown_table(
-            [
-                "Process",
-                "Nuisance",
-                "Type",
-                "Signal",
-                "Non-resonant",
-                "Resonant",
-                "Source",
-            ],
-            systematics_rows,
+            ["Name", "Type", "Status", "Value/Label", "Min", "Max"],
+            parameter_rows,
         ),
         "",
-        "## What Was Copied From Legacy Inputs",
-        f"- Systematic names and values were copied from `{relative_to_repo(LEGACY_SYSTEMATICS_SOURCE)}`.",
-        "- Signal normalizations come from the weighted `signal_data.sumEntries()` values stored in the signal workspaces produced by `signal.py`.",
-        f"- Resonant initial normalization seeds come from the produced summary `{relative_to_repo(RESONANT_SUMMARY_PATH)}`: `H` uses the stored Higgs resonant dataset sum of weights and `Z` uses the stored control-region extrapolation `y0`.",
-        f"- Non-resonant candidate selection and initial normalization estimates come from `{relative_to_repo(NON_RESONANT_SUMMARY_PATH)}` and the persisted non-resonant workspace `{relative_to_repo(NON_RESONANT_WORKSPACE_PATH)}`.",
-        "",
-        "## Fixed Vs Floating Identification",
-        "- `RooRealVar.isConstant()` is used for all real-valued parameters stored in the bundled workspace.",
-        "- `RooCategory.isConstant()` is used for discrete parameters such as `CHANNEL_pdfindex`.",
-        "- Observables are reported as `observable` rather than `floating`.",
+        "## Source Inputs",
+        f"- Signal workspaces come from the outputs of `python3 scripts/signal.py`.",
+        f"- Resonant background workspaces come from `python3 scripts/resonant_background.py` and summary `{relative_to_repo(RESONANT_SUMMARY_PATH)}`.",
+        f"- The shared observed dataset and non-resonant candidate PDFs come from `{relative_to_repo(NON_RESONANT_WORKSPACE_PATH)}` and summary `{relative_to_repo(NON_RESONANT_SUMMARY_PATH)}`.",
+        f"- Legacy lnN values were copied from `{relative_to_repo(LEGACY_SYSTEMATICS_SOURCE)}` and expanded onto the single-card process layout.",
         "",
         "## Produced Files",
         "```text",
         *sorted(relative_to_repo(path) for path in produced_files),
         "```",
         "",
-        "## Detected Placeholders",
+        "## Notes",
+        "- Validation runs `text2workspace.py` and then a blind `combine -M AsymptoticLimits` smoke test by default.",
+        "- Use `--skip-validation` to write only the workspace and parametric datacard.",
+        "- The six public signal process names are ready to be mapped to six independent POIs in a later Combine step.",
+        "",
+        "## Validation",
+        markdown_table(
+            ["text2workspace.py", "combine -M AsymptoticLimits", "Log"],
+            validation_rows,
+        ),
+        "",
     ]
-
-    parameter_headers = ["Name", "Type", "Status", "Value/Label", "Min", "Max"]
-    parameter_insert_index = lines.index("## Copied Systematics And Sources")
-    parameter_sections: list[str] = []
-    for channel in channels:
-        parameter_sections.extend(
-            [
-                f"### {channel.name}",
-                markdown_table(
-                    parameter_headers,
-                    channel_parameter_rows[channel.name],
-                ),
-                "",
-            ]
-        )
-    lines[parameter_insert_index:parameter_insert_index] = parameter_sections
-
-    if placeholders:
-        lines.extend([f"- {item}" for item in placeholders])
-    else:
-        lines.append("- None.")
-
-    lines.extend(["", "## Missing Inputs"])
-    if missing_inputs:
-        lines.extend([f"- {item}" for item in missing_inputs])
-    else:
-        lines.append("- None.")
-
-    lines.extend(
-        [
-            "",
-            "## Validation",
-            markdown_table(
-                ["Channel", "text2workspace.py", "combine -M AsymptoticLimits", "Log"],
-                validation_rows,
-            ),
-            "",
-            "## What Remains Unresolved",
-            "- The bundler intentionally excludes `pseudodata.py` from production datacard inputs.",
-            "- Systematic correlations still follow the legacy Mauricio helper conventions because this repo does not yet expose an independent native nuisance table.",
-        ]
-    )
-
-    if validation_results and any(
-        result["text2workspace_status"] != "ok"
-        for result in validation_results.values()
-    ):
-        lines.append(
-            "- Validation failures, if any, are channel-local and captured in the `validation.log` files listed above."
-        )
-
-    lines.append("")
     (output_dir / "README.md").write_text("\n".join(lines), encoding="ascii")
 
 
-def verify_required_outputs(channels: list[ChannelSpec]) -> None:
+def verify_required_outputs(signal_specs: list[SignalProcessSpec]) -> None:
     log("Checking persisted upstream outputs")
-    for channel in channels:
+    for signal_spec in signal_specs:
         ensure_file(
-            channel.signal_workspace_path,
+            signal_spec.signal_workspace_path,
             "Run `python3 scripts/signal.py` first.",
         )
-        log_kv("signal workspace", relative_to_repo(channel.signal_workspace_path))
+        log_kv("signal workspace", relative_to_repo(signal_spec.signal_workspace_path))
     ensure_file(
         RESONANT_CONFIG["H"]["root_path"],
         "Run `python3 scripts/resonant_background.py` first.",
@@ -1170,7 +1173,7 @@ def validate_summary_shapes(
         family_info = nonres_summary.get("families", {}).get(family)
         if family_info is None:
             raise RuntimeError(
-                f"Non-resonant summary is missing family {family!r}. Re-run `python3 non_resonant_background.py`."
+                f"Non-resonant summary is missing family {family!r}. Re-run `python3 scripts/non_resonant_background.py`."
             )
         if "selections" not in family_info:
             raise RuntimeError(
@@ -1201,19 +1204,18 @@ def main() -> int:
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    channels = make_channel_specs()
+    signal_specs = make_signal_specs()
     produced_files: list[Path] = []
-    placeholders: list[str] = []
-    missing_inputs: list[str] = []
 
-    log("Starting bundled workspace build")
+    log("Starting single-card workspace build")
     log_kv("output directory", relative_to_repo(output_dir))
     log_kv("workspace name", args.workspace_name)
     log_kv("workspace file name", args.workspace_file_name)
+    log_kv("datacard file name", args.datacard_file_name)
     log_kv("selection mode", "strict" if args.strict_mode else "relaxed")
     log_kv("validation", "disabled" if args.skip_validation else "enabled")
 
-    verify_required_outputs(channels)
+    verify_required_outputs(signal_specs)
     nonres_summary = load_json(NON_RESONANT_SUMMARY_PATH)
     resonant_summary = load_json(RESONANT_SUMMARY_PATH)
     validate_summary_shapes(nonres_summary, resonant_summary)
@@ -1229,75 +1231,65 @@ def main() -> int:
         )
 
     bundled_workspace = RooWorkspace(args.workspace_name)
+    ensure_shared_observables(bundled_workspace)
+
     nonres_root_file, nonres_workspace = open_workspace(
         NON_RESONANT_WORKSPACE_PATH,
         NON_RESONANT_WORKSPACE_NAME,
     )
+    nonres_report = import_non_resonant_artifacts(
+        bundled_workspace,
+        nonres_workspace,
+        nonres_selection,
+    )
+    nonres_root_file.Close()
+    log_kv("data_obs", nonres_report["dataset"])
+    log_kv("non-resonant pdf", nonres_report["pdf"])
 
-    channel_reports: dict[str, dict[str, Any]] = {}
-    for channel in channels:
-        log(f"Building channel {channel.name}")
-        ensure_channel_observables(bundled_workspace, channel.name)
-        nonres_report = import_non_resonant_artifacts(
+    signal_reports: list[dict[str, Any]] = []
+    for signal_spec in signal_specs:
+        report = import_signal_artifacts(bundled_workspace, signal_spec)
+        signal_reports.append(report)
+        log_kv("signal pdf", report["pdf"])
+        log_kv("signal norm", f"{report['norm_name']}={report['norm']:.8g}")
+
+    resonant_reports: list[dict[str, Any]] = []
+    for process in ("H", "Z"):
+        report = import_resonant_artifacts(
             bundled_workspace,
-            channel,
-            nonres_workspace,
-            nonres_selection,
-        )
-        signal_report = import_signal_artifacts(bundled_workspace, channel)
-        resonant_report = import_resonant_artifacts(
-            bundled_workspace,
-            channel,
+            process,
             resonant_summary,
         )
-        channel_reports[channel.name] = {
-            "signal": signal_report,
-            "resonant": resonant_report,
-            "non_resonant": nonres_report,
-        }
-        log_kv("signal pdf", signal_report["pdf"])
-        log_kv("resonant pdf", resonant_report["pdf"])
-        log_kv("non-resonant pdf", nonres_report["pdf"])
-        log_kv("data_obs", nonres_report["dataset"])
+        resonant_reports.append(report)
+        log_kv("resonant pdf", report["pdf"])
+        log_kv("resonant norm", f"{report['norm_name']}={report['norm']:.8g}")
 
-    nonres_root_file.Close()
+    workspace_path = output_dir / args.workspace_file_name
+    bundled_workspace.writeToFile(str(workspace_path))
+    produced_files.append(workspace_path)
+    log(f"Wrote bundled workspace: {relative_to_repo(workspace_path)}")
 
-    central_workspace_path = output_dir / args.workspace_file_name
-    bundled_workspace.writeToFile(str(central_workspace_path))
-    produced_files.append(central_workspace_path)
-    log(f"Wrote bundled workspace: {relative_to_repo(central_workspace_path)}")
+    datacard_path, datacard_lines = write_datacard(
+        output_dir=output_dir,
+        datacard_file_name=args.datacard_file_name,
+        workspace_file_name=args.workspace_file_name,
+        workspace_name=args.workspace_name,
+        signal_specs=signal_specs,
+    )
+    produced_files.append(datacard_path)
+    log(f"Wrote simultaneous datacard: {relative_to_repo(datacard_path)}")
 
-    for channel in channels:
-        channel_dir = output_dir / channel.name
-        channel_dir.mkdir(parents=True, exist_ok=True)
-        copied_workspace_path = channel_dir / "workspace.root"
-        shutil.copy2(central_workspace_path, copied_workspace_path)
-        datacard_path = write_datacard(channel_dir, channel)
-        produced_files.extend([copied_workspace_path, datacard_path])
-        log(f"Wrote channel outputs for {channel.name}")
-        log_kv("datacard", relative_to_repo(datacard_path))
-        log_kv("workspace copy", relative_to_repo(copied_workspace_path))
-
-    validation_results: dict[str, dict[str, Any]] = {}
+    validation_result: dict[str, Any] | None = None
     if not args.skip_validation:
         log("Running validation commands")
-        for channel in channels:
-            channel_dir = output_dir / channel.name
-            log(f"Validating {channel.name}")
-            validation_results[channel.name] = validate_channel(
-                channel_dir,
-                channel.name,
-                args.signal_mass_label,
-            )
-            produced_files.append(channel_dir / "validation.log")
-            log_kv(
-                "text2workspace.py",
-                validation_results[channel.name]["text2workspace_status"],
-            )
-            log_kv(
-                "combine -M AsymptoticLimits",
-                validation_results[channel.name]["combine_status"],
-            )
+        validation_result = validate_datacard(
+            output_dir=output_dir,
+            datacard_file_name=args.datacard_file_name,
+            mass_label=args.signal_mass_label,
+        )
+        produced_files.extend(validation_result["produced_files"])
+        log_kv("text2workspace.py", validation_result["text2workspace_status"])
+        log_kv("combine -M AsymptoticLimits", validation_result["combine_status"])
 
     readme_path = output_dir / "README.md"
     produced_files.append(readme_path)
@@ -1305,29 +1297,22 @@ def main() -> int:
         output_dir=output_dir,
         workspace_name=args.workspace_name,
         workspace_file_name=args.workspace_file_name,
+        datacard_file_name=args.datacard_file_name,
         workspace=bundled_workspace,
-        channels=channels,
-        channel_reports=channel_reports,
+        signal_specs=signal_specs,
+        signal_reports=signal_reports,
+        resonant_reports=resonant_reports,
+        nonres_report=nonres_report,
         nonres_selection=nonres_selection,
-        resonant_summary=resonant_summary,
-        validation_results=validation_results,
+        datacard_lines=datacard_lines,
+        validation_result=validation_result,
         produced_files=produced_files,
-        placeholders=placeholders,
-        missing_inputs=missing_inputs,
     )
     log(f"Wrote summary report: {relative_to_repo(readme_path)}")
 
     log("Produced artifacts")
     for path in sorted(produced_files):
         log_kv("file", relative_to_repo(path))
-
-    if validation_results:
-        log("Validation summary")
-        for channel_name, result in validation_results.items():
-            log_kv(
-                channel_name,
-                f"text2workspace={result['text2workspace_status']}, combine={result['combine_status']}",
-            )
 
     log("Bundler setup complete")
     return 0

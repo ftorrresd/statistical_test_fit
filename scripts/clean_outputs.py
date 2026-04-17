@@ -23,8 +23,11 @@ TARGET_FILES = [
 ]
 
 TARGET_FILE_GLOBS = [
+    "higgsCombine*.root",
     "NormParams_*.json",
     "signal_workspace_*.root",
+    "validation.log",
+    "validation_workspace.root",
 ]
 
 TARGET_DIRS = [
