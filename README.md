@@ -200,7 +200,7 @@ python3 scripts/build_bundled_workspace.py --strict-mode --output-dir datacards
 
 CLI options:
 
-- `--output-dir PATH`: directory where `workspace.root`, `datacard.txt`, and a generated `README.md` summary are written
+- `--output-dir PATH`: directory where `workspace.root`, `datacard.txt`, and a generated `README.html` summary are written
 - `--workspace-name STR`: RooWorkspace name stored in the ROOT file; default is `combined_workspace`
 - `--workspace-file-name STR`: bundled ROOT filename; default is `workspace.root`
 - `--datacard-file-name STR`: datacard filename; default is `datacard.txt`

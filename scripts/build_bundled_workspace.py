@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import subprocess
 import sys
@@ -143,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
-        help="Directory where the bundled workspace, datacard, and README are written.",
+        help="Directory where the bundled workspace, datacard, and HTML summary are written.",
     )
     parser.add_argument(
         "--workspace-name",
@@ -195,17 +196,154 @@ def relative_to_repo(path: Path) -> str:
         return str(path)
 
 
-def markdown_table(headers: list[str], rows: Iterable[Iterable[Any]]) -> str:
-    def stringify(value: Any) -> str:
-        return str(value).replace("|", r"\|")
+def html_escape(value: Any) -> str:
+    escaped = html.escape(str(value), quote=True)
+    return escaped.encode("ascii", "xmlcharrefreplace").decode("ascii")
 
-    lines = [
-        "| " + " | ".join(headers) + " |",
-        "| " + " | ".join(["---"] * len(headers)) + " |",
-    ]
-    for row in rows:
-        lines.append("| " + " | ".join(stringify(value) for value in row) + " |")
-    return "\n".join(lines)
+
+def html_table(headers: list[str], rows: Iterable[Iterable[Any]]) -> str:
+    body_rows = [list(row) for row in rows]
+    header_html = "".join(f"<th>{html_escape(header)}</th>" for header in headers)
+    if body_rows:
+        body_html = "\n".join(
+            "<tr>"
+            + "".join(f"<td>{html_escape(value)}</td>" for value in row)
+            + "</tr>"
+            for row in body_rows
+        )
+    else:
+        body_html = f'<tr><td class="empty" colspan="{len(headers)}">No rows</td></tr>'
+    return f"""<div class="table-wrap">
+<table>
+<thead><tr>{header_html}</tr></thead>
+<tbody>
+{body_html}
+</tbody>
+</table>
+</div>"""
+
+
+def html_list(items: Iterable[Any]) -> str:
+    return "<ul>" + "".join(f"<li>{html_escape(item)}</li>" for item in items) + "</ul>"
+
+
+def html_code_block(lines: Iterable[Any] | str) -> str:
+    if isinstance(lines, str):
+        text = lines
+    else:
+        text = "\n".join(str(line) for line in lines)
+    return f"<pre><code>{html_escape(text)}</code></pre>"
+
+
+def html_metric_grid(items: Iterable[tuple[str, Any]]) -> str:
+    cards = "\n".join(
+        f"""<div class="metric-card">
+<div class="metric-label">{html_escape(label)}</div>
+<div class="metric-value">{html_escape(value)}</div>
+</div>"""
+        for label, value in items
+    )
+    return f'<div class="metric-grid">\n{cards}\n</div>'
+
+
+def html_section(title: str, body: str, intro: str | None = None) -> str:
+    intro_html = f'<p class="section-intro">{html_escape(intro)}</p>' if intro else ""
+    return f"""<section class="section-card">
+<div class="section-heading">
+<h2>{html_escape(title)}</h2>
+{intro_html}
+</div>
+{body}
+</section>"""
+
+
+def html_page(title: str, subtitle: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html_escape(title)}</title>
+<style>
+:root {{
+  color-scheme: light;
+  --bg: #f5f7fb;
+  --bg-accent: #e7efff;
+  --card: #ffffff;
+  --text: #172033;
+  --muted: #667085;
+  --line: #dde5f2;
+  --accent: #3b82f6;
+  --shadow: 0 20px 55px rgba(15, 23, 42, 0.11);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, var(--bg-accent), transparent 34rem),
+    linear-gradient(180deg, #ffffff 0%, var(--bg) 28rem);
+  color: var(--text);
+  font-family: var(--sans);
+}}
+.page {{ width: min(1480px, calc(100% - 48px)); margin: 0 auto; padding: 36px 0 64px; }}
+.hero {{
+  border-radius: 28px;
+  padding: 34px;
+  color: #ffffff;
+  background:
+    linear-gradient(135deg, rgba(29, 78, 216, 0.96), rgba(14, 116, 144, 0.9)),
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.32), transparent 26rem);
+  box-shadow: var(--shadow);
+}}
+.eyebrow {{ margin: 0 0 10px; font-size: 0.77rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.82; }}
+h1 {{ margin: 0; font-size: clamp(2rem, 4vw, 3.8rem); line-height: 1.02; letter-spacing: -0.045em; }}
+.subtitle {{ max-width: 860px; margin: 16px 0 0; color: rgba(255, 255, 255, 0.86); font-size: 1.04rem; line-height: 1.65; }}
+.metric-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-top: 18px; }}
+.metric-grid + ul {{ margin-top: 18px; }}
+.metric-card {{ border: 1px solid var(--line); border-radius: 18px; background: #ffffff; padding: 16px 18px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06); }}
+.metric-label {{ color: var(--muted); font-size: 0.74rem; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }}
+.metric-value {{ margin-top: 8px; color: var(--text); font-size: 1.08rem; font-weight: 750; overflow-wrap: anywhere; }}
+.section-card {{ margin-top: 22px; padding: 24px; background: rgba(255, 255, 255, 0.92); border: 1px solid var(--line); border-radius: 24px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.07); }}
+.section-heading {{ display: flex; align-items: baseline; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }}
+h2 {{ margin: 0; font-size: 1.22rem; letter-spacing: -0.02em; }}
+h3 {{ margin: 22px 0 10px; font-size: 1rem; color: #344054; }}
+.section-intro {{ margin: 0; color: var(--muted); line-height: 1.6; max-width: 820px; }}
+ul {{ margin: 0; padding-left: 1.2rem; color: #344054; line-height: 1.7; }}
+.table-wrap {{ width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--card); }}
+table {{ width: 100%; min-width: 760px; border-collapse: separate; border-spacing: 0; font-size: 0.9rem; }}
+th {{ position: sticky; top: 0; z-index: 1; background: #f8fbff; color: #475467; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-align: left; text-transform: uppercase; }}
+th, td {{ padding: 11px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }}
+td {{ color: #263247; overflow-wrap: anywhere; }}
+tbody tr:hover td {{ background: #f8fbff; }}
+tbody tr:last-child td {{ border-bottom: 0; }}
+.empty {{ color: var(--muted); text-align: center; }}
+code {{ font-family: var(--mono); font-size: 0.88em; }}
+pre {{ margin: 0; max-height: 540px; overflow: auto; border-radius: 16px; border: 1px solid #172033; background: #0f172a; color: #dbeafe; padding: 18px; line-height: 1.55; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06); }}
+.split-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }}
+.subcard {{ border: 1px solid var(--line); border-radius: 18px; background: #ffffff; padding: 18px; }}
+.footer {{ color: var(--muted); font-size: 0.84rem; margin-top: 28px; text-align: center; }}
+@media (max-width: 720px) {{
+  .page {{ width: min(100% - 28px, 1480px); padding-top: 18px; }}
+  .hero, .section-card {{ border-radius: 20px; padding: 20px; }}
+  table {{ min-width: 680px; }}
+}}
+</style>
+</head>
+<body>
+<main class="page">
+<header class="hero">
+<p class="eyebrow">Combine workspace bundle</p>
+<h1>{html_escape(title)}</h1>
+<p class="subtitle">{html_escape(subtitle)}</p>
+</header>
+{body}
+<p class="footer">Generated by scripts/build_bundled_workspace.py</p>
+</main>
+</body>
+</html>
+"""
 
 
 def ensure_file(path: Path, hint: str | None = None) -> None:
@@ -901,7 +1039,7 @@ def collect_parameter_rows(workspace: RooWorkspace) -> list[list[Any]]:
     return rows
 
 
-def write_summary_readme(
+def write_summary_report(
     output_dir: Path,
     workspace_name: str,
     workspace_file_name: str,
@@ -977,152 +1115,165 @@ def write_summary_readme(
         else [["skipped", "skipped", "-"]]
     )
 
-    lines = [
-        "# Bundled Single Datacard",
-        "",
-        "## Summary",
-        f"- Bundled ROOT file: `{workspace_file_name}`",
-        f"- RooWorkspace name: `{workspace_name}`",
-        f"- Datacard: `{datacard_file_name}`",
-        f"- Analysis bin: `{ANALYSIS_BIN_NAME}`",
-        "- One shared observed dataset is used for the full simultaneous model.",
-        "- Six signal processes are exposed as independent Combine-facing PDFs: `H_1S`, `H_2S`, `H_3S`, `Z_1S`, `Z_2S`, `Z_3S`.",
-        "- Background processes are `non_resonant_bkg`, `resonant_H_bkg`, and `resonant_Z_bkg`.",
-        "- Signal yields use workspace-side `*_norm` objects fixed to the nominal MC weighted yields.",
-        "- Background yields use floating workspace-side `*_norm` objects.",
-        f"- Non-resonant selection mode used by the bundler: `{nonres_selection['mode_key']}`.",
-        "",
-        "## Observable Layout",
-        f"- `upsilon_mass`: `{UPSILON_MASS_LOWER}` to `{UPSILON_MASS_UPPER}` GeV",
-        f"- `boson_mass`: `{BOSON_MASS_LOWER}` to `{BOSON_MASS_UPPER}` GeV",
-        "- Named boson ranges kept in the workspace: `LEFT`, `MIDDLE`, `RIGHT`, `FULL`.",
-        "",
-        "## Signal Processes",
-        markdown_table(
-            [
-                "Process",
-                "Legacy channel label",
-                "PDF",
-                "Norm",
-                "Norm value",
-                "Status",
-                "Source workspace",
-            ],
-            signal_rows,
-        ),
-        "",
-        "## Background Processes",
-        markdown_table(
-            ["Process", "PDF", "Norm", "Norm value", "Status", "Source workspace"],
-            background_rows,
-        ),
-        "",
-        "## Non-Resonant Candidate Selection",
-        markdown_table(
-            [
-                "Family",
-                "Mode",
-                "Role",
-                "Model",
-                "Order",
-                "Initial norm estimate",
-                "Workspace state",
-                "Readable state",
-            ],
-            nonres_selection["selection_rows"],
-        ),
-        "",
-        "## RooMultiPdf State Mapping",
-        markdown_table(
-            [
-                "Index",
-                "Workspace label",
-                "Readable label",
-                "Imported PDF",
-                "Source model",
-            ],
-            state_mapping_rows,
-        ),
-        "",
-        "## Systematics Written To The Single Card",
-        markdown_table(
-            [
-                "Nuisance",
-                "Type",
-                "H_1S",
-                "H_2S",
-                "H_3S",
-                "Z_1S",
-                "Z_2S",
-                "Z_3S",
-                NON_RESONANT_PROCESS_NAME,
-                RESONANT_H_PROCESS_NAME,
-                RESONANT_Z_PROCESS_NAME,
-            ],
-            systematics_table_rows,
-        ),
-        "",
-        "## Datacard Contents",
-        "```text",
-        *datacard_lines,
-        "```",
-        "",
-        "## Imported Objects",
-        "### Datasets",
-        "```text",
-        *object_lists["datasets"],
-        "```",
-        "",
-        "### PDFs",
-        "```text",
-        *object_lists["pdfs"],
-        "```",
-        "",
-        "### Functions",
-        "```text",
-        *object_lists["functions"],
-        "```",
-        "",
-        "### Variables",
-        "```text",
-        *object_lists["variables"],
-        "```",
-        "",
-        "### Categories",
-        "```text",
-        *object_lists["categories"],
-        "```",
-        "",
-        "## Parameters",
-        markdown_table(
-            ["Name", "Type", "Status", "Value/Label", "Min", "Max"],
-            parameter_rows,
-        ),
-        "",
-        "## Source Inputs",
-        f"- Signal workspaces come from the outputs of `python3 scripts/signal.py`.",
-        f"- Resonant background workspaces come from `python3 scripts/resonant_background.py` and summary `{relative_to_repo(RESONANT_SUMMARY_PATH)}`.",
-        f"- The shared observed dataset and non-resonant candidate PDFs come from `{relative_to_repo(NON_RESONANT_WORKSPACE_PATH)}` and summary `{relative_to_repo(NON_RESONANT_SUMMARY_PATH)}`.",
-        f"- Legacy lnN values were copied from `{relative_to_repo(LEGACY_SYSTEMATICS_SOURCE)}` and expanded onto the single-card process layout.",
-        "",
-        "## Produced Files",
-        "```text",
-        *sorted(relative_to_repo(path) for path in produced_files),
-        "```",
-        "",
-        "## Notes",
-        "- Validation runs `text2workspace.py` and then a blind `combine -M AsymptoticLimits` smoke test by default.",
-        "- Use `--skip-validation` to write only the workspace and parametric datacard.",
-        "- The six public signal process names are ready to be mapped to six independent POIs in a later Combine step.",
-        "",
-        "## Validation",
-        markdown_table(
-            ["text2workspace.py", "combine -M AsymptoticLimits", "Log"],
-            validation_rows,
-        ),
-        "",
+    summary_metrics = [
+        ("Bundled ROOT", workspace_file_name),
+        ("Workspace", workspace_name),
+        ("Datacard", datacard_file_name),
+        ("Analysis bin", ANALYSIS_BIN_NAME),
+        ("Signal PDFs", len(signal_reports)),
+        ("Background PDFs", len(background_rows)),
+        ("Parameters", len(parameter_rows)),
+        ("Non-resonant mode", nonres_selection["mode_key"]),
     ]
-    (output_dir / "README.md").write_text("\n".join(lines), encoding="ascii")
+    summary_notes = [
+        "One shared observed dataset is used for the full simultaneous model.",
+        "The six public signal processes are H_1S, H_2S, H_3S, Z_1S, Z_2S, and Z_3S.",
+        "Background processes are non_resonant_bkg, resonant_H_bkg, and resonant_Z_bkg.",
+        "Signal yields use fixed workspace-side *_norm objects; background yields use floating *_norm objects.",
+    ]
+    observable_rows = [
+        ["upsilon_mass", UPSILON_MASS_LOWER, UPSILON_MASS_UPPER, "GeV", "-"],
+        ["boson_mass", BOSON_MASS_LOWER, BOSON_MASS_UPPER, "GeV", "LEFT, MIDDLE, RIGHT, FULL"],
+    ]
+    imported_objects_html = "<div class=\"split-grid\">" + "\n".join(
+        f"""<div class="subcard">
+<h3>{html_escape(title)}</h3>
+{html_code_block(object_lists[key])}
+</div>"""
+        for title, key in (
+            ("Datasets", "datasets"),
+            ("PDFs", "pdfs"),
+            ("Functions", "functions"),
+            ("Variables", "variables"),
+            ("Categories", "categories"),
+        )
+    ) + "\n</div>"
+
+    sections = [
+        html_section(
+            "Summary",
+            html_metric_grid(summary_metrics) + html_list(summary_notes),
+            "Single-card Combine package produced from the persisted upstream fits.",
+        ),
+        html_section(
+            "Observable Layout",
+            html_table(["Observable", "Lower", "Upper", "Unit", "Named ranges"], observable_rows),
+        ),
+        html_section(
+            "Signal Processes",
+            html_table(
+                [
+                    "Process",
+                    "Legacy channel label",
+                    "PDF",
+                    "Norm",
+                    "Norm value",
+                    "Status",
+                    "Source workspace",
+                ],
+                signal_rows,
+            ),
+        ),
+        html_section(
+            "Background Processes",
+            html_table(
+                ["Process", "PDF", "Norm", "Norm value", "Status", "Source workspace"],
+                background_rows,
+            ),
+        ),
+        html_section(
+            "Non-Resonant Candidate Selection",
+            html_table(
+                [
+                    "Family",
+                    "Mode",
+                    "Role",
+                    "Model",
+                    "Order",
+                    "Initial norm estimate",
+                    "Workspace state",
+                    "Readable state",
+                ],
+                nonres_selection["selection_rows"],
+            ),
+        ),
+        html_section(
+            "RooMultiPdf State Mapping",
+            html_table(
+                [
+                    "Index",
+                    "Workspace label",
+                    "Readable label",
+                    "Imported PDF",
+                    "Source model",
+                ],
+                state_mapping_rows,
+            ),
+        ),
+        html_section(
+            "Systematics Written To The Single Card",
+            html_table(
+                [
+                    "Nuisance",
+                    "Type",
+                    "H_1S",
+                    "H_2S",
+                    "H_3S",
+                    "Z_1S",
+                    "Z_2S",
+                    "Z_3S",
+                    NON_RESONANT_PROCESS_NAME,
+                    RESONANT_H_PROCESS_NAME,
+                    RESONANT_Z_PROCESS_NAME,
+                ],
+                systematics_table_rows,
+            ),
+        ),
+        html_section("Datacard Contents", html_code_block(datacard_lines)),
+        html_section("Imported Objects", imported_objects_html),
+        html_section(
+            "Parameters",
+            html_table(
+                ["Name", "Type", "Status", "Value/Label", "Min", "Max"],
+                parameter_rows,
+            ),
+        ),
+        html_section(
+            "Source Inputs",
+            html_list(
+                [
+                    "Signal workspaces come from the outputs of python3 scripts/signal.py.",
+                    f"Resonant background workspaces come from python3 scripts/resonant_background.py and summary {relative_to_repo(RESONANT_SUMMARY_PATH)}.",
+                    f"The shared observed dataset and non-resonant candidate PDFs come from {relative_to_repo(NON_RESONANT_WORKSPACE_PATH)} and summary {relative_to_repo(NON_RESONANT_SUMMARY_PATH)}.",
+                    f"Legacy lnN values were copied from {relative_to_repo(LEGACY_SYSTEMATICS_SOURCE)} and expanded onto the single-card process layout.",
+                ]
+            ),
+        ),
+        html_section(
+            "Produced Files",
+            html_code_block(sorted(relative_to_repo(path) for path in produced_files)),
+        ),
+        html_section(
+            "Notes",
+            html_list(
+                [
+                    "Validation runs text2workspace.py and then a blind combine -M AsymptoticLimits smoke test by default.",
+                    "Use --skip-validation to write only the workspace and parametric datacard.",
+                    "The six public signal process names are ready to be mapped to six independent POIs in a later Combine step.",
+                ]
+            ),
+        ),
+        html_section(
+            "Validation",
+            html_table(["text2workspace.py", "combine -M AsymptoticLimits", "Log"], validation_rows),
+        ),
+    ]
+    report_html = html_page(
+        "Bundled Single Datacard",
+        "A clean overview of the simultaneous H/Z to Upsilon(nS)+photon Combine workspace, datacard, imported objects, nuisance layout, and validation status.",
+        "\n".join(sections),
+    )
+    (output_dir / "README.html").write_text(report_html, encoding="ascii")
 
 
 def verify_required_outputs(signal_specs: list[SignalProcessSpec]) -> None:
@@ -1291,9 +1442,9 @@ def main() -> int:
         log_kv("text2workspace.py", validation_result["text2workspace_status"])
         log_kv("combine -M AsymptoticLimits", validation_result["combine_status"])
 
-    readme_path = output_dir / "README.md"
-    produced_files.append(readme_path)
-    write_summary_readme(
+    report_path = output_dir / "README.html"
+    produced_files.append(report_path)
+    write_summary_report(
         output_dir=output_dir,
         workspace_name=args.workspace_name,
         workspace_file_name=args.workspace_file_name,
@@ -1308,7 +1459,7 @@ def main() -> int:
         validation_result=validation_result,
         produced_files=produced_files,
     )
-    log(f"Wrote summary report: {relative_to_repo(readme_path)}")
+    log(f"Wrote summary report: {relative_to_repo(report_path)}")
 
     log("Produced artifacts")
     for path in sorted(produced_files):
