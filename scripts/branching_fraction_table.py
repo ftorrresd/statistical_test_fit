@@ -53,9 +53,17 @@ class TableRow:
     expected_bf_limits: dict[str, float | None]
 
 
+METHOD_LABELS = {
+    "asymptotic": "Asymptotic Limits",
+    "hybrid_lhc": "HybridNew Limits",
+}
+DEFAULT_METHODS = ("asymptotic", "hybrid_lhc")
+
+
 @dataclass(frozen=True)
 class TableSection:
     scheme: str
+    method: str
     title: str
     caption: str
     label: str
@@ -66,17 +74,17 @@ SECTION_CONFIG = {
     "h_grouped": {
         "title": "Grouped H signal-strength limit",
         "caption": "Grouped H signal-strength limits translated to branching fractions.",
-        "label": "tab:bf_limits_h_grouped",
+        "label_base": "tab:bf_limits_h_grouped",
     },
     "z_grouped": {
         "title": "Grouped Z signal-strength limit",
         "caption": "Grouped Z signal-strength limits translated to branching fractions.",
-        "label": "tab:bf_limits_z_grouped",
+        "label_base": "tab:bf_limits_z_grouped",
     },
     "six_poi": {
         "title": "Individual signal-strength limits",
         "caption": "Individual signal-strength limits translated to branching fractions.",
-        "label": "tab:bf_limits_six_poi",
+        "label_base": "tab:bf_limits_six_poi",
     },
 }
 DEFAULT_TABLE_SCHEMES = ("h_grouped", "z_grouped", "six_poi")
@@ -350,21 +358,49 @@ def make_table_environment(section: TableSection, sig_figs: int) -> str:
 
 
 def make_standalone_document(
-    tables_tex: str,
+    sections: list[TableSection],
     source_summary: Path,
-    method: str,
-    schemes: list[str],
+    sig_figs: int,
 ) -> str:
+    methods_seen: list[str] = []
+    for section in sections:
+        if section.method not in methods_seen:
+            methods_seen.append(section.method)
+
+    grouped: list[tuple[str, list[TableSection]]] = []
+    seen: set[str] = set()
+    for section in sections:
+        if section.method not in seen:
+            seen.add(section.method)
+            grouped.append((section.method, [section]))
+        else:
+            for method_name, group in grouped:
+                if method_name == section.method:
+                    group.append(section)
+                    break
+
+    body_parts: list[str] = []
+    for method_name, group in grouped:
+        if len(methods_seen) > 1:
+            body_parts.append(rf"\section*{{{METHOD_LABELS[method_name]}}}")
+        body_parts.append(
+            "\n".join(make_table_environment(section, sig_figs) for section in group)
+        )
+
+    tables_tex = "\n".join(body_parts)
+
     notes = [
         r"Limits are quoted on branching fractions and are obtained by multiplying the Combine signal-strength limit by the theory branching fraction in the Theory column.",
         r"Expected limits are shown as the median value with the one-standard-deviation band written as superscript/subscript deltas.",
         rf"Source summary: \texttt{{{latex_escape_text(repo_relative(source_summary))}}}.",
     ]
-    if any(scheme in {"h_grouped", "z_grouped"} for scheme in schemes):
+    schemes_seen = sorted({section.scheme for section in sections})
+    if any(scheme in {"h_grouped", "z_grouped"} for scheme in schemes_seen):
         notes.append(
             r"For a grouped boson POI scheme, one common signal-strength POI scales all signal processes for the selected boson while the other boson signal strengths are profiled individually."
         )
 
+    method_labels = ", ".join(METHOD_LABELS[m] for m in methods_seen)
     notes_text = "\n".join(rf"\item {note}" for note in notes)
     return rf"""\documentclass[11pt]{{article}}
 \usepackage[margin=0.7in]{{geometry}}
@@ -376,7 +412,7 @@ def make_standalone_document(
 \begin{{document}}
 {tables_tex}
 
-\noindent\textbf{{Configuration:}} schemes \texttt{{{latex_escape_text(', '.join(schemes))}}}, method \texttt{{{latex_escape_text(method)}}}.
+\noindent\textbf{{Configuration:}} schemes \texttt{{{latex_escape_text(', '.join(schemes_seen))}}}, methods: {method_labels}.
 \begin{{itemize}}
 {notes_text}
 \end{{itemize}}
@@ -389,36 +425,39 @@ def write_outputs(
     summary_path: Path,
     output_dir: Path,
     output_name: str,
-    method: str,
     sig_figs: int,
     warnings: list[str],
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    tables_tex = "\n".join(make_table_environment(section, sig_figs) for section in sections)
     fragment_path = output_dir / f"{output_name}.table.tex"
     document_path = output_dir / f"{output_name}.tex"
     metadata_path = output_dir / f"{output_name}.json"
-    fragment_path.write_text(tables_tex, encoding="ascii")
+
+    all_tables_tex = "\n".join(
+        make_table_environment(section, sig_figs) for section in sections
+    )
+    fragment_path.write_text(all_tables_tex, encoding="ascii")
     document_path.write_text(
         make_standalone_document(
-            tables_tex=tables_tex,
+            sections=sections,
             source_summary=summary_path,
-            method=method,
-            schemes=[section.scheme for section in sections],
+            sig_figs=sig_figs,
         ),
         encoding="ascii",
     )
 
+    methods_seen = sorted({section.method for section in sections})
     metadata = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source_summary": str(summary_path.resolve()),
         "source_summary_repo_relative": repo_relative(summary_path),
-        "schemes": [section.scheme for section in sections],
-        "method": method,
+        "methods": methods_seen,
+        "schemes": sorted({section.scheme for section in sections}),
         "theory_branching_fractions": THEORY_BRANCHING_FRACTIONS,
         "tables": [
             {
+                "method": section.method,
                 "scheme": section.scheme,
                 "title": section.title,
                 "caption": section.caption,
@@ -524,9 +563,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--method",
-        choices=("hybrid_lhc", "asymptotic"),
-        default="hybrid_lhc",
-        help="Limit method to tabulate.",
+        choices=("hybrid_lhc", "asymptotic", "both"),
+        default="both",
+        help="Limit method to tabulate. 'both' writes asymptotic and HybridNew tables in one document.",
     )
     parser.add_argument(
         "--output-dir",
@@ -579,22 +618,26 @@ def main() -> int:
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     warnings: list[str] = []
     schemes = list(DEFAULT_TABLE_SCHEMES if args.scheme == "all" else (args.scheme,))
-    sections = [
-        TableSection(
-            scheme=scheme,
-            title=SECTION_CONFIG[scheme]["title"],
-            caption=SECTION_CONFIG[scheme]["caption"],
-            label=SECTION_CONFIG[scheme]["label"],
-            rows=build_rows(summary, scheme, args.method, warnings),
-        )
-        for scheme in schemes
-    ]
+    methods = list(DEFAULT_METHODS if args.method == "both" else (args.method,))
+    sections: list[TableSection] = []
+    for method in methods:
+        for scheme in schemes:
+            config = SECTION_CONFIG[scheme]
+            sections.append(
+                TableSection(
+                    scheme=scheme,
+                    method=method,
+                    title=config["title"],
+                    caption=config["caption"],
+                    label=f"{config['label_base']}_{method}",
+                    rows=build_rows(summary, scheme, method, warnings),
+                )
+            )
     paths = write_outputs(
         sections=sections,
         summary_path=summary_path,
         output_dir=output_dir,
         output_name=args.output_name,
-        method=args.method,
         sig_figs=args.sig_figs,
         warnings=warnings,
     )
