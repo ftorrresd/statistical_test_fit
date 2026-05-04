@@ -29,6 +29,11 @@ QUANTILE_LABELS = (
     ("0.84", r"Expected $+1\sigma$"),
 )
 PROCESS_ORDER = ("H_1S", "H_2S", "H_3S", "Z_1S", "Z_2S", "Z_3S")
+SCHEME_PROCESS_ORDER = {
+    "six_poi": PROCESS_ORDER,
+    "h_grouped": tuple(process for process in PROCESS_ORDER if process.startswith("H_")),
+    "z_grouped": tuple(process for process in PROCESS_ORDER if process.startswith("Z_")),
+}
 THEORY_BRANCHING_FRACTIONS = {
     "H_1S": 5.22e-9,
     "H_2S": 1.42e-9,
@@ -46,6 +51,35 @@ class TableRow:
     theory_bf: float
     observed_bf_limit: float | None
     expected_bf_limits: dict[str, float | None]
+
+
+@dataclass(frozen=True)
+class TableSection:
+    scheme: str
+    title: str
+    caption: str
+    label: str
+    rows: list[TableRow]
+
+
+SECTION_CONFIG = {
+    "h_grouped": {
+        "title": "Grouped H signal-strength limit",
+        "caption": "Grouped H signal-strength limits translated to branching fractions.",
+        "label": "tab:bf_limits_h_grouped",
+    },
+    "z_grouped": {
+        "title": "Grouped Z signal-strength limit",
+        "caption": "Grouped Z signal-strength limits translated to branching fractions.",
+        "label": "tab:bf_limits_z_grouped",
+    },
+    "six_poi": {
+        "title": "Individual signal-strength limits",
+        "caption": "Individual signal-strength limits translated to branching fractions.",
+        "label": "tab:bf_limits_six_poi",
+    },
+}
+DEFAULT_TABLE_SCHEMES = ("h_grouped", "z_grouped", "six_poi")
 
 
 def log(message: str) -> None:
@@ -72,7 +106,7 @@ def latest_summary_path() -> Path:
     )
     if not summaries:
         raise FileNotFoundError(
-            f"No blind limit summary found under {DEFAULT_LIMITS_DIR}. Run scripts/blind_limits.py first or pass --summary."
+            f"No blind limit summary found under {DEFAULT_LIMITS_DIR}. Run scripts/limits.py first or pass --summary."
         )
     return summaries[0]
 
@@ -161,17 +195,35 @@ def build_process_to_poi(method_limits: dict[str, Any]) -> dict[str, str]:
     return mapping
 
 
+def empty_rows_for_scheme(scheme: str) -> list[TableRow]:
+    return [
+        TableRow(
+            process=process,
+            poi="-",
+            theory_bf=THEORY_BRANCHING_FRACTIONS[process],
+            observed_bf_limit=None,
+            expected_bf_limits={key: None for key, _ in QUANTILE_LABELS},
+        )
+        for process in SCHEME_PROCESS_ORDER.get(scheme, PROCESS_ORDER)
+    ]
+
+
 def build_rows(
     summary: dict[str, Any],
     scheme: str,
     method: str,
     warnings: list[str],
 ) -> list[TableRow]:
-    method_limits = limit_summary_for_method(summary, scheme, method)
+    process_order = SCHEME_PROCESS_ORDER.get(scheme, PROCESS_ORDER)
+    try:
+        method_limits = limit_summary_for_method(summary, scheme, method)
+    except KeyError as exc:
+        warnings.append(str(exc))
+        return empty_rows_for_scheme(scheme)
     process_to_poi = build_process_to_poi(method_limits)
     rows: list[TableRow] = []
 
-    for process in PROCESS_ORDER:
+    for process in process_order:
         if process not in process_to_poi:
             warnings.append(f"No limit entry found for {process} in scheme {scheme}, method {method}.")
             rows.append(
@@ -217,16 +269,56 @@ def build_rows(
     return rows
 
 
+def format_scaled(value: float, sig_figs: int) -> str:
+    decimals = max(sig_figs - 1, 0)
+    return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+
+
+def format_latex_sci_with_delta(
+    median: float | None,
+    low: float | None,
+    high: float | None,
+    sig_figs: int,
+) -> str:
+    if median is None:
+        return r"--"
+    if low is None or high is None:
+        return format_latex_sci(median, sig_figs)
+    if median == 0.0:
+        plus = max(high - median, 0.0)
+        minus = max(median - low, 0.0)
+        return rf"$0^{{+{format_scaled(plus, sig_figs)}}}_{{-{format_scaled(minus, sig_figs)}}}$"
+    exponent = int(math.floor(math.log10(abs(median))))
+    scale = 10**exponent
+    mantissa = median / scale
+    plus = max(high - median, 0.0) / scale
+    minus = max(median - low, 0.0) / scale
+    return (
+        rf"${format_scaled(mantissa, sig_figs)}"
+        rf"^{{+{format_scaled(plus, sig_figs)}}}_{{-{format_scaled(minus, sig_figs)}}}"
+        rf"\times 10^{{{exponent}}}$"
+    )
+
+
+def format_expected_limit(row: TableRow, sig_figs: int) -> str:
+    return format_latex_sci_with_delta(
+        row.expected_bf_limits.get("0.5"),
+        row.expected_bf_limits.get("0.16"),
+        row.expected_bf_limits.get("0.84"),
+        sig_figs,
+    )
+
+
 def make_tabular(rows: list[TableRow], sig_figs: int) -> str:
     header_cells = [
         r"Decay mode",
         r"POI",
         r"Theory",
         r"Observed",
-        *[label for _, label in QUANTILE_LABELS],
+        r"Expected",
     ]
     lines = [
-        r"\begin{tabular}{llccccc}",
+        r"\begin{tabular}{llccc}",
         r"\toprule",
         " & ".join(header_cells) + r" \\",
         r"\midrule",
@@ -237,32 +329,40 @@ def make_tabular(rows: list[TableRow], sig_figs: int) -> str:
             rf"\texttt{{{latex_escape_text(row.poi)}}}" if row.poi != "-" else r"--",
             format_latex_sci(row.theory_bf, sig_figs),
             format_latex_sci(row.observed_bf_limit, sig_figs),
+            format_expected_limit(row, sig_figs),
         ]
-        cells.extend(
-            format_latex_sci(row.expected_bf_limits.get(quantile_key), sig_figs)
-            for quantile_key, _ in QUANTILE_LABELS
-        )
         lines.append(" & ".join(cells) + r" \\")
     lines.extend([r"\bottomrule", r"\end{tabular}", ""])
     return "\n".join(lines)
 
 
+def make_table_environment(section: TableSection, sig_figs: int) -> str:
+    tabular = make_tabular(section.rows, sig_figs)
+    return rf"""\begin{{table}}[htbp]
+\centering
+\caption{{{latex_escape_text(section.caption)}}}
+\label{{{section.label}}}
+\resizebox{{\textwidth}}{{!}}{{%
+{tabular}%
+}}
+\end{{table}}
+"""
+
+
 def make_standalone_document(
-    tabular: str,
-    caption: str,
-    label: str,
+    tables_tex: str,
     source_summary: Path,
-    scheme: str,
     method: str,
-    grouped_note: bool,
+    schemes: list[str],
 ) -> str:
     notes = [
         r"Limits are quoted on branching fractions and are obtained by multiplying the Combine signal-strength limit by the theory branching fraction in the Theory column.",
+        r"Expected limits are shown as the median value with the one-standard-deviation band written as superscript/subscript deltas.",
         rf"Source summary: \texttt{{{latex_escape_text(repo_relative(source_summary))}}}.",
     ]
-    if grouped_note:
+    if any(scheme in {"h_grouped", "z_grouped"} for scheme in schemes):
         notes.append(
-            r"For the grouped Upsilon POI scheme, one common signal-strength POI scales the H and Z processes with the same Upsilon state; the H and Z branching-fraction limits in each state are therefore common-strength translations, not independent one-process limits."
+            r"For a grouped boson POI scheme, one common signal-strength POI scales all signal processes for the selected boson while the other boson signal strengths are profiled individually."
         )
 
     notes_text = "\n".join(rf"\item {note}" for note in notes)
@@ -274,16 +374,9 @@ def make_standalone_document(
 \usepackage{{amsmath}}
 \usepackage{{array}}
 \begin{{document}}
-\begin{{table}}[htbp]
-\centering
-\caption{{{caption}}}
-\label{{{label}}}
-\resizebox{{\textwidth}}{{!}}{{%
-{tabular}%
-}}
-\end{{table}}
+{tables_tex}
 
-\noindent\textbf{{Configuration:}} scheme \texttt{{{latex_escape_text(scheme)}}}, method \texttt{{{latex_escape_text(method)}}}.
+\noindent\textbf{{Configuration:}} schemes \texttt{{{latex_escape_text(', '.join(schemes))}}}, method \texttt{{{latex_escape_text(method)}}}.
 \begin{{itemize}}
 {notes_text}
 \end{{itemize}}
@@ -292,32 +385,26 @@ def make_standalone_document(
 
 
 def write_outputs(
-    rows: list[TableRow],
+    sections: list[TableSection],
     summary_path: Path,
     output_dir: Path,
     output_name: str,
-    caption: str,
-    label: str,
-    scheme: str,
     method: str,
     sig_figs: int,
     warnings: list[str],
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    tabular = make_tabular(rows, sig_figs)
+    tables_tex = "\n".join(make_table_environment(section, sig_figs) for section in sections)
     fragment_path = output_dir / f"{output_name}.table.tex"
     document_path = output_dir / f"{output_name}.tex"
     metadata_path = output_dir / f"{output_name}.json"
-    fragment_path.write_text(tabular, encoding="ascii")
+    fragment_path.write_text(tables_tex, encoding="ascii")
     document_path.write_text(
         make_standalone_document(
-            tabular=tabular,
-            caption=caption,
-            label=label,
+            tables_tex=tables_tex,
             source_summary=summary_path,
-            scheme=scheme,
             method=method,
-            grouped_note=scheme == "grouped_upsilon_poi",
+            schemes=[section.scheme for section in sections],
         ),
         encoding="ascii",
     )
@@ -327,18 +414,27 @@ def write_outputs(
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source_summary": str(summary_path.resolve()),
         "source_summary_repo_relative": repo_relative(summary_path),
-        "scheme": scheme,
+        "schemes": [section.scheme for section in sections],
         "method": method,
         "theory_branching_fractions": THEORY_BRANCHING_FRACTIONS,
-        "rows": [
+        "tables": [
             {
-                "process": row.process,
-                "poi": row.poi,
-                "theory_bf": row.theory_bf,
-                "observed_bf_limit": row.observed_bf_limit,
-                "expected_bf_limits": row.expected_bf_limits,
+                "scheme": section.scheme,
+                "title": section.title,
+                "caption": section.caption,
+                "label": section.label,
+                "rows": [
+                    {
+                        "process": row.process,
+                        "poi": row.poi,
+                        "theory_bf": row.theory_bf,
+                        "observed_bf_limit": row.observed_bf_limit,
+                        "expected_bf_limits": row.expected_bf_limits,
+                    }
+                    for row in section.rows
+                ],
             }
-            for row in rows
+            for section in sections
         ],
         "warnings": warnings,
         "outputs": {
@@ -412,7 +508,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Create a LaTeX table of theory branching fractions and observed/expected branching-fraction limits "
-            "from scripts/blind_limits.py JSON output."
+            "from scripts/limits.py JSON output."
         )
     )
     parser.add_argument(
@@ -422,9 +518,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scheme",
-        choices=("six_poi", "grouped_upsilon_poi"),
-        default="six_poi",
-        help="POI scheme to tabulate.",
+        choices=("all", "six_poi", "z_grouped", "h_grouped"),
+        default="all",
+        help="POI scheme to tabulate. Default writes grouped H, grouped Z, and six-POI tables.",
     )
     parser.add_argument(
         "--method",
@@ -441,16 +537,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-name",
         default=DEFAULT_OUTPUT_NAME,
         help="Base filename for .tex, .table.tex, .json, and optional .pdf outputs.",
-    )
-    parser.add_argument(
-        "--caption",
-        default="Theory branching fractions and expected upper limits on branching fractions.",
-        help="LaTeX table caption.",
-    )
-    parser.add_argument(
-        "--label",
-        default="tab:branching_fraction_limits",
-        help="LaTeX label for the standalone table.",
     )
     parser.add_argument(
         "--sig-figs",
@@ -492,15 +578,22 @@ def main() -> int:
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     warnings: list[str] = []
-    rows = build_rows(summary, args.scheme, args.method, warnings)
+    schemes = list(DEFAULT_TABLE_SCHEMES if args.scheme == "all" else (args.scheme,))
+    sections = [
+        TableSection(
+            scheme=scheme,
+            title=SECTION_CONFIG[scheme]["title"],
+            caption=SECTION_CONFIG[scheme]["caption"],
+            label=SECTION_CONFIG[scheme]["label"],
+            rows=build_rows(summary, scheme, args.method, warnings),
+        )
+        for scheme in schemes
+    ]
     paths = write_outputs(
-        rows=rows,
+        sections=sections,
         summary_path=summary_path,
         output_dir=output_dir,
         output_name=args.output_name,
-        caption=args.caption,
-        label=args.label,
-        scheme=args.scheme,
         method=args.method,
         sig_figs=args.sig_figs,
         warnings=warnings,

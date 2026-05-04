@@ -220,34 +220,39 @@ Validation outputs are written next to the datacard as `validation.log`, `valida
 After `scripts/build_bundled_workspace.py` has produced `datacards/datacard.txt` and `datacards/workspace.root`, run the expected-limit automation with:
 
 ```bash
-python3 scripts/blind_limits.py
+python3 scripts/limits.py
 ```
 
 Default behavior:
 
-- Builds both POI schemes: six independent process POIs and three grouped Upsilon-state POIs
+- Builds the six independent process-POI scheme plus `z_grouped` and `h_grouped` by default
+- In `z_grouped`, all Z signal processes share one POI while the H signal strengths are profiled individually; `h_grouped` does the reverse
 - Runs both `AsymptoticLimits --run blind` and `HybridNew --LHCmode LHC-limits`
 - Uses HybridNew expected quantiles `0.16,0.5,0.84` by default
 - Does not pass `--dataset` or `--bypassFrequentistFit` to `HybridNew`
+- The POI range is always `0,1000000`, including in quick mode
+- Optional non-default `--quick` mode adds HybridNew options `--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100`
 - Runs all ready commands in parallel within each dependency wave; use `--workers N` to cap concurrency
 - Prints the complete job manifest before each dependency wave starts
 - Clears the run directory and each per-job working directory before staging inputs and running commands
-- Creates one working directory per Combine call with staged inputs, ROOT outputs, `stdout.txt`, `stderr.txt`, `result.json`, and `summary.md`
-- Reports each job duration as `DD:HH:MM:SS:MS` in the live log, per-job JSON/Markdown, and aggregate summary
-- Writes an aggregate `blind_limits_summary.json` and `README.md` under `datacards/blind_limits/run_YYYYmmdd_HHMMSS/`
+- Creates one working directory per Combine call with staged inputs, ROOT outputs, `stdout.txt`, `stderr.txt`, `result.json`, and a dark `summary.html`
+- Reports each job duration as `DD:HH:MM:SS:MS` in the live log, per-job JSON/HTML, and aggregate summary
+- Writes an aggregate `blind_limits_summary.json` and dark `README.html` under `datacards/blind_limits/run_YYYYmmdd_HHMMSS/`
 
 Useful examples:
 
 ```bash
-python3 scripts/blind_limits.py --workers 8
-python3 scripts/blind_limits.py --poi-scheme six --methods asymptotic
-python3 scripts/blind_limits.py --poi-scheme grouped --methods hybrid --hybrid-toys 1000 --cls-acc 0.005
-python3 scripts/blind_limits.py --run-name test_blind_limits
+python3 scripts/limits.py --workers 8
+python3 scripts/limits.py --quick --workers 8
+python3 scripts/limits.py --poi-scheme six --methods asymptotic
+python3 scripts/limits.py --poi-scheme z_grouped --methods hybrid --hybrid-toys 1000 --cls-acc 0.005
+python3 scripts/limits.py --poi-scheme grouped --methods hybrid
+python3 scripts/limits.py --run-name test_blind_limits
 ```
 
 ### Branching-Fraction Limit Table
 
-After `scripts/blind_limits.py` has written a `blind_limits_summary.json`, make a LaTeX table of theory branching fractions and expected/observed branching-fraction limits with:
+After `scripts/limits.py` has written a `blind_limits_summary.json`, make a LaTeX table of theory branching fractions and expected/observed branching-fraction limits with:
 
 ```bash
 python3 scripts/branching_fraction_table.py --summary datacards/blind_limits/<run>/blind_limits_summary.json
@@ -255,8 +260,9 @@ python3 scripts/branching_fraction_table.py --summary datacards/blind_limits/<ru
 
 Default behavior:
 
-- Uses the `six_poi` scheme and `hybrid_lhc` limits
+- Writes three tables by default: grouped H, grouped Z, and individual six-POI limits using `hybrid_lhc`
 - Multiplies each signal-strength limit by the corresponding theory branching fraction
+- Represents the one-standard-deviation expected band as deltas, e.g. `99.8^{+10.1}_{-0.9}`
 - Writes `branching_fraction_limits.table.tex`, `branching_fraction_limits.tex`, and `branching_fraction_limits.json` into a `tables/` directory next to the summary
 - Leaves observed cells as `--` when no observed limit is available in the JSON
 
@@ -272,7 +278,8 @@ Useful examples:
 
 ```bash
 python3 scripts/branching_fraction_table.py --method asymptotic
-python3 scripts/branching_fraction_table.py --scheme grouped_upsilon_poi
+python3 scripts/branching_fraction_table.py --scheme z_grouped
+python3 scripts/branching_fraction_table.py --scheme h_grouped
 python3 scripts/branching_fraction_table.py --compile-pdf --latex-image docker://ghcr.io/xu-cheng/texlive-full:latest
 ```
 

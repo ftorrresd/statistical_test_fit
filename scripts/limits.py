@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import html
 import json
 import math
 import re
@@ -30,6 +31,10 @@ DEFAULT_QUANTILES = (0.16, 0.5, 0.84)
 DEFAULT_POI_MIN = 0.0
 DEFAULT_POI_MAX = 1_000_000.0
 DEFAULT_POI_INITIAL = 1.0
+QUICK_HYBRID_TOYS = 100
+QUICK_CLS_ACC = 0.02
+QUICK_R_REL_ACC = 0.10
+QUICK_R_ABS_ACC = 10.0
 WORKSPACE_OUTPUT_NAME = "multisignal_workspace.root"
 LOCAL_WORKSPACE_NAME = "workspace.root"
 LOCAL_DATACARD_NAME = "datacard.txt"
@@ -55,9 +60,12 @@ class PoiScheme:
     description: str
     poi_maps: tuple[str, ...]
     targets: tuple[PoiTarget, ...]
+    all_poi_names: tuple[str, ...] = ()
 
     @property
     def all_pois(self) -> tuple[str, ...]:
+        if self.all_poi_names:
+            return self.all_poi_names
         seen: set[str] = set()
         pois: list[str] = []
         for target in self.targets:
@@ -80,7 +88,7 @@ class CommandJob:
 
 
 def log(message: str) -> None:
-    print(f"[blind_limits] {message}")
+    print(f"[limits] {message}")
 
 
 def reset_directory(path: Path) -> None:
@@ -94,6 +102,13 @@ def repo_relative(path: Path) -> str:
         return str(path.resolve().relative_to(REPO_ROOT))
     except ValueError:
         return str(path)
+
+
+def href_relative_to(base_dir: Path, target: Path) -> str:
+    try:
+        return str(target.resolve().relative_to(base_dir.resolve()))
+    except ValueError:
+        return str(target)
 
 
 def ensure_file(path: Path, message: str) -> None:
@@ -186,6 +201,19 @@ def process_state(process_name: str) -> str:
     return parts[1]
 
 
+def process_boson(process_name: str) -> str:
+    parts = process_name.split("_", 1)
+    if len(parts) != 2 or not parts[0]:
+        raise ValueError(
+            f"Cannot identify boson for process {process_name!r}; expected names like H_1S or Z_1S."
+        )
+    return parts[0]
+
+
+def process_specific_poi(process_name: str) -> str:
+    return f"r_{process_name}"
+
+
 def make_six_poi_scheme(
     signals: list[str],
     poi_initial: float,
@@ -195,7 +223,7 @@ def make_six_poi_scheme(
     maps: list[str] = []
     targets: list[PoiTarget] = []
     for process_name in signals:
-        poi = f"r_{process_name}"
+        poi = process_specific_poi(process_name)
         maps.append(
             f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
         )
@@ -209,56 +237,90 @@ def make_six_poi_scheme(
         ),
         poi_maps=tuple(maps),
         targets=tuple(targets),
+        all_poi_names=tuple(target.poi for target in targets),
     )
 
 
-def make_grouped_poi_scheme(
+def make_boson_grouped_poi_scheme(
     signals: list[str],
+    target_boson: str,
     poi_initial: float,
     poi_min: float,
     poi_max: float,
 ) -> PoiScheme:
-    state_to_processes: dict[str, list[str]] = {}
-    for process_name in signals:
-        state_to_processes.setdefault(process_state(process_name), []).append(process_name)
+    target_processes = [
+        process_name for process_name in signals if process_boson(process_name) == target_boson
+    ]
+    profiled_processes = [
+        process_name for process_name in signals if process_boson(process_name) != target_boson
+    ]
+    if not target_processes:
+        raise RuntimeError(f"No {target_boson} signal processes found for grouped scheme")
 
     maps: list[str] = []
-    targets: list[PoiTarget] = []
-    for state, processes in state_to_processes.items():
-        poi = f"r_{state}"
-        for index, process_name in enumerate(processes):
-            if index == 0:
-                maps.append(
-                    f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
-                )
-            else:
-                maps.append(f"map=.*/{process_name}:{poi}")
-        targets.append(PoiTarget(label=state, poi=poi, processes=tuple(processes)))
+    all_pois: list[str] = []
+    target_poi = f"r_{target_boson}_grouped"
+    all_pois.append(target_poi)
+    for index, process_name in enumerate(target_processes):
+        if index == 0:
+            maps.append(
+                f"map=.*/{process_name}:{target_poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
+            )
+        else:
+            maps.append(f"map=.*/{process_name}:{target_poi}")
+
+    for process_name in profiled_processes:
+        poi = process_specific_poi(process_name)
+        all_pois.append(poi)
+        maps.append(
+            f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
+        )
+
+    profiled_bosons = sorted({process_boson(process_name) for process_name in profiled_processes})
+    profiled_text = ", ".join(profiled_bosons) if profiled_bosons else "other"
+    scheme_name = f"{target_boson.lower()}_grouped"
 
     return PoiScheme(
-        name="grouped_upsilon_poi",
-        title="Three Grouped Upsilon POIs",
+        name=scheme_name,
+        title=f"{target_boson} Grouped Signal POI",
         description=(
-            "Signals with the same Upsilon state share one POI, so H_1S and Z_1S are scaled by r_1S, "
-            "and similarly for 2S and 3S. Limits are computed one grouped POI at a time."
+            f"All {target_boson} signal processes share {target_poi}. "
+            f"{profiled_text} signal strengths are mapped to individual profiled POIs."
         ),
         poi_maps=tuple(maps),
-        targets=tuple(targets),
+        targets=(
+            PoiTarget(
+                label=f"{target_boson}_grouped",
+                poi=target_poi,
+                processes=tuple(target_processes),
+            ),
+        ),
+        all_poi_names=tuple(all_pois),
     )
 
 
 def selected_schemes(args: argparse.Namespace, signals: list[str]) -> tuple[PoiScheme, ...]:
     schemes = {
         "six": make_six_poi_scheme(signals, args.poi_initial, args.poi_min, args.poi_max),
-        "grouped": make_grouped_poi_scheme(
+        "z_grouped": make_boson_grouped_poi_scheme(
             signals,
+            "Z",
+            args.poi_initial,
+            args.poi_min,
+            args.poi_max,
+        ),
+        "h_grouped": make_boson_grouped_poi_scheme(
+            signals,
+            "H",
             args.poi_initial,
             args.poi_min,
             args.poi_max,
         ),
     }
+    if args.poi_scheme == "grouped":
+        return (schemes["z_grouped"], schemes["h_grouped"])
     if args.poi_scheme == "both":
-        return (schemes["six"], schemes["grouped"])
+        return (schemes["six"], schemes["z_grouped"], schemes["h_grouped"])
     return (schemes[args.poi_scheme],)
 
 
@@ -452,6 +514,8 @@ def build_hybrid_job(
     poi_max: float,
     hybrid_toys: int | None,
     cls_acc: float | None,
+    r_rel_acc: float | None,
+    r_abs_acc: float | None,
     save_hybrid_result: bool,
 ) -> CommandJob:
     cwd = (
@@ -490,6 +554,10 @@ def build_hybrid_job(
         command.extend(["-T", str(hybrid_toys)])
     if cls_acc is not None:
         command.extend(["--clsAcc", format_number(cls_acc)])
+    if r_rel_acc is not None:
+        command.extend(["--rRelAcc", format_number(r_rel_acc)])
+    if r_abs_acc is not None:
+        command.extend(["--rAbsAcc", format_number(r_abs_acc)])
 
     return CommandJob(
         job_id=f"hybrid_lhc_{scheme.name}_{safe_name(target.label)}_{quantile_tag(quantile)}",
@@ -506,6 +574,10 @@ def build_hybrid_job(
             "target_processes": list(target.processes),
             "profiled_signal_pois": [poi for poi in scheme.all_pois if poi != target.poi],
             "quantile": quantile,
+            "hybrid_toys": hybrid_toys,
+            "cls_acc": cls_acc,
+            "r_rel_acc": r_rel_acc,
+            "r_abs_acc": r_abs_acc,
             "blindness": [
                 "HybridNew uses --LHCmode LHC-limits for LHC-style CLs limits.",
                 "HybridNew is run directly with --expectedFromGrid for the requested quantile.",
@@ -806,13 +878,13 @@ def attach_outputs(result: dict[str, Any]) -> dict[str, Any]:
     result["limits"] = summarize_limits(root_outputs)
     result["json_path"] = str((cwd / "result.json").resolve())
     result["json_path_repo_relative"] = repo_relative(cwd / "result.json")
-    result["summary_md_path"] = str((cwd / "summary.md").resolve())
-    result["summary_md_path_repo_relative"] = repo_relative(cwd / "summary.md")
+    result["summary_html_path"] = str((cwd / "summary.html").resolve())
+    result["summary_html_path_repo_relative"] = repo_relative(cwd / "summary.html")
     (cwd / "result.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    (cwd / "summary.md").write_text(make_markdown_summary(result), encoding="utf-8")
+    (cwd / "summary.html").write_text(make_job_html_summary(result), encoding="utf-8")
     return result
 
 
@@ -820,24 +892,116 @@ def attach_and_write_outputs(results: list[dict[str, Any]]) -> list[dict[str, An
     return [attach_outputs(result) for result in results]
 
 
-def md_escape(value: Any) -> str:
-    return str(value).replace("|", r"\|").replace("\n", "<br>")
+def html_escape(value: Any) -> str:
+    return html.escape(str(value), quote=True)
 
 
-def md_table(headers: list[str], rows: list[list[Any]]) -> str:
+def html_document(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>{html_escape(title)}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #070b12;
+      --panel: #101826;
+      --panel-2: #0c1320;
+      --text: #e6edf7;
+      --muted: #9aa8bd;
+      --line: #243247;
+      --accent: #7dd3fc;
+      --accent-2: #a78bfa;
+      --ok: #34d399;
+      --fail: #fb7185;
+      --warn: #fbbf24;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: radial-gradient(circle at top left, rgba(125, 211, 252, 0.15), transparent 32rem),
+        linear-gradient(180deg, #070b12 0%, #0a101c 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }}
+    main {{ max-width: 1200px; margin: 0 auto; padding: 2.2rem; }}
+    h1 {{ margin: 0 0 0.5rem; font-size: clamp(1.9rem, 4vw, 3.1rem); letter-spacing: -0.04em; }}
+    h2 {{ margin: 0 0 1rem; color: var(--accent); font-size: 1.05rem; text-transform: uppercase; letter-spacing: 0.12em; }}
+    .subtitle {{ color: var(--muted); margin: 0 0 2rem; }}
+    .grid {{ display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); }}
+    .card {{
+      background: linear-gradient(180deg, rgba(16, 24, 38, 0.96), rgba(12, 19, 32, 0.96));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 1.2rem;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
+      margin: 1rem 0;
+      overflow: auto;
+    }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 0.93rem; }}
+    th, td {{ padding: 0.72rem 0.85rem; border-bottom: 1px solid var(--line); vertical-align: top; }}
+    th {{ color: #dbeafe; background: rgba(125, 211, 252, 0.08); text-align: left; font-weight: 700; }}
+    tr:hover td {{ background: rgba(125, 211, 252, 0.045); }}
+    code, pre {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }}
+    pre {{
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #050914;
+      color: #dbeafe;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem;
+      overflow: auto;
+    }}
+    a {{ color: var(--accent); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .pill {{ display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.8rem; font-weight: 700; }}
+    .ok {{ color: #052e1b; background: var(--ok); }}
+    .failed {{ color: #3f0712; background: var(--fail); }}
+    .muted {{ color: var(--muted); }}
+    ul {{ margin: 0.4rem 0 0; padding-left: 1.2rem; }}
+  </style>
+</head>
+<body>
+  <main>
+{body}
+  </main>
+</body>
+</html>
+"""
+
+
+def html_table(headers: list[str], rows: list[list[Any]]) -> str:
     if not rows:
         rows = [["-" for _ in headers]]
-    lines = [
-        "| " + " | ".join(md_escape(header) for header in headers) + " |",
-        "| " + " | ".join("---" for _ in headers) + " |",
-    ]
+    header_html = "".join(f"<th>{html_escape(header)}</th>" for header in headers)
+    row_html = []
     for row in rows:
-        lines.append("| " + " | ".join(md_escape(value) for value in row) + " |")
-    return "\n".join(lines)
+        row_html.append("<tr>" + "".join(f"<td>{html_escape(value)}</td>" for value in row) + "</tr>")
+    return "<table><thead><tr>" + header_html + "</tr></thead><tbody>" + "".join(row_html) + "</tbody></table>"
 
 
-def command_block(command_string: str) -> str:
-    return f"```bash\n{command_string}\n```"
+def html_link(label: str, href: str) -> str:
+    return f'<a href="{html_escape(href)}">{html_escape(label)}</a>'
+
+
+def html_table_raw(headers: list[str], rows: list[list[Any]]) -> str:
+    if not rows:
+        rows = [["-" for _ in headers]]
+    header_html = "".join(f"<th>{html_escape(header)}</th>" for header in headers)
+    row_html = []
+    for row in rows:
+        row_html.append("<tr>" + "".join(f"<td>{value}</td>" for value in row) + "</tr>")
+    return "<table><thead><tr>" + header_html + "</tr></thead><tbody>" + "".join(row_html) + "</tbody></table>"
+
+
+def status_pill(status: Any) -> str:
+    status_text = str(status)
+    css = "ok" if status_text == "ok" else "failed" if status_text == "failed" else "muted"
+    return f'<span class="pill {css}">{html_escape(status_text)}</span>'
 
 
 def make_limit_entry_rows(root_outputs: list[dict[str, Any]]) -> list[list[Any]]:
@@ -862,7 +1026,7 @@ def make_limit_entry_rows(root_outputs: list[dict[str, Any]]) -> list[list[Any]]
     return rows
 
 
-def make_markdown_summary(result: dict[str, Any]) -> str:
+def make_job_html_summary(result: dict[str, Any]) -> str:
     metadata = result.get("metadata", {})
     input_rows = [
         [item.get("staged_name", "-"), item.get("source_repo_relative", item.get("source", "-"))]
@@ -879,71 +1043,35 @@ def make_markdown_summary(result: dict[str, Any]) -> str:
     ]
     blindness_lines = metadata.get("blindness", [])
     if blindness_lines:
-        blindness_text = "\n".join(f"- {line}" for line in blindness_lines)
+        policy_html = "<ul>" + "".join(f"<li>{html_escape(line)}</li>" for line in blindness_lines) + "</ul>"
     else:
-        blindness_text = "- Not a Combine limit call; this command prepares inputs."
+        policy_html = "<p class=\"muted\">Not a Combine limit call; this command prepares inputs.</p>"
 
-    lines = [
-        f"# {result['job_id']}",
-        "",
-        "## Status",
-        md_table(
-            ["Field", "Value"],
-            [
-                ["Kind", result.get("kind", "-")],
-                ["Method", result.get("method", "-")],
-                ["Status", result.get("status", "-")],
-                ["Return code", result.get("returncode", "-")],
-                [
-                    "Duration",
-                    result.get(
-                        "duration",
-                        format_duration(float(result.get("duration_seconds", 0.0))),
-                    ),
-                ],
-                ["Working directory", result.get("cwd_repo_relative", result.get("cwd", "-"))],
-            ],
-        ),
-        "",
-        "## Command",
-        command_block(result.get("command_string", "")),
-        "",
-        "## Limit Policy",
-        blindness_text,
-        "",
-        "## Inputs Staged In This Directory",
-        md_table(["Local file", "Source"], input_rows),
-        "",
-        "## ROOT Outputs",
-        md_table(["File", "Limit tree", "toy_asimov", "Status"], output_rows),
-        "",
-        "## Limit Tree Entries",
-        md_table(
-            [
-                "File",
-                "Entry",
-                "quantileExpected",
-                "limit",
-                "limitErr",
-                "mh",
-                "iToy",
-                "iSeed",
-            ],
-            make_limit_entry_rows(result.get("root_outputs", [])),
-        ),
-        "",
-        "## Logs",
-        md_table(
-            ["Stream", "Path"],
-            [
-                ["stdout", result.get("stdout_path_repo_relative", result.get("stdout_path", "-"))],
-                ["stderr", result.get("stderr_path_repo_relative", result.get("stderr_path", "-"))],
-                ["json", result.get("json_path_repo_relative", result.get("json_path", "-"))],
-            ],
-        ),
-        "",
+    status_rows = [
+        ["Kind", result.get("kind", "-")],
+        ["Method", result.get("method", "-")],
+        ["Status", result.get("status", "-")],
+        ["Return code", result.get("returncode", "-")],
+        ["Duration", result.get("duration", format_duration(float(result.get("duration_seconds", 0.0))))],
+        ["Working directory", result.get("cwd_repo_relative", result.get("cwd", "-"))],
     ]
-    return "\n".join(lines)
+    logs_rows = [
+        ["stdout", html_link("stdout.txt", "stdout.txt")],
+        ["stderr", html_link("stderr.txt", "stderr.txt")],
+        ["json", html_link("result.json", "result.json")],
+    ]
+    body = f"""
+    <h1>{html_escape(result['job_id'])}</h1>
+    <p class="subtitle">Per-job Combine execution summary</p>
+    <section class="card"><h2>Status</h2>{html_table(['Field', 'Value'], status_rows)}</section>
+    <section class="card"><h2>Command</h2><pre>{html_escape(result.get('command_string', ''))}</pre></section>
+    <section class="card"><h2>Limit Policy</h2>{policy_html}</section>
+    <section class="card"><h2>Inputs Staged In This Directory</h2>{html_table(['Local file', 'Source'], input_rows)}</section>
+    <section class="card"><h2>ROOT Outputs</h2>{html_table(['File', 'Limit tree', 'toy_asimov', 'Status'], output_rows)}</section>
+    <section class="card"><h2>Limit Tree Entries</h2>{html_table(['File', 'Entry', 'quantileExpected', 'limit', 'limitErr', 'mh', 'iToy', 'iSeed'], make_limit_entry_rows(result.get('root_outputs', [])))}</section>
+    <section class="card"><h2>Logs</h2>{html_table_raw(['Stream', 'Path'], logs_rows)}</section>
+    """
+    return html_document(str(result["job_id"]), body)
 
 
 def result_successful(result: dict[str, Any]) -> bool:
@@ -972,7 +1100,10 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "duration": result.get("duration"),
         "cwd": result.get("cwd_repo_relative", result.get("cwd")),
         "json": result.get("json_path_repo_relative", result.get("json_path")),
-        "summary_md": result.get("summary_md_path_repo_relative", result.get("summary_md_path")),
+        "summary_html": result.get(
+            "summary_html_path_repo_relative",
+            result.get("summary_html_path"),
+        ),
         "scheme": metadata.get("scheme"),
         "target_poi": metadata.get("target_poi"),
         "target_label": metadata.get("target_label"),
@@ -1018,17 +1149,25 @@ def write_run_summary(
     schemes: tuple[PoiScheme, ...],
     results: list[dict[str, Any]],
 ) -> None:
+    readme_html = run_dir / "README.html"
     payload = {
         "schema_version": 1,
         "run_dir": str(run_dir.resolve()),
         "run_dir_repo_relative": repo_relative(run_dir),
+        "readme_html": str(readme_html.resolve()),
+        "readme_html_repo_relative": repo_relative(readme_html),
         "datacard": str(Path(args.datacard).resolve()),
         "datacard_repo_relative": repo_relative(Path(args.datacard).resolve()),
         "mass": args.mass,
         "methods": args.methods,
         "quantiles": list(args.quantiles),
+        "quick": args.quick,
         "poi_min": args.poi_min,
         "poi_max": args.poi_max,
+        "hybrid_toys": args.hybrid_toys,
+        "cls_acc": args.cls_acc,
+        "r_rel_acc": args.r_rel_acc,
+        "r_abs_acc": args.r_abs_acc,
         "signals": processes.signals,
         "backgrounds": processes.backgrounds,
         "schemes": [
@@ -1057,66 +1196,60 @@ def write_run_summary(
 
     job_rows = [
         [
-            result.get("job_id"),
-            result.get("method"),
-            result.get("status"),
-            result.get("metadata", {}).get("scheme", "-"),
-            result.get("metadata", {}).get("target_poi", "-"),
-            result.get("metadata", {}).get("quantile", "-"),
-            result.get(
-                "duration",
-                format_duration(float(result.get("duration_seconds", 0.0))),
+            html_escape(result.get("job_id")),
+            html_escape(result.get("method")),
+            status_pill(result.get("status")),
+            html_escape(result.get("metadata", {}).get("scheme", "-")),
+            html_escape(result.get("metadata", {}).get("target_poi", "-")),
+            html_escape(result.get("metadata", {}).get("quantile", "-")),
+            html_escape(
+                result.get(
+                    "duration",
+                    format_duration(float(result.get("duration_seconds", 0.0))),
+                )
             ),
-            result.get("summary_md_path_repo_relative", "-"),
+            html_link(
+                "summary.html",
+                href_relative_to(run_dir, Path(result.get("summary_html_path", ""))),
+            )
+            if result.get("summary_html_path")
+            else "-",
         ]
         for result in results
     ]
-    readme_lines = [
-        "# Blind Limit Run",
-        "",
-        "## Summary",
-        md_table(
-            ["Field", "Value"],
-            [
-                ["Run directory", repo_relative(run_dir)],
-                ["Datacard", repo_relative(Path(args.datacard).resolve())],
-                ["Mass", args.mass],
-                ["Methods", args.methods],
-                ["POI scheme request", args.poi_scheme],
-                ["Quantiles", ", ".join(quantile_key(q) for q in args.quantiles)],
-                ["Aggregate JSON", repo_relative(summary_json)],
-            ],
-        ),
-        "",
-        "## Limit Policy",
-        "- AsymptoticLimits jobs use --run blind.",
-        "- HybridNew jobs use --expectedFromGrid for the requested expected quantiles.",
-        "- HybridNew jobs do not pass --dataset or --bypassFrequentistFit.",
-        "",
-        "## Jobs",
-        md_table(
-            [
-                "Job",
-                "Method",
-                "Status",
-                "Scheme",
-                "Target POI",
-                "Quantile",
-                "Duration",
-                "Summary",
-            ],
-            job_rows,
-        ),
-        "",
+    summary_rows = [
+        ["Run directory", repo_relative(run_dir)],
+        ["Datacard", repo_relative(Path(args.datacard).resolve())],
+        ["Mass", args.mass],
+        ["Methods", args.methods],
+        ["Quick mode", "yes" if args.quick else "no"],
+        ["POI scheme request", args.poi_scheme],
+        ["POI range", f"{format_number(args.poi_min)} to {format_number(args.poi_max)}"],
+        ["Quantiles", ", ".join(quantile_key(q) for q in args.quantiles)],
+        ["Aggregate JSON", html_link("blind_limits_summary.json", "blind_limits_summary.json")],
     ]
-    (run_dir / "README.md").write_text("\n".join(readme_lines), encoding="utf-8")
+    policy_html = """
+      <ul>
+        <li>AsymptoticLimits jobs use <code>--run blind</code>.</li>
+        <li>HybridNew jobs use <code>--expectedFromGrid</code> for the requested expected quantiles.</li>
+        <li>HybridNew jobs do not pass <code>--dataset</code> or <code>--bypassFrequentistFit</code>.</li>
+      </ul>
+    """
+    body = f"""
+    <h1>Blind Limit Run</h1>
+    <p class="subtitle">Aggregate execution summary for Combine limit jobs.</p>
+    <section class="card"><h2>Summary</h2>{html_table_raw(['Field', 'Value'], [[html_escape(k), v if str(v).startswith('<a ') else html_escape(v)] for k, v in summary_rows])}</section>
+    <section class="card"><h2>Limit Policy</h2>{policy_html}</section>
+    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'Duration', 'Summary'], job_rows)}</section>
+    """
+    readme_html.write_text(html_document("Blind Limit Run", body), encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run expected upper-limit workflows for the bundled simultaneous Combine card. "
-            "Both independent six-POI and grouped three-POI schemes are supported."
+            "Independent six-POI and H/Z grouped-POI schemes are supported."
         )
     )
     parser.add_argument(
@@ -1137,15 +1270,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mass", default=DEFAULT_MASS, help="Mass label passed to Combine.")
     parser.add_argument(
         "--poi-scheme",
-        choices=("six", "grouped", "both"),
+        choices=("six", "z_grouped", "h_grouped", "grouped", "both"),
         default="both",
-        help="POI scheme to run. The default runs both schemes.",
+        help=(
+            "POI scheme to run. `grouped` runs z_grouped and h_grouped; "
+            "the default `both` runs six plus both grouped schemes."
+        ),
     )
     parser.add_argument(
         "--methods",
         choices=("asymptotic", "hybrid", "both"),
         default="both",
         help="Limit method(s) to run.",
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Run a fast non-default HybridNew configuration: "
+            "--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100."
+        ),
     )
     parser.add_argument(
         "--quantiles",
@@ -1158,18 +1302,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_POI_INITIAL,
         help="Initial value used when defining POIs in text2workspace.py.",
-    )
-    parser.add_argument(
-        "--poi-min",
-        type=float,
-        default=DEFAULT_POI_MIN,
-        help="Lower POI range used in text2workspace.py and Combine calls.",
-    )
-    parser.add_argument(
-        "--poi-max",
-        type=float,
-        default=DEFAULT_POI_MAX,
-        help="Upper POI range used in text2workspace.py and Combine calls.",
     )
     parser.add_argument(
         "--workers",
@@ -1197,6 +1329,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def apply_quick_mode(args: argparse.Namespace) -> None:
+    args.poi_min = DEFAULT_POI_MIN
+    args.poi_max = DEFAULT_POI_MAX
+    args.r_rel_acc = None
+    args.r_abs_acc = None
+    if not args.quick:
+        return
+    args.hybrid_toys = QUICK_HYBRID_TOYS
+    args.cls_acc = QUICK_CLS_ACC
+    args.r_rel_acc = QUICK_R_REL_ACC
+    args.r_abs_acc = QUICK_R_ABS_ACC
+
+
 def prepare_run_dir(output_dir: Path, run_name: str | None) -> Path:
     if run_name is None:
         run_name = dt.datetime.now(dt.timezone.utc).strftime("run_%Y%m%d_%H%M%S")
@@ -1211,6 +1356,7 @@ def prepare_run_dir(output_dir: Path, run_name: str | None) -> Path:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    apply_quick_mode(args)
     datacard_path = Path(args.datacard).resolve()
     args.datacard = str(datacard_path)
     ensure_file(datacard_path, "Input datacard not found")
@@ -1224,6 +1370,12 @@ def main() -> int:
     log(f"Signals: {', '.join(processes.signals)}")
     log(f"Backgrounds: {', '.join(processes.backgrounds)}")
     log(f"POI schemes: {', '.join(scheme.name for scheme in schemes)}")
+    if args.quick:
+        log(
+            "Quick mode enabled: HybridNew "
+            "--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100"
+        )
+    log("POI range: 0 to 1000000")
 
     all_results: list[dict[str, Any]] = []
 
@@ -1283,6 +1435,8 @@ def main() -> int:
                             args.poi_max,
                             args.hybrid_toys,
                             args.cls_acc,
+                            args.r_rel_acc,
+                            args.r_abs_acc,
                             not args.no_save_hybrid_result,
                         )
                     )
