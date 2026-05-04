@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-DEFAULT_LIMITS_DIR = REPO_ROOT / "datacards" / "blind_limits"
+DEFAULT_LIMITS_DIR = REPO_ROOT / "limits"
 DEFAULT_IMAGE = "docker://ghcr.io/xu-cheng/texlive-full:latest"
 DEFAULT_OUTPUT_NAME = "branching_fraction_limits"
 DEFAULT_SIG_FIGS = 3
@@ -33,6 +33,10 @@ SCHEME_PROCESS_ORDER = {
     "six_poi": PROCESS_ORDER,
     "h_grouped": tuple(process for process in PROCESS_ORDER if process.startswith("H_")),
     "z_grouped": tuple(process for process in PROCESS_ORDER if process.startswith("Z_")),
+}
+GROUPED_SCHEME_LABELS = {
+    "h_grouped": "H_grouped",
+    "z_grouped": "Z_grouped",
 }
 THEORY_BRANCHING_FRACTIONS = {
     "H_1S": 5.22e-9,
@@ -49,6 +53,8 @@ class TableRow:
     process: str
     poi: str
     theory_bf: float
+    observed_strength_limit: float | None
+    expected_strength_limits: dict[str, float | None]
     observed_bf_limit: float | None
     expected_bf_limits: dict[str, float | None]
 
@@ -73,12 +79,12 @@ class TableSection:
 SECTION_CONFIG = {
     "h_grouped": {
         "title": "Grouped H signal-strength limit",
-        "caption": "Grouped H signal-strength limits translated to branching fractions.",
+        "caption": "Grouped H signal-strength limit translated using the summed H theory branching fraction.",
         "label_base": "tab:bf_limits_h_grouped",
     },
     "z_grouped": {
         "title": "Grouped Z signal-strength limit",
-        "caption": "Grouped Z signal-strength limits translated to branching fractions.",
+        "caption": "Grouped Z signal-strength limit translated using the summed Z theory branching fraction.",
         "label_base": "tab:bf_limits_z_grouped",
     },
     "six_poi": {
@@ -114,7 +120,7 @@ def latest_summary_path() -> Path:
     )
     if not summaries:
         raise FileNotFoundError(
-            f"No blind limit summary found under {DEFAULT_LIMITS_DIR}. Run scripts/limits.py first or pass --summary."
+            f"No limit summary found under {DEFAULT_LIMITS_DIR}. Run scripts/limits.py first or pass --summary."
         )
     return summaries[0]
 
@@ -136,6 +142,10 @@ def first_value(values: Any, warnings: list[str], context: str) -> float | None:
 
 
 def process_latex(process: str) -> str:
+    if process == "H_grouped":
+        return r"$\sum_{n=1}^{3}\mathcal{B}(H\to\Upsilon(nS)\gamma)$"
+    if process == "Z_grouped":
+        return r"$\sum_{n=1}^{3}\mathcal{B}(Z\to\Upsilon(nS)\gamma)$"
     boson, state = process.split("_", 1)
     state_label = state.replace("S", r"S")
     return rf"$\mathcal{{B}}({boson}\to\Upsilon({state_label})\gamma)$"
@@ -172,6 +182,18 @@ def format_latex_sci(value: float | None, sig_figs: int) -> str:
     return rf"${mantissa_text}\times 10^{{{exponent}}}$"
 
 
+def prepend_upper_limit_symbol(cell: str) -> str:
+    if cell == r"--":
+        return cell
+    if cell.startswith("$"):
+        return "$<" + cell[1:]
+    return "<" + cell
+
+
+def format_latex_upper_limit(value: float | None, sig_figs: int) -> str:
+    return prepend_upper_limit_symbol(format_latex_sci(value, sig_figs))
+
+
 def limit_summary_for_method(
     summary: dict[str, Any],
     scheme: str,
@@ -203,17 +225,67 @@ def build_process_to_poi(method_limits: dict[str, Any]) -> dict[str, str]:
     return mapping
 
 
+def empty_row(process: str, theory_bf: float) -> TableRow:
+    return TableRow(
+        process=process,
+        poi="-",
+        theory_bf=theory_bf,
+        observed_strength_limit=None,
+        expected_strength_limits={key: None for key, _ in QUANTILE_LABELS},
+        observed_bf_limit=None,
+        expected_bf_limits={key: None for key, _ in QUANTILE_LABELS},
+    )
+
+
+def grouped_theory_bf(scheme: str) -> float:
+    return sum(THEORY_BRANCHING_FRACTIONS[process] for process in SCHEME_PROCESS_ORDER[scheme])
+
+
 def empty_rows_for_scheme(scheme: str) -> list[TableRow]:
+    grouped_label = GROUPED_SCHEME_LABELS.get(scheme)
+    if grouped_label is not None:
+        return [empty_row(grouped_label, grouped_theory_bf(scheme))]
     return [
-        TableRow(
-            process=process,
-            poi="-",
-            theory_bf=THEORY_BRANCHING_FRACTIONS[process],
-            observed_bf_limit=None,
-            expected_bf_limits={key: None for key, _ in QUANTILE_LABELS},
-        )
+        empty_row(process, THEORY_BRANCHING_FRACTIONS[process])
         for process in SCHEME_PROCESS_ORDER.get(scheme, PROCESS_ORDER)
     ]
+
+
+def build_row_from_payload(
+    process: str,
+    poi: str,
+    theory_bf: float,
+    payload: dict[str, Any],
+    scheme: str,
+    method: str,
+    warnings: list[str],
+) -> TableRow:
+    observed_strength = first_value(
+        payload.get("observed"),
+        warnings,
+        f"{scheme}/{method}/{poi}/observed",
+    )
+    expected_payload = payload.get("expected", {})
+    expected_strength_limits: dict[str, float | None] = {}
+    expected_bf_limits: dict[str, float | None] = {}
+    for quantile_key, _ in QUANTILE_LABELS:
+        value = first_value(
+            expected_payload.get(quantile_key),
+            warnings,
+            f"{scheme}/{method}/{poi}/expected/{quantile_key}",
+        )
+        expected_strength_limits[quantile_key] = value
+        expected_bf_limits[quantile_key] = None if value is None else value * theory_bf
+
+    return TableRow(
+        process=process,
+        poi=poi,
+        theory_bf=theory_bf,
+        observed_strength_limit=observed_strength,
+        expected_strength_limits=expected_strength_limits,
+        observed_bf_limit=None if observed_strength is None else observed_strength * theory_bf,
+        expected_bf_limits=expected_bf_limits,
+    )
 
 
 def build_rows(
@@ -223,57 +295,54 @@ def build_rows(
     warnings: list[str],
 ) -> list[TableRow]:
     process_order = SCHEME_PROCESS_ORDER.get(scheme, PROCESS_ORDER)
+    grouped_label = GROUPED_SCHEME_LABELS.get(scheme)
     try:
         method_limits = limit_summary_for_method(summary, scheme, method)
     except KeyError as exc:
         warnings.append(str(exc))
         return empty_rows_for_scheme(scheme)
     process_to_poi = build_process_to_poi(method_limits)
+
+    if grouped_label is not None:
+        group_pois = {
+            process_to_poi[process]
+            for process in process_order
+            if process in process_to_poi
+        }
+        theory = grouped_theory_bf(scheme)
+        if not group_pois:
+            warnings.append(f"No grouped limit entry found for scheme {scheme}, method {method}.")
+            return [empty_row(grouped_label, theory)]
+        if len(group_pois) > 1:
+            warnings.append(
+                f"Found multiple grouped POIs for scheme {scheme}, method {method}: "
+                f"{', '.join(sorted(group_pois))}; using the first one."
+            )
+        poi = sorted(group_pois)[0]
+        return [
+            build_row_from_payload(
+                grouped_label,
+                poi,
+                theory,
+                method_limits[poi],
+                scheme,
+                method,
+                warnings,
+            )
+        ]
+
     rows: list[TableRow] = []
 
     for process in process_order:
         if process not in process_to_poi:
             warnings.append(f"No limit entry found for {process} in scheme {scheme}, method {method}.")
-            rows.append(
-                TableRow(
-                    process=process,
-                    poi="-",
-                    theory_bf=THEORY_BRANCHING_FRACTIONS[process],
-                    observed_bf_limit=None,
-                    expected_bf_limits={key: None for key, _ in QUANTILE_LABELS},
-                )
-            )
+            rows.append(empty_row(process, THEORY_BRANCHING_FRACTIONS[process]))
             continue
 
         poi = process_to_poi[process]
         payload = method_limits[poi]
         theory = THEORY_BRANCHING_FRACTIONS[process]
-        observed_strength = first_value(
-            payload.get("observed"),
-            warnings,
-            f"{scheme}/{method}/{poi}/observed",
-        )
-        expected_payload = payload.get("expected", {})
-        expected_bf_limits: dict[str, float | None] = {}
-        for quantile_key, _ in QUANTILE_LABELS:
-            value = first_value(
-                expected_payload.get(quantile_key),
-                warnings,
-                f"{scheme}/{method}/{poi}/expected/{quantile_key}",
-            )
-            expected_bf_limits[quantile_key] = None if value is None else value * theory
-
-        rows.append(
-            TableRow(
-                process=process,
-                poi=poi,
-                theory_bf=theory,
-                observed_bf_limit=None
-                if observed_strength is None
-                else observed_strength * theory,
-                expected_bf_limits=expected_bf_limits,
-            )
-        )
+        rows.append(build_row_from_payload(process, poi, theory, payload, scheme, method, warnings))
     return rows
 
 
@@ -309,11 +378,24 @@ def format_latex_sci_with_delta(
 
 
 def format_expected_limit(row: TableRow, sig_figs: int) -> str:
-    return format_latex_sci_with_delta(
-        row.expected_bf_limits.get("0.5"),
-        row.expected_bf_limits.get("0.16"),
-        row.expected_bf_limits.get("0.84"),
-        sig_figs,
+    return prepend_upper_limit_symbol(
+        format_latex_sci_with_delta(
+            row.expected_bf_limits.get("0.5"),
+            row.expected_bf_limits.get("0.16"),
+            row.expected_bf_limits.get("0.84"),
+            sig_figs,
+        )
+    )
+
+
+def format_expected_strength(row: TableRow, sig_figs: int) -> str:
+    return prepend_upper_limit_symbol(
+        format_latex_sci_with_delta(
+            row.expected_strength_limits.get("0.5"),
+            row.expected_strength_limits.get("0.16"),
+            row.expected_strength_limits.get("0.84"),
+            sig_figs,
+        )
     )
 
 
@@ -321,12 +403,14 @@ def make_tabular(rows: list[TableRow], sig_figs: int) -> str:
     header_cells = [
         r"Decay mode",
         r"POI",
-        r"Theory",
-        r"Observed",
-        r"Expected",
+        r"Theory BF",
+        r"Observed $r$ UL",
+        r"Expected $r$ UL",
+        r"Observed BF UL",
+        r"Expected BF UL",
     ]
     lines = [
-        r"\begin{tabular}{llccc}",
+        r"\begin{tabular}{llccccc}",
         r"\toprule",
         " & ".join(header_cells) + r" \\",
         r"\midrule",
@@ -336,7 +420,9 @@ def make_tabular(rows: list[TableRow], sig_figs: int) -> str:
             process_latex(row.process),
             rf"\texttt{{{latex_escape_text(row.poi)}}}" if row.poi != "-" else r"--",
             format_latex_sci(row.theory_bf, sig_figs),
-            format_latex_sci(row.observed_bf_limit, sig_figs),
+            format_latex_upper_limit(row.observed_strength_limit, sig_figs),
+            format_expected_strength(row, sig_figs),
+            format_latex_upper_limit(row.observed_bf_limit, sig_figs),
             format_expected_limit(row, sig_figs),
         ]
         lines.append(" & ".join(cells) + r" \\")
@@ -390,14 +476,16 @@ def make_standalone_document(
     tables_tex = "\n".join(body_parts)
 
     notes = [
-        r"Limits are quoted on branching fractions and are obtained by multiplying the Combine signal-strength limit by the theory branching fraction in the Theory column.",
+        r"Branching-fraction limits are obtained by multiplying the Combine signal-strength limit by the theory branching fraction in the Theory BF column.",
+        r"Signal-strength columns quote the raw Combine signal-strength parameter $r$ before branching-fraction scaling.",
+        r"Cells marked with $<$ are upper limits.",
         r"Expected limits are shown as the median value with the one-standard-deviation band written as superscript/subscript deltas.",
         rf"Source summary: \texttt{{{latex_escape_text(repo_relative(source_summary))}}}.",
     ]
     schemes_seen = sorted({section.scheme for section in sections})
     if any(scheme in {"h_grouped", "z_grouped"} for scheme in schemes_seen):
         notes.append(
-            r"For a grouped boson POI scheme, one common signal-strength POI scales all signal processes for the selected boson while the other boson signal strengths are profiled individually."
+            r"For a grouped boson POI scheme, one common signal-strength POI scales all signal processes for the selected boson; the grouped Theory BF is the sum of the three corresponding theory branching fractions."
         )
 
     method_labels = ", ".join(METHOD_LABELS[m] for m in methods_seen)
@@ -455,6 +543,9 @@ def write_outputs(
         "methods": methods_seen,
         "schemes": sorted({section.scheme for section in sections}),
         "theory_branching_fractions": THEORY_BRANCHING_FRACTIONS,
+        "grouped_theory_branching_fractions": {
+            scheme: grouped_theory_bf(scheme) for scheme in GROUPED_SCHEME_LABELS
+        },
         "tables": [
             {
                 "method": section.method,
@@ -467,6 +558,8 @@ def write_outputs(
                         "process": row.process,
                         "poi": row.poi,
                         "theory_bf": row.theory_bf,
+                        "observed_strength_limit": row.observed_strength_limit,
+                        "expected_strength_limits": row.expected_strength_limits,
                         "observed_bf_limit": row.observed_bf_limit,
                         "expected_bf_limits": row.expected_bf_limits,
                     }
@@ -553,7 +646,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--summary",
         default=None,
-        help="Path to blind_limits_summary.json. Defaults to the newest summary under datacards/blind_limits.",
+        help="Path to blind_limits_summary.json. Defaults to the newest summary under limits/.",
     )
     parser.add_argument(
         "--scheme",

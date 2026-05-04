@@ -18,19 +18,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
+from rich.text import Text
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CONSOLE = Console()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
 DEFAULT_DATACARD = REPO_ROOT / "datacards" / "datacard.txt"
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "datacards" / "blind_limits"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "limits"
 DEFAULT_MASS = "125"
 DEFAULT_QUANTILES = (0.16, 0.5, 0.84)
 DEFAULT_POI_MIN = 0.0
 DEFAULT_POI_MAX = 1_000_000.0
 DEFAULT_POI_INITIAL = 1.0
+HYBRID_RANGE_ASYMPTOTIC_SCALE = 10.0
+HYBRID_RETRY_RANGE_SCALE = 10.0
+HYBRID_RETRY_MINIMIZER_STRATEGY = 2
+DEFAULT_HYBRID_RANGE_MAX_RETRIES = 3
+RETRYABLE_HYBRID_WARNING_PATTERNS = (
+    "[WARNING] Minimization finished with status",
+    "covariance matrix forced positive definite",
+)
 QUICK_HYBRID_TOYS = 100
 QUICK_CLS_ACC = 0.02
 QUICK_R_REL_ACC = 0.10
@@ -88,7 +100,7 @@ class CommandJob:
 
 
 def log(message: str) -> None:
-    print(f"[limits] {message}")
+    CONSOLE.print(Text("[limits]", style="dim"), message)
 
 
 def reset_directory(path: Path) -> None:
@@ -492,6 +504,9 @@ def build_asymptotic_job(
             "target_poi": target.poi,
             "target_processes": list(target.processes),
             "profiled_signal_pois": [poi for poi in scheme.all_pois if poi != target.poi],
+            "poi_min": poi_min,
+            "poi_max": poi_max,
+            "range_source": "fixed",
             "blindness": [
                 "AsymptoticLimits is run with --run blind.",
                 "Combine therefore uses the pre-fit model state for the expected Asimov calculation instead of fitting observed data.",
@@ -517,8 +532,14 @@ def build_hybrid_job(
     r_rel_acc: float | None,
     r_abs_acc: float | None,
     save_hybrid_result: bool,
+    range_source: str = "fixed",
+    range_reference: dict[str, Any] | None = None,
+    attempt: int = 0,
+    retry_of: str | None = None,
+    retry_reasons: tuple[str, ...] = (),
+    cmin_default_minimizer_strategy: int | None = None,
 ) -> CommandJob:
-    cwd = (
+    base_cwd = (
         run_dir
         / scheme.name
         / "combine"
@@ -526,8 +547,10 @@ def build_hybrid_job(
         / safe_name(target.label)
         / quantile_tag(quantile)
     )
+    cwd = base_cwd if attempt == 0 else base_cwd / f"retry_{attempt}"
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
+    retry_suffix = f".retry{attempt}" if attempt else ""
     command = [
         "combine",
         "-M",
@@ -546,7 +569,7 @@ def build_hybrid_job(
         "-m",
         mass,
         "-n",
-        f".hybrid_blind.{safe_name(target.label)}.{quantile_tag(quantile)}",
+        f".hybrid_blind.{safe_name(target.label)}.{quantile_tag(quantile)}{retry_suffix}",
     ]
     if save_hybrid_result:
         command.append("--saveHybridResult")
@@ -558,9 +581,17 @@ def build_hybrid_job(
         command.extend(["--rRelAcc", format_number(r_rel_acc)])
     if r_abs_acc is not None:
         command.extend(["--rAbsAcc", format_number(r_abs_acc)])
+    if cmin_default_minimizer_strategy is not None:
+        command.extend(
+            [
+                "--cminDefaultMinimizerStrategy",
+                str(cmin_default_minimizer_strategy),
+            ]
+        )
 
     return CommandJob(
-        job_id=f"hybrid_lhc_{scheme.name}_{safe_name(target.label)}_{quantile_tag(quantile)}",
+        job_id=f"hybrid_lhc_{scheme.name}_{safe_name(target.label)}_{quantile_tag(quantile)}"
+        + (f"_retry{attempt}" if attempt else ""),
         kind="combine",
         method="HybridNew",
         cwd=cwd,
@@ -574,10 +605,18 @@ def build_hybrid_job(
             "target_processes": list(target.processes),
             "profiled_signal_pois": [poi for poi in scheme.all_pois if poi != target.poi],
             "quantile": quantile,
+            "poi_min": poi_min,
+            "poi_max": poi_max,
+            "range_source": range_source,
+            "range_reference": range_reference,
+            "attempt": attempt,
+            "retry_of": retry_of,
+            "retry_reasons": list(retry_reasons),
             "hybrid_toys": hybrid_toys,
             "cls_acc": cls_acc,
             "r_rel_acc": r_rel_acc,
             "r_abs_acc": r_abs_acc,
+            "cmin_default_minimizer_strategy": cmin_default_minimizer_strategy,
             "blindness": [
                 "HybridNew uses --LHCmode LHC-limits for LHC-style CLs limits.",
                 "HybridNew is run directly with --expectedFromGrid for the requested quantile.",
@@ -599,6 +638,9 @@ def format_duration(total_seconds: float) -> str:
 
 def run_command_job(job: CommandJob) -> dict[str, Any]:
     job.cwd.mkdir(parents=True, exist_ok=True)
+    command_string = shlex.join(job.command)
+    command_path = job.cwd / "command.txt"
+    command_path.write_text(command_string + "\n", encoding="utf-8")
     started_at = dt.datetime.now(dt.timezone.utc)
     start_time = time.monotonic()
     stdout = ""
@@ -642,7 +684,9 @@ def run_command_job(job: CommandJob) -> dict[str, Any]:
         "cwd": str(job.cwd.resolve()),
         "cwd_repo_relative": repo_relative(job.cwd),
         "command": list(job.command),
-        "command_string": shlex.join(job.command),
+        "command_string": command_string,
+        "command_path": str(command_path.resolve()),
+        "command_path_repo_relative": repo_relative(command_path),
         "returncode": returncode,
         "status": "ok" if returncode == 0 else "failed",
         "started_at": started_at.isoformat(),
@@ -670,6 +714,8 @@ def job_manifest_label(job: CommandJob) -> str:
         details.append(f"poi={metadata['target_poi']}")
     if metadata.get("quantile") is not None:
         details.append(f"quantile={metadata['quantile']}")
+    if metadata.get("poi_max") is not None:
+        details.append(f"range=0,{format_number(float(metadata['poi_max']))}")
     if metadata.get("target_processes"):
         details.append("processes=" + ",".join(metadata["target_processes"]))
     return "; ".join(details) if details else "preparation"
@@ -688,6 +734,46 @@ def print_job_manifest(wave_name: str, jobs: list[CommandJob], workers: int) -> 
         log(f"     command: {shlex.join(job.command)}")
 
 
+def executor_exception_result(job: CommandJob, exc: Exception) -> dict[str, Any]:
+    job.cwd.mkdir(parents=True, exist_ok=True)
+    command_string = shlex.join(job.command)
+    command_path = job.cwd / "command.txt"
+    stdout_path = job.cwd / "stdout.txt"
+    stderr_path = job.cwd / "stderr.txt"
+    command_path.write_text(command_string + "\n", encoding="utf-8")
+    stdout_path.write_text("", encoding="utf-8")
+    stderr_text = f"Unhandled executor exception: {exc}"
+    stderr_path.write_text(stderr_text, encoding="utf-8")
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    return {
+        "schema_version": 1,
+        "job_id": job.job_id,
+        "kind": job.kind,
+        "method": job.method,
+        "cwd": str(job.cwd.resolve()),
+        "cwd_repo_relative": repo_relative(job.cwd),
+        "command": list(job.command),
+        "command_string": command_string,
+        "command_path": str(command_path.resolve()),
+        "command_path_repo_relative": repo_relative(command_path),
+        "returncode": 1,
+        "status": "failed",
+        "started_at": now,
+        "ended_at": now,
+        "duration_seconds": 0.0,
+        "duration": format_duration(0.0),
+        "stdout": "",
+        "stderr": stderr_text,
+        "stdout_path": str(stdout_path.resolve()),
+        "stderr_path": str(stderr_path.resolve()),
+        "stdout_path_repo_relative": repo_relative(stdout_path),
+        "stderr_path_repo_relative": repo_relative(stderr_path),
+        "produced_root_files": [],
+        "inputs": list(job.inputs),
+        "metadata": job.metadata,
+    }
+
+
 def run_jobs_parallel(
     jobs: list[CommandJob],
     workers: int,
@@ -701,35 +787,26 @@ def run_jobs_parallel(
     results: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_job = {executor.submit(run_command_job, job): job for job in jobs}
+        pending_job_ids = {job.job_id for job in jobs}
         for future in concurrent.futures.as_completed(future_to_job):
             job = future_to_job[future]
             try:
                 result = future.result()
             except Exception as exc:  # pragma: no cover - defensive runtime guard
-                result = {
-                    "schema_version": 1,
-                    "job_id": job.job_id,
-                    "kind": job.kind,
-                    "method": job.method,
-                    "cwd": str(job.cwd.resolve()),
-                    "cwd_repo_relative": repo_relative(job.cwd),
-                    "command": list(job.command),
-                    "command_string": shlex.join(job.command),
-                    "returncode": 1,
-                    "status": "failed",
-                    "duration_seconds": 0.0,
-                    "duration": format_duration(0.0),
-                    "stdout": "",
-                    "stderr": f"Unhandled executor exception: {exc}",
-                    "produced_root_files": [],
-                    "inputs": list(job.inputs),
-                    "metadata": job.metadata,
-                }
+                result = executor_exception_result(job, exc)
+            result = attach_outputs(result)
+            results.append(result)
+            pending_job_ids.discard(job.job_id)
+            completed = len(results)
+            remaining = len(jobs) - completed
             log(
                 f"{result['status']}: {job.job_id} "
                 f"in {result.get('duration', format_duration(float(result.get('duration_seconds', 0.0))))}"
+                f" [{completed}/{len(jobs)} done, {remaining} remaining]"
             )
-            results.append(result)
+            if result.get("status") == "ok" and remaining < 10:
+                remaining_jobs = ", ".join(sorted(pending_job_ids)) or "none"
+                log(f"remaining jobs ({remaining}): {remaining_jobs}")
     return sorted(results, key=lambda item: str(item["job_id"]))
 
 
@@ -880,16 +957,17 @@ def attach_outputs(result: dict[str, Any]) -> dict[str, Any]:
     result["json_path_repo_relative"] = repo_relative(cwd / "result.json")
     result["summary_html_path"] = str((cwd / "summary.html").resolve())
     result["summary_html_path_repo_relative"] = repo_relative(cwd / "summary.html")
+    write_attached_result_outputs(result)
+    return result
+
+
+def write_attached_result_outputs(result: dict[str, Any]) -> None:
+    cwd = Path(result["cwd"])
     (cwd / "result.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     (cwd / "summary.html").write_text(make_job_html_summary(result), encoding="utf-8")
-    return result
-
-
-def attach_and_write_outputs(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [attach_outputs(result) for result in results]
 
 
 def html_escape(value: Any) -> str:
@@ -1055,7 +1133,15 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
         ["Duration", result.get("duration", format_duration(float(result.get("duration_seconds", 0.0))))],
         ["Working directory", result.get("cwd_repo_relative", result.get("cwd", "-"))],
     ]
+    if result.get("method") == "HybridNew":
+        status_rows.extend(
+            [
+                ["Retry", retry_summary_text(result)],
+                ["POI range", f"0 to {format_number(float(metadata.get('poi_max', DEFAULT_POI_MAX)))}"],
+            ]
+        )
     logs_rows = [
+        ["command", html_link("command.txt", "command.txt")],
         ["stdout", html_link("stdout.txt", "stdout.txt")],
         ["stderr", html_link("stderr.txt", "stderr.txt")],
         ["json", html_link("result.json", "result.json")],
@@ -1076,6 +1162,368 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
 
 def result_successful(result: dict[str, Any]) -> bool:
     return int(result.get("returncode", 1)) == 0
+
+
+def result_superseded(result: dict[str, Any]) -> bool:
+    return bool(result.get("metadata", {}).get("superseded_by"))
+
+
+def asymptotic_results_by_target(
+    results: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    for result in results:
+        if result.get("method") != "AsymptoticLimits":
+            continue
+        metadata = result.get("metadata", {})
+        scheme = metadata.get("scheme")
+        target_poi = metadata.get("target_poi")
+        if scheme and target_poi:
+            lookup[(str(scheme), str(target_poi))] = result
+    return lookup
+
+
+def first_positive_expected_limit(
+    result: dict[str, Any],
+    quantile: float,
+) -> float | None:
+    values = result.get("limits", {}).get("expected", {}).get(quantile_key(quantile), [])
+    if isinstance(values, (int, float)):
+        values = [values]
+    if not isinstance(values, list):
+        return None
+    for value in values:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric) and numeric > 0.0:
+            return numeric
+    return None
+
+
+def hybrid_range_from_asymptotic_result(
+    asymptotic_lookup: dict[tuple[str, str], dict[str, Any]],
+    scheme: PoiScheme,
+    target: PoiTarget,
+    quantile: float,
+) -> tuple[float, dict[str, Any]]:
+    result = asymptotic_lookup.get((scheme.name, target.poi))
+    if result is None:
+        raise RuntimeError(
+            f"No asymptotic result found for {scheme.name}/{target.poi}; "
+            "cannot derive HybridNew r range."
+        )
+
+    asymptotic_limit = first_positive_expected_limit(result, quantile)
+    if asymptotic_limit is None:
+        raise RuntimeError(
+            f"Asymptotic result {result.get('job_id')} does not contain a positive "
+            f"expected limit for quantile {quantile_key(quantile)}; "
+            "cannot derive HybridNew r range."
+        )
+
+    poi_max = min(DEFAULT_POI_MAX, HYBRID_RANGE_ASYMPTOTIC_SCALE * asymptotic_limit)
+    if poi_max <= DEFAULT_POI_MIN:
+        raise RuntimeError(
+            f"Derived invalid HybridNew range for {scheme.name}/{target.poi}/"
+            f"{quantile_key(quantile)}: 0,{format_number(poi_max)}"
+        )
+
+    return poi_max, {
+        "strategy": "min(DEFAULT_POI_MAX, 10 * asymptotic_expected_limit)",
+        "asymptotic_job": result.get("job_id"),
+        "asymptotic_quantile": quantile_key(quantile),
+        "asymptotic_limit": asymptotic_limit,
+        "scale": HYBRID_RANGE_ASYMPTOTIC_SCALE,
+        "cap": DEFAULT_POI_MAX,
+    }
+
+
+def hybrid_retry_reasons(result: dict[str, Any]) -> list[str]:
+    if result.get("method") != "HybridNew":
+        return []
+    log_text = "\n".join(
+        str(result.get(stream, "")) for stream in ("stderr", "stdout")
+    )
+    return [
+        pattern
+        for pattern in RETRYABLE_HYBRID_WARNING_PATTERNS
+        if pattern in log_text
+    ]
+
+
+def update_attached_result_metadata(result: dict[str, Any], updates: dict[str, Any]) -> None:
+    result.setdefault("metadata", {}).update(updates)
+    if result.get("json_path") and result.get("summary_html_path"):
+        write_attached_result_outputs(result)
+
+
+def retry_alert_from_result(
+    result: dict[str, Any],
+    reasons: list[str],
+    message: str,
+) -> dict[str, Any]:
+    metadata = result.get("metadata", {})
+    return {
+        "job_id": result.get("job_id"),
+        "status": result.get("status"),
+        "returncode": result.get("returncode"),
+        "scheme": metadata.get("scheme"),
+        "target_poi": metadata.get("target_poi"),
+        "target_label": metadata.get("target_label"),
+        "quantile": metadata.get("quantile"),
+        "attempt": metadata.get("attempt", 0),
+        "poi_max": metadata.get("poi_max"),
+        "reasons": reasons,
+        "message": message,
+        "cwd": result.get("cwd_repo_relative", result.get("cwd")),
+    }
+
+
+def log_large_retry_alert(alert: dict[str, Any]) -> None:
+    CONSOLE.rule(style="bright_red")
+    CONSOLE.print("[bold bright_red]HYBRIDNEW RETRY WARNING EXHAUSTED[/bold bright_red]")
+    CONSOLE.print(alert.get("message", "HybridNew retry warning remains."), style="red")
+    CONSOLE.print(
+        "job={job} scheme={scheme} poi={poi} quantile={quantile} attempt={attempt} range=0,{poi_max}".format(
+            job=alert.get("job_id"),
+            scheme=alert.get("scheme"),
+            poi=alert.get("target_poi"),
+            quantile=alert.get("quantile"),
+            attempt=alert.get("attempt"),
+            poi_max=format_number(float(alert.get("poi_max", DEFAULT_POI_MAX))),
+        ),
+        style="red",
+    )
+    CONSOLE.print("Return code 0 jobs remain successful.", style="dim red")
+    CONSOLE.rule(style="bright_red")
+
+
+def hybrid_retry_alerts(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    alerts: list[dict[str, Any]] = []
+    for result in results:
+        metadata = result.get("metadata", {})
+        if metadata.get("retry_exhausted"):
+            alerts.append(
+                retry_alert_from_result(
+                    result,
+                    list(metadata.get("retry_reasons", [])),
+                    str(metadata.get("retry_message", "HybridNew warning persisted after retries.")),
+                )
+            )
+    return alerts
+
+
+def retry_summary_text(result: dict[str, Any]) -> str:
+    metadata = result.get("metadata", {})
+    parts: list[str] = []
+    if result.get("method") == "HybridNew":
+        parts.append(f"attempt {metadata.get('attempt', 0)}")
+    if metadata.get("retry_of"):
+        parts.append(f"retry of {metadata['retry_of']}")
+    if metadata.get("superseded_by"):
+        parts.append(f"superseded by {metadata['superseded_by']}")
+    if metadata.get("retry_exhausted"):
+        parts.append("WARNING exhausted")
+    return "; ".join(parts) if parts else "-"
+
+
+def make_hybrid_retry_job(
+    result: dict[str, Any],
+    args: argparse.Namespace,
+    run_dir: Path,
+    scheme_by_name: dict[str, PoiScheme],
+    target_by_key: dict[tuple[str, str], PoiTarget],
+    workspace_paths: dict[str, Path],
+    staged_datacards: dict[str, Path],
+) -> CommandJob | None:
+    reasons = hybrid_retry_reasons(result)
+    if not reasons:
+        return None
+
+    metadata = result.get("metadata", {})
+    attempt = int(metadata.get("attempt", 0))
+    previous_poi_max = float(metadata.get("poi_max", DEFAULT_POI_MAX))
+
+    if attempt >= args.hybrid_range_max_retries:
+        message = (
+            f"HybridNew warning persisted after {attempt} retry attempt(s); "
+            "no further retries will be scheduled."
+        )
+        update_attached_result_metadata(
+            result,
+            {
+                "retry_exhausted": True,
+                "retry_status": "warning_after_max_retries",
+                "retry_reasons": reasons,
+                "retry_message": message,
+            },
+        )
+        alert = retry_alert_from_result(result, reasons, message)
+        log_large_retry_alert(alert)
+        return None
+
+    next_poi_max = HYBRID_RETRY_RANGE_SCALE * previous_poi_max
+    if next_poi_max <= previous_poi_max:
+        message = (
+            "HybridNew warning persisted, but the computed retry r range did not "
+            "increase; no further retries will be scheduled."
+        )
+        update_attached_result_metadata(
+            result,
+            {
+                "retry_exhausted": True,
+                "retry_status": "retry_range_not_increased",
+                "retry_reasons": reasons,
+                "retry_message": message,
+            },
+        )
+        alert = retry_alert_from_result(result, reasons, message)
+        log_large_retry_alert(alert)
+        return None
+
+    scheme_name = str(metadata["scheme"])
+    target_poi = str(metadata["target_poi"])
+    quantile = float(metadata["quantile"])
+    scheme = scheme_by_name[scheme_name]
+    target = target_by_key[(scheme_name, target_poi)]
+    range_reference = dict(metadata.get("range_reference") or {})
+    range_reference.setdefault("retry_history", [])
+    range_reference["retry_history"].append(
+        {
+            "source_job": result.get("job_id"),
+            "attempt": attempt,
+            "previous_poi_max": previous_poi_max,
+            "next_poi_max": next_poi_max,
+            "scale": HYBRID_RETRY_RANGE_SCALE,
+            "cmin_default_minimizer_strategy": HYBRID_RETRY_MINIMIZER_STRATEGY,
+            "reasons": reasons,
+        }
+    )
+
+    retry_job = build_hybrid_job(
+        run_dir,
+        scheme,
+        target,
+        quantile,
+        args.mass,
+        workspace_paths[scheme_name],
+        staged_datacards[scheme_name],
+        args.poi_min,
+        next_poi_max,
+        args.hybrid_toys,
+        args.cls_acc,
+        args.r_rel_acc,
+        args.r_abs_acc,
+        not args.no_save_hybrid_result,
+        range_source=str(metadata.get("range_source", "asymptotic")),
+        range_reference=range_reference,
+        attempt=attempt + 1,
+        retry_of=str(result.get("job_id")),
+        retry_reasons=tuple(reasons),
+        cmin_default_minimizer_strategy=HYBRID_RETRY_MINIMIZER_STRATEGY,
+    )
+    update_attached_result_metadata(
+        result,
+        {
+            "superseded_by": retry_job.job_id,
+            "retry_status": "retry_scheduled",
+            "retry_reasons": reasons,
+            "retry_next_poi_max": next_poi_max,
+            "retry_range_scale": HYBRID_RETRY_RANGE_SCALE,
+            "retry_cmin_default_minimizer_strategy": HYBRID_RETRY_MINIMIZER_STRATEGY,
+        },
+    )
+    log(
+        "Submitting immediate HybridNew retry after retryable warning: "
+        f"{result.get('job_id')} -> {retry_job.job_id}; "
+        f"range 0,{format_number(previous_poi_max)} -> 0,{format_number(next_poi_max)}; "
+        f"--cminDefaultMinimizerStrategy {HYBRID_RETRY_MINIMIZER_STRATEGY}"
+    )
+    log(f"     cwd: {repo_relative(retry_job.cwd)}")
+    log(f"     command: {shlex.join(retry_job.command)}")
+    return retry_job
+
+
+def run_hybrid_jobs_with_adaptive_retries(
+    initial_jobs: list[CommandJob],
+    args: argparse.Namespace,
+    run_dir: Path,
+    schemes: tuple[PoiScheme, ...],
+    workspace_paths: dict[str, Path],
+    staged_datacards: dict[str, Path],
+) -> list[dict[str, Any]]:
+    scheme_by_name = {scheme.name: scheme for scheme in schemes}
+    target_by_key = {
+        (scheme.name, target.poi): target
+        for scheme in schemes
+        for target in scheme.targets
+    }
+    all_results: list[dict[str, Any]] = []
+
+    print_job_manifest("HybridNew limit jobs", initial_jobs, args.workers)
+    if not initial_jobs:
+        return []
+    max_workers = len(initial_jobs) if args.workers <= 0 else min(args.workers, len(initial_jobs))
+    log(f"Running {len(initial_jobs)} initial HybridNew command(s) with {max_workers} worker(s)")
+    log("Adaptive HybridNew retries are submitted as soon as each job finishes.")
+    submitted_count = 0
+    completed_count = 0
+    future_to_job: dict[concurrent.futures.Future[dict[str, Any]], CommandJob] = {}
+    pending_job_ids: set[str] = set()
+
+    def submit_job(
+        executor: concurrent.futures.ThreadPoolExecutor,
+        job: CommandJob,
+    ) -> None:
+        nonlocal submitted_count
+        future_to_job[executor.submit(run_command_job, job)] = job
+        pending_job_ids.add(job.job_id)
+        submitted_count += 1
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for job in initial_jobs:
+            submit_job(executor, job)
+
+        while future_to_job:
+            done_futures, _ = concurrent.futures.wait(
+                set(future_to_job),
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done_futures:
+                job = future_to_job.pop(future)
+                try:
+                    result = future.result()
+                except Exception as exc:  # pragma: no cover - defensive runtime guard
+                    result = executor_exception_result(job, exc)
+                result = attach_outputs(result)
+                all_results.append(result)
+                pending_job_ids.discard(job.job_id)
+                completed_count += 1
+                log(
+                    f"{result['status']}: {job.job_id} "
+                    f"in {result.get('duration', format_duration(float(result.get('duration_seconds', 0.0))))}"
+                    f" [{completed_count}/{submitted_count} done, {len(future_to_job)} active]"
+                )
+
+                retry_job = make_hybrid_retry_job(
+                    result,
+                    args,
+                    run_dir,
+                    scheme_by_name,
+                    target_by_key,
+                    workspace_paths,
+                    staged_datacards,
+                )
+                if retry_job is not None:
+                    submit_job(executor, retry_job)
+
+                if len(future_to_job) < 10:
+                    active_jobs = ", ".join(sorted(pending_job_ids)) or "none"
+                    log(f"active jobs ({len(future_to_job)}): {active_jobs}")
+
+    return all_results
 
 
 def result_output_path(result: dict[str, Any], expected_name: str | None = None) -> Path | None:
@@ -1099,6 +1547,10 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "duration_seconds": result.get("duration_seconds"),
         "duration": result.get("duration"),
         "cwd": result.get("cwd_repo_relative", result.get("cwd")),
+        "command_file": result.get(
+            "command_path_repo_relative",
+            result.get("command_path"),
+        ),
         "json": result.get("json_path_repo_relative", result.get("json_path")),
         "summary_html": result.get(
             "summary_html_path_repo_relative",
@@ -1109,6 +1561,17 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "target_label": metadata.get("target_label"),
         "target_processes": metadata.get("target_processes"),
         "quantile": metadata.get("quantile"),
+        "poi_min": metadata.get("poi_min"),
+        "poi_max": metadata.get("poi_max"),
+        "range_source": metadata.get("range_source"),
+        "range_reference": metadata.get("range_reference"),
+        "attempt": metadata.get("attempt"),
+        "retry_of": metadata.get("retry_of"),
+        "superseded_by": metadata.get("superseded_by"),
+        "retry_status": metadata.get("retry_status"),
+        "retry_reasons": metadata.get("retry_reasons"),
+        "retry_exhausted": metadata.get("retry_exhausted"),
+        "retry_message": metadata.get("retry_message"),
         "limits": result.get("limits"),
     }
 
@@ -1116,6 +1579,8 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
 def build_limit_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     for result in results:
+        if result_superseded(result):
+            continue
         metadata = result.get("metadata", {})
         scheme = metadata.get("scheme")
         method = result.get("method")
@@ -1150,6 +1615,7 @@ def write_run_summary(
     results: list[dict[str, Any]],
 ) -> None:
     readme_html = run_dir / "README.html"
+    retry_alerts = hybrid_retry_alerts(results)
     payload = {
         "schema_version": 1,
         "run_dir": str(run_dir.resolve()),
@@ -1162,6 +1628,12 @@ def write_run_summary(
         "methods": args.methods,
         "quantiles": list(args.quantiles),
         "quick": args.quick,
+        "hybrid_range_from_asymptotic": args.hybrid_range_from_asymptotic,
+        "hybrid_range_asymptotic_scale": HYBRID_RANGE_ASYMPTOTIC_SCALE,
+        "hybrid_retry_range_scale": HYBRID_RETRY_RANGE_SCALE,
+        "hybrid_retry_cmin_default_minimizer_strategy": HYBRID_RETRY_MINIMIZER_STRATEGY,
+        "hybrid_range_max_retries": args.hybrid_range_max_retries,
+        "hybrid_retry_alerts": retry_alerts,
         "poi_min": args.poi_min,
         "poi_max": args.poi_max,
         "hybrid_toys": args.hybrid_toys,
@@ -1203,6 +1675,12 @@ def write_run_summary(
             html_escape(result.get("metadata", {}).get("target_poi", "-")),
             html_escape(result.get("metadata", {}).get("quantile", "-")),
             html_escape(
+                f"0 to {format_number(float(result.get('metadata', {}).get('poi_max')))}"
+                if result.get("metadata", {}).get("poi_max") is not None
+                else "-"
+            ),
+            html_escape(retry_summary_text(result)),
+            html_escape(
                 result.get(
                     "duration",
                     format_duration(float(result.get("duration_seconds", 0.0))),
@@ -1223,8 +1701,17 @@ def write_run_summary(
         ["Mass", args.mass],
         ["Methods", args.methods],
         ["Quick mode", "yes" if args.quick else "no"],
+        [
+            "Hybrid range strategy",
+            "asymptotic-derived per quantile"
+            if args.hybrid_range_from_asymptotic
+            else "fixed default range",
+        ],
+        ["Hybrid range max retries", args.hybrid_range_max_retries],
+        ["Hybrid retry range scale", HYBRID_RETRY_RANGE_SCALE],
+        ["Hybrid retry minimizer strategy", HYBRID_RETRY_MINIMIZER_STRATEGY],
         ["POI scheme request", args.poi_scheme],
-        ["POI range", f"{format_number(args.poi_min)} to {format_number(args.poi_max)}"],
+        ["Default POI range", f"{format_number(args.poi_min)} to {format_number(args.poi_max)}"],
         ["Quantiles", ", ".join(quantile_key(q) for q in args.quantiles)],
         ["Aggregate JSON", html_link("blind_limits_summary.json", "blind_limits_summary.json")],
     ]
@@ -1232,15 +1719,39 @@ def write_run_summary(
       <ul>
         <li>AsymptoticLimits jobs use <code>--run blind</code>.</li>
         <li>HybridNew jobs use <code>--expectedFromGrid</code> for the requested expected quantiles.</li>
+        <li>When <code>--hybrid-range-from-asymptotic</code> is used, HybridNew ranges are computed independently for each target and quantile as <code>0,min(1000000,10*r_asymp)</code>.</li>
+        <li>Retryable HybridNew minimization warnings scale the r range by 10 and immediately re-enter the job queue with <code>--cminDefaultMinimizerStrategy 2</code> when that job finishes, until the retry cap is reached.</li>
         <li>HybridNew jobs do not pass <code>--dataset</code> or <code>--bypassFrequentistFit</code>.</li>
       </ul>
     """
+    retry_alert_section = ""
+    if retry_alerts:
+        alert_rows = [
+            [
+                alert.get("job_id", "-"),
+                alert.get("scheme", "-"),
+                alert.get("target_poi", "-"),
+                alert.get("quantile", "-"),
+                alert.get("attempt", "-"),
+                f"0 to {format_number(float(alert.get('poi_max', DEFAULT_POI_MAX)))}",
+                "; ".join(str(reason) for reason in alert.get("reasons", [])),
+                alert.get("message", "-"),
+            ]
+            for alert in retry_alerts
+        ]
+        retry_alert_section = f"""
+    <section class="card"><h2>Large HybridNew Retry Error Notification</h2>
+      <p><strong>WARNING:</strong> one or more HybridNew jobs still emitted retryable minimization warnings after the retry policy stopped. Return code 0 jobs are reported but remain successful.</p>
+      {html_table(['Job', 'Scheme', 'Target POI', 'Quantile', 'Attempt', 'POI Range', 'Reasons', 'Message'], alert_rows)}
+    </section>
+        """
     body = f"""
     <h1>Blind Limit Run</h1>
     <p class="subtitle">Aggregate execution summary for Combine limit jobs.</p>
     <section class="card"><h2>Summary</h2>{html_table_raw(['Field', 'Value'], [[html_escape(k), v if str(v).startswith('<a ') else html_escape(v)] for k, v in summary_rows])}</section>
     <section class="card"><h2>Limit Policy</h2>{policy_html}</section>
-    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'Duration', 'Summary'], job_rows)}</section>
+    {retry_alert_section}
+    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'POI Range', 'Retry', 'Duration', 'Summary'], job_rows)}</section>
     """
     readme_html.write_text(html_document("Blind Limit Run", body), encoding="utf-8")
 
@@ -1260,7 +1771,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
-        help="Parent directory for blind-limit runs.",
+        help="Parent directory for limit runs.",
     )
     parser.add_argument(
         "--run-name",
@@ -1292,6 +1803,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--hybrid-range-from-asymptotic",
+        action="store_true",
+        help=(
+            "Run asymptotic limits before HybridNew and set each HybridNew r range to "
+            "0,min(1000000,10*r_asymp) for the matching target and quantile. "
+            "Default behavior keeps the fixed 0,1000000 range."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-range-max-retries",
+        type=int,
+        default=DEFAULT_HYBRID_RANGE_MAX_RETRIES,
+        help=(
+            "Maximum number of 10x-r-range HybridNew retries after retryable "
+            "minimization warnings in --hybrid-range-from-asymptotic mode. "
+            "Each retry also passes --cminDefaultMinimizerStrategy 2."
+        ),
+    )
+    parser.add_argument(
         "--quantiles",
         type=parse_float_list,
         default=DEFAULT_QUANTILES,
@@ -1307,7 +1837,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=int,
         default=0,
-        help="Parallel subprocess workers per dependency wave. Use 0 to run all ready jobs at once.",
+        help="Parallel subprocess workers per dependency wave. Use 0 to run all ready jobs at once; adaptive HybridNew retries reuse this pool immediately.",
     )
     parser.add_argument(
         "--hybrid-toys",
@@ -1356,6 +1886,8 @@ def prepare_run_dir(output_dir: Path, run_name: str | None) -> Path:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.hybrid_range_max_retries < 0:
+        raise ValueError("--hybrid-range-max-retries must be non-negative")
     apply_quick_mode(args)
     datacard_path = Path(args.datacard).resolve()
     args.datacard = str(datacard_path)
@@ -1375,16 +1907,16 @@ def main() -> int:
             "Quick mode enabled: HybridNew "
             "--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100"
         )
-    log("POI range: 0 to 1000000")
+    log("Default POI range: 0 to 1000000")
+    if args.hybrid_range_from_asymptotic:
+        log("Optional HybridNew range mode enabled: per-quantile ranges come from asymptotic limits")
 
     all_results: list[dict[str, Any]] = []
 
     workspace_jobs = [
         build_workspace_job(run_dir, datacard_path, args.mass, scheme) for scheme in schemes
     ]
-    workspace_results = attach_and_write_outputs(
-        run_jobs_parallel(workspace_jobs, args.workers, "workspace builds")
-    )
+    workspace_results = run_jobs_parallel(workspace_jobs, args.workers, "workspace builds")
     all_results.extend(workspace_results)
     if not all(result_successful(result) for result in workspace_results):
         write_run_summary(run_dir, args, processes, schemes, all_results)
@@ -1401,13 +1933,17 @@ def main() -> int:
         staged_datacards[scheme_name] = Path(result["cwd"]) / LOCAL_DATACARD_NAME
 
     run_hybrid = args.methods in {"hybrid", "both"}
-    run_asymptotic = args.methods in {"asymptotic", "both"}
+    run_requested_asymptotic = args.methods in {"asymptotic", "both"}
+    use_asymptotic_hybrid_ranges = args.hybrid_range_from_asymptotic and run_hybrid
+    run_asymptotic = run_requested_asymptotic or use_asymptotic_hybrid_ranges
+    if args.hybrid_range_from_asymptotic and not run_hybrid:
+        log("Hybrid range from asymptotic requested, but HybridNew is not selected; using normal asymptotic-only flow.")
 
-    limit_jobs: list[CommandJob] = []
-    for scheme in schemes:
-        if run_asymptotic:
+    asymptotic_jobs: list[CommandJob] = []
+    if run_asymptotic:
+        for scheme in schemes:
             for target in scheme.targets:
-                limit_jobs.append(
+                asymptotic_jobs.append(
                     build_asymptotic_job(
                         run_dir,
                         scheme,
@@ -1419,38 +1955,113 @@ def main() -> int:
                         args.poi_max,
                     )
                 )
-        if run_hybrid:
-            for target in scheme.targets:
-                for quantile in args.quantiles:
-                    limit_jobs.append(
-                        build_hybrid_job(
-                            run_dir,
+
+    if use_asymptotic_hybrid_ranges:
+        asymptotic_results = run_jobs_parallel(
+            asymptotic_jobs,
+            args.workers,
+            "Asymptotic limit jobs",
+        )
+        all_results.extend(asymptotic_results)
+        if not all(result_successful(result) for result in asymptotic_results):
+            write_run_summary(run_dir, args, processes, schemes, all_results)
+            return 1
+
+        asymptotic_lookup = asymptotic_results_by_target(asymptotic_results)
+        hybrid_jobs: list[CommandJob] = []
+        try:
+            for scheme in schemes:
+                for target in scheme.targets:
+                    for quantile in args.quantiles:
+                        poi_max, range_reference = hybrid_range_from_asymptotic_result(
+                            asymptotic_lookup,
                             scheme,
                             target,
                             quantile,
-                            args.mass,
-                            workspace_paths[scheme.name],
-                            staged_datacards[scheme.name],
-                            args.poi_min,
-                            args.poi_max,
-                            args.hybrid_toys,
-                            args.cls_acc,
-                            args.r_rel_acc,
-                            args.r_abs_acc,
-                            not args.no_save_hybrid_result,
                         )
-                    )
+                        log(
+                            "HybridNew range from asymptotic: "
+                            f"{scheme.name}/{target.poi}/{quantile_key(quantile)} "
+                            f"0 to {format_number(poi_max)} "
+                            f"from r_asymp={format_number(float(range_reference['asymptotic_limit']))}"
+                        )
+                        hybrid_jobs.append(
+                            build_hybrid_job(
+                                run_dir,
+                                scheme,
+                                target,
+                                quantile,
+                                args.mass,
+                                workspace_paths[scheme.name],
+                                staged_datacards[scheme.name],
+                                args.poi_min,
+                                poi_max,
+                                args.hybrid_toys,
+                                args.cls_acc,
+                                args.r_rel_acc,
+                                args.r_abs_acc,
+                                not args.no_save_hybrid_result,
+                                range_source="asymptotic",
+                                range_reference=range_reference,
+                            )
+                        )
+        except RuntimeError as exc:
+            log(str(exc))
+            write_run_summary(run_dir, args, processes, schemes, all_results)
+            return 1
+        hybrid_results = run_hybrid_jobs_with_adaptive_retries(
+            hybrid_jobs,
+            args,
+            run_dir,
+            schemes,
+            workspace_paths,
+            staged_datacards,
+        )
+        all_results.extend(hybrid_results)
+    else:
+        limit_jobs: list[CommandJob] = list(asymptotic_jobs if run_requested_asymptotic else [])
+        if run_hybrid:
+            for scheme in schemes:
+                for target in scheme.targets:
+                    for quantile in args.quantiles:
+                        limit_jobs.append(
+                            build_hybrid_job(
+                                run_dir,
+                                scheme,
+                                target,
+                                quantile,
+                                args.mass,
+                                workspace_paths[scheme.name],
+                                staged_datacards[scheme.name],
+                                args.poi_min,
+                                args.poi_max,
+                                args.hybrid_toys,
+                                args.cls_acc,
+                                args.r_rel_acc,
+                                args.r_abs_acc,
+                                not args.no_save_hybrid_result,
+                            )
+                        )
 
-    limit_results = attach_and_write_outputs(
-        run_jobs_parallel(limit_jobs, args.workers, "Combine limit jobs")
-    )
-    all_results.extend(limit_results)
+        limit_results = run_jobs_parallel(limit_jobs, args.workers, "Combine limit jobs")
+        all_results.extend(limit_results)
     write_run_summary(run_dir, args, processes, schemes, all_results)
 
-    failed = [result for result in all_results if not result_successful(result)]
+    failed = [
+        result
+        for result in all_results
+        if not result_successful(result) and not result_superseded(result)
+    ]
     if failed:
         log(f"Completed with {len(failed)} failed command(s).")
         return 1
+
+    retry_alert_count = len(hybrid_retry_alerts(all_results))
+    if retry_alert_count:
+        log(
+            f"Completed with {retry_alert_count} HybridNew retry warning alert(s); "
+            "returning 0 because final command return codes were successful."
+        )
 
     log(f"Completed successfully. Summary: {repo_relative(run_dir / 'blind_limits_summary.json')}")
     return 0

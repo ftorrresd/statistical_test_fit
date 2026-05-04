@@ -144,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
-        help="Directory where the bundled workspace, datacard, and HTML summary are written.",
+        help="Directory where the bundled workspace, datacard, and bundle_summary.html are written.",
     )
     parser.add_argument(
         "--workspace-name",
@@ -1273,7 +1273,7 @@ def write_summary_report(
         "A clean overview of the simultaneous H/Z to Upsilon(nS)+photon Combine workspace, datacard, imported objects, nuisance layout, and validation status.",
         "\n".join(sections),
     )
-    (output_dir / "README.html").write_text(report_html, encoding="ascii")
+    (output_dir / "bundle_summary.html").write_text(report_html, encoding="ascii")
 
 
 def verify_required_outputs(signal_specs: list[SignalProcessSpec]) -> None:
@@ -1442,7 +1442,7 @@ def main() -> int:
         log_kv("text2workspace.py", validation_result["text2workspace_status"])
         log_kv("combine -M AsymptoticLimits", validation_result["combine_status"])
 
-    report_path = output_dir / "README.html"
+    report_path = output_dir / "bundle_summary.html"
     produced_files.append(report_path)
     write_summary_report(
         output_dir=output_dir,

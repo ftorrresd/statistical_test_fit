@@ -230,14 +230,16 @@ Default behavior:
 - Runs both `AsymptoticLimits --run blind` and `HybridNew --LHCmode LHC-limits`
 - Uses HybridNew expected quantiles `0.16,0.5,0.84` by default
 - Does not pass `--dataset` or `--bypassFrequentistFit` to `HybridNew`
-- The POI range is always `0,1000000`, including in quick mode
+- By default, the POI range is always `0,1000000`, including in quick mode
+- Optional non-default `--hybrid-range-from-asymptotic` runs asymptotic limits first and sets each HybridNew target/quantile range to `0,min(1000000,10*r_asymp)`
+- In asymptotic-derived range mode, retryable HybridNew minimization warnings immediately trigger 10x r-range retries with `--cminDefaultMinimizerStrategy 2` when that job finishes, up to `--hybrid-range-max-retries` (default `3`); exhausted warning retries are reported prominently but return code `0` jobs remain successful
 - Optional non-default `--quick` mode adds HybridNew options `--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100`
-- Runs all ready commands in parallel within each dependency wave; use `--workers N` to cap concurrency
+- Runs all ready commands in parallel within each dependency wave; adaptive HybridNew retries are submitted per completed job; use `--workers N` to cap concurrency
 - Prints the complete job manifest before each dependency wave starts
 - Clears the run directory and each per-job working directory before staging inputs and running commands
-- Creates one working directory per Combine call with staged inputs, ROOT outputs, `stdout.txt`, `stderr.txt`, `result.json`, and a dark `summary.html`
+- Creates one working directory per Combine call with staged inputs, ROOT outputs, `command.txt`, `stdout.txt`, `stderr.txt`, `result.json`, and a dark `summary.html`
 - Reports each job duration as `DD:HH:MM:SS:MS` in the live log, per-job JSON/HTML, and aggregate summary
-- Writes an aggregate `blind_limits_summary.json` and dark `README.html` under `datacards/blind_limits/run_YYYYmmdd_HHMMSS/`
+- Writes an aggregate `blind_limits_summary.json` and dark `README.html` under `datacards/limits/run_YYYYmmdd_HHMMSS/`
 
 Useful examples:
 
@@ -246,6 +248,7 @@ python3 scripts/limits.py --workers 8
 python3 scripts/limits.py --quick --workers 8
 python3 scripts/limits.py --poi-scheme six --methods asymptotic
 python3 scripts/limits.py --poi-scheme z_grouped --methods hybrid --hybrid-toys 1000 --cls-acc 0.005
+python3 scripts/limits.py --methods both --hybrid-range-from-asymptotic
 python3 scripts/limits.py --poi-scheme grouped --methods hybrid
 python3 scripts/limits.py --run-name test_blind_limits
 ```
@@ -255,12 +258,15 @@ python3 scripts/limits.py --run-name test_blind_limits
 After `scripts/limits.py` has written a `blind_limits_summary.json`, make a LaTeX table of theory branching fractions and expected/observed branching-fraction limits with:
 
 ```bash
-python3 scripts/branching_fraction_table.py --summary datacards/blind_limits/<run>/blind_limits_summary.json
+python3 scripts/branching_fraction_table.py --summary datacards/limits/<run>/blind_limits_summary.json
 ```
 
 Default behavior:
 
-- Writes three tables by default: grouped H, grouped Z, and individual six-POI limits using `hybrid_lhc`
+- Writes grouped H, grouped Z, and individual six-POI tables for both `asymptotic` and `hybrid_lhc` methods by default
+- Uses one row for each grouped H/Z table, with the theory branching fraction equal to the sum of the three states in that boson group
+- Includes raw observed/expected signal-strength columns plus branching-fraction limit columns
+- Marks upper-limit cells with `<`
 - Multiplies each signal-strength limit by the corresponding theory branching fraction
 - Represents the one-standard-deviation expected band as deltas, e.g. `99.8^{+10.1}_{-0.9}`
 - Writes `branching_fraction_limits.table.tex`, `branching_fraction_limits.tex`, and `branching_fraction_limits.json` into a `tables/` directory next to the summary
@@ -270,7 +276,7 @@ To compile the standalone LaTeX file to PDF, use Singularity with the Docker LaT
 
 ```bash
 python3 scripts/branching_fraction_table.py \
-  --summary datacards/blind_limits/<run>/blind_limits_summary.json \
+  --summary datacards/limits/<run>/blind_limits_summary.json \
   --compile-pdf
 ```
 
