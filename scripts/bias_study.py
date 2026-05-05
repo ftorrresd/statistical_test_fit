@@ -1,0 +1,2433 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import datetime as dt
+import html
+import json
+import math
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from rich.console import Console
+from rich.text import Text
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONSOLE = Console()
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+
+DEFAULT_DATACARD = REPO_ROOT / "datacards" / "datacard.txt"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "bias_study"
+DEFAULT_MASS = "125"
+DEFAULT_INJECTIONS = (0.0, 1.0, 10.0, 100.0)
+DEFAULT_TOYS = 1000
+DEFAULT_POI_INITIAL = 1.0
+DEFAULT_POI_MIN = -1000.0
+DEFAULT_POI_MAX = 1000.0
+DEFAULT_PULL_RANGE = (-5.0, 5.0)
+DEFAULT_PULL_BINS = 40
+DEFAULT_MIN_FIT_ENTRIES = 3
+DEFAULT_BIAS_PULL_THRESHOLD = 0.2
+DEFAULT_PULL_WIDTH_THRESHOLD = 0.2
+DEFAULT_SEED_BASE = 123450
+WORKSPACE_OUTPUT_NAME = "multisignal_workspace.root"
+LOCAL_WORKSPACE_NAME = "workspace.root"
+LOCAL_DATACARD_NAME = "datacard.txt"
+LOCAL_TOYS_NAME = "toys.root"
+NON_RESONANT_PROCESS_NAME = "non_resonant_bkg"
+DEFAULT_PDF_INDEX_NAME = "pdfindex"
+
+
+@dataclass(frozen=True)
+class DatacardProcesses:
+    signals: list[str]
+    backgrounds: list[str]
+
+
+@dataclass(frozen=True)
+class PoiTarget:
+    label: str
+    poi: str
+    processes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PoiScheme:
+    name: str
+    title: str
+    description: str
+    poi_maps: tuple[str, ...]
+    targets: tuple[PoiTarget, ...]
+    all_poi_names: tuple[str, ...] = ()
+
+    @property
+    def all_pois(self) -> tuple[str, ...]:
+        if self.all_poi_names:
+            return self.all_poi_names
+        seen: set[str] = set()
+        pois: list[str] = []
+        for target in self.targets:
+            if target.poi not in seen:
+                pois.append(target.poi)
+                seen.add(target.poi)
+        return tuple(pois)
+
+
+@dataclass(frozen=True)
+class TruthPdf:
+    index: int
+    name: str
+    family: str
+    label: str
+
+
+@dataclass(frozen=True)
+class CommandJob:
+    job_id: str
+    kind: str
+    method: str
+    cwd: Path
+    command: tuple[str, ...]
+    output_patterns: tuple[str, ...]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    inputs: tuple[dict[str, str], ...] = ()
+
+
+def log(message: str) -> None:
+    CONSOLE.print(Text("[bias_study]", style="dim cyan"), message)
+
+
+def nproc() -> int:
+    return max(1, os.cpu_count() or 1)
+
+
+def resolve_worker_count(job_count: int, requested_workers: int) -> int:
+    if job_count <= 0:
+        return 0
+    worker_cap = nproc()
+    requested = worker_cap if requested_workers <= 0 else requested_workers
+    return max(1, min(job_count, requested, worker_cap))
+
+
+def worker_policy_text(requested_workers: int, job_count: int) -> str:
+    worker_cap = nproc()
+    effective = resolve_worker_count(job_count, requested_workers)
+    if requested_workers <= 0:
+        return f"requested=auto, nproc={worker_cap}, effective={effective}"
+    if requested_workers > worker_cap:
+        return f"requested={requested_workers}, capped_by_nproc={worker_cap}, effective={effective}"
+    return f"requested={requested_workers}, nproc={worker_cap}, effective={effective}"
+
+
+def reset_directory(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def repo_relative(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def href_relative_to(base_dir: Path, target: Path) -> str:
+    try:
+        return str(target.resolve().relative_to(base_dir.resolve()))
+    except ValueError:
+        return str(target)
+
+
+def ensure_file(path: Path, message: str) -> None:
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"{message}: {path}")
+
+
+def format_number(value: float) -> str:
+    if math.isfinite(value) and value.is_integer():
+        return str(int(value))
+    return f"{value:.12g}"
+
+
+def parse_float_list(value: str) -> tuple[float, ...]:
+    values: list[float] = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        values.append(float(item))
+    if not values:
+        raise argparse.ArgumentTypeError("at least one value is required")
+    return tuple(values)
+
+
+def parse_family_list(value: str) -> tuple[str, ...]:
+    aliases = {"checbchev": "chebychev", "cheb": "chebychev"}
+    families: list[str] = []
+    for item in value.split(","):
+        family = item.strip().lower()
+        if not family:
+            continue
+        family = aliases.get(family, family)
+        families.append(family)
+    if not families:
+        raise argparse.ArgumentTypeError("at least one family is required")
+    return tuple(families)
+
+
+def safe_name(value: str) -> str:
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+    value = value.strip("._")
+    return value or "unnamed"
+
+
+def injection_tag(value: float) -> str:
+    return "r" + format_number(value).replace("-", "m").replace(".", "p")
+
+
+def is_int_token(value: str) -> bool:
+    try:
+        int(value)
+    except ValueError:
+        return False
+    return True
+
+
+def parse_datacard_processes(datacard_path: Path) -> DatacardProcesses:
+    lines = datacard_path.read_text(encoding="ascii").splitlines()
+    process_lines: list[tuple[int, list[str]]] = []
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        tokens = stripped.split()
+        if tokens and tokens[0] == "process" and len(tokens) > 1:
+            process_lines.append((line_number, tokens[1:]))
+
+    for index in range(len(process_lines) - 1):
+        _, names = process_lines[index]
+        _, ids = process_lines[index + 1]
+        if len(names) != len(ids):
+            continue
+        if all(is_int_token(item) for item in names):
+            continue
+        if not all(is_int_token(item) for item in ids):
+            continue
+
+        signals: list[str] = []
+        backgrounds: list[str] = []
+        for process_name, process_id_text in zip(names, ids):
+            process_id = int(process_id_text)
+            if process_id <= 0:
+                signals.append(process_name)
+            else:
+                backgrounds.append(process_name)
+        if not signals:
+            raise RuntimeError(f"No signal processes found in {datacard_path}")
+        return DatacardProcesses(signals=signals, backgrounds=backgrounds)
+
+    raise RuntimeError(f"Could not identify process names and ids in {datacard_path}")
+
+
+def process_state(process_name: str) -> str:
+    parts = process_name.split("_", 1)
+    if len(parts) != 2 or not parts[1]:
+        raise ValueError(
+            f"Cannot build grouped Upsilon POI for process {process_name!r}; expected names like H_1S or Z_1S."
+        )
+    return parts[1]
+
+
+def process_boson(process_name: str) -> str:
+    parts = process_name.split("_", 1)
+    if len(parts) != 2 or not parts[0]:
+        raise ValueError(
+            f"Cannot identify boson for process {process_name!r}; expected names like H_1S or Z_1S."
+        )
+    return parts[0]
+
+
+def process_specific_poi(process_name: str) -> str:
+    return f"r_{process_name}"
+
+
+def make_six_poi_scheme(
+    signals: list[str],
+    poi_initial: float,
+    poi_min: float,
+    poi_max: float,
+) -> PoiScheme:
+    maps: list[str] = []
+    targets: list[PoiTarget] = []
+    for process_name in signals:
+        poi = process_specific_poi(process_name)
+        maps.append(
+            f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
+        )
+        targets.append(PoiTarget(label=process_name, poi=poi, processes=(process_name,)))
+    return PoiScheme(
+        name="six_poi",
+        title="Six Independent Signal POIs",
+        description=(
+            "Each H/Z x Upsilon signal process has its own signal-strength POI. "
+            "Bias fits are evaluated one target POI at a time while other signal POIs remain in the model."
+        ),
+        poi_maps=tuple(maps),
+        targets=tuple(targets),
+        all_poi_names=tuple(target.poi for target in targets),
+    )
+
+
+def make_boson_grouped_poi_scheme(
+    signals: list[str],
+    target_boson: str,
+    poi_initial: float,
+    poi_min: float,
+    poi_max: float,
+) -> PoiScheme:
+    target_processes = [
+        process_name for process_name in signals if process_boson(process_name) == target_boson
+    ]
+    profiled_processes = [
+        process_name for process_name in signals if process_boson(process_name) != target_boson
+    ]
+    if not target_processes:
+        raise RuntimeError(f"No {target_boson} signal processes found for grouped scheme")
+
+    maps: list[str] = []
+    all_pois: list[str] = []
+    target_poi = f"r_{target_boson}_grouped"
+    all_pois.append(target_poi)
+    for index, process_name in enumerate(target_processes):
+        if index == 0:
+            maps.append(
+                f"map=.*/{process_name}:{target_poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
+            )
+        else:
+            maps.append(f"map=.*/{process_name}:{target_poi}")
+
+    for process_name in profiled_processes:
+        poi = process_specific_poi(process_name)
+        all_pois.append(poi)
+        maps.append(
+            f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
+        )
+
+    profiled_bosons = sorted({process_boson(process_name) for process_name in profiled_processes})
+    profiled_text = ", ".join(profiled_bosons) if profiled_bosons else "other"
+    scheme_name = f"{target_boson.lower()}_grouped"
+    return PoiScheme(
+        name=scheme_name,
+        title=f"{target_boson} Grouped Signal POI",
+        description=(
+            f"All {target_boson} signal processes share {target_poi}. "
+            f"{profiled_text} signal strengths are mapped to individual profiled POIs."
+        ),
+        poi_maps=tuple(maps),
+        targets=(
+            PoiTarget(
+                label=f"{target_boson}_grouped",
+                poi=target_poi,
+                processes=tuple(target_processes),
+            ),
+        ),
+        all_poi_names=tuple(all_pois),
+    )
+
+
+def selected_schemes(args: argparse.Namespace, signals: list[str]) -> tuple[PoiScheme, ...]:
+    schemes = {
+        "six": make_six_poi_scheme(signals, args.poi_initial, args.poi_min, args.poi_max),
+        "z_grouped": make_boson_grouped_poi_scheme(
+            signals,
+            "Z",
+            args.poi_initial,
+            args.poi_min,
+            args.poi_max,
+        ),
+        "h_grouped": make_boson_grouped_poi_scheme(
+            signals,
+            "H",
+            args.poi_initial,
+            args.poi_min,
+            args.poi_max,
+        ),
+    }
+    if args.poi_scheme == "grouped":
+        return (schemes["z_grouped"], schemes["h_grouped"])
+    if args.poi_scheme == "both":
+        return (schemes["six"], schemes["z_grouped"], schemes["h_grouped"])
+    return (schemes[args.poi_scheme],)
+
+
+def copy_file(src: Path, dst: Path) -> dict[str, str]:
+    ensure_file(src, "Required input file does not exist")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.resolve() != dst.resolve():
+        shutil.copy2(src, dst)
+    return {
+        "source": str(src.resolve()),
+        "source_repo_relative": repo_relative(src),
+        "staged": str(dst.resolve()),
+        "staged_name": dst.name,
+    }
+
+
+def stage_datacard_inputs(datacard_path: Path, destination: Path) -> tuple[Path, list[dict[str, str]]]:
+    destination.mkdir(parents=True, exist_ok=True)
+    input_records: list[dict[str, str]] = []
+    staged_shape_files: dict[str, Path] = {}
+    staged_lines: list[str] = []
+
+    for line in datacard_path.read_text(encoding="ascii").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            tokens = stripped.split()
+            if len(tokens) >= 5 and tokens[0] == "shapes":
+                shape_token = tokens[3]
+                if shape_token not in {"FAKE", "-"}:
+                    shape_source = Path(shape_token)
+                    if not shape_source.is_absolute():
+                        shape_source = datacard_path.parent / shape_source
+                    shape_source = shape_source.resolve()
+                    staged_name = Path(shape_token).name
+                    previous_source = staged_shape_files.get(staged_name)
+                    if previous_source is not None and previous_source != shape_source:
+                        raise RuntimeError(
+                            f"Two datacard shape inputs share basename {staged_name!r}: {previous_source} and {shape_source}"
+                        )
+                    if previous_source is None:
+                        staged_shape_files[staged_name] = shape_source
+                        input_records.append(copy_file(shape_source, destination / staged_name))
+                    tokens[3] = staged_name
+                    line = " ".join(tokens)
+        staged_lines.append(line)
+
+    staged_datacard = destination / LOCAL_DATACARD_NAME
+    staged_datacard.write_text("\n".join(staged_lines) + "\n", encoding="ascii")
+    input_records.insert(
+        0,
+        {
+            "source": str(datacard_path.resolve()),
+            "source_repo_relative": repo_relative(datacard_path),
+            "staged": str(staged_datacard.resolve()),
+            "staged_name": staged_datacard.name,
+        },
+    )
+    return staged_datacard, input_records
+
+
+def stage_common_combine_inputs(
+    job_dir: Path,
+    workspace_path: Path,
+    datacard_path: Path,
+) -> list[dict[str, str]]:
+    return [
+        copy_file(workspace_path, job_dir / LOCAL_WORKSPACE_NAME),
+        copy_file(datacard_path, job_dir / LOCAL_DATACARD_NAME),
+    ]
+
+
+def set_parameters_argument(pois: tuple[str, ...], target_poi: str, value: float, mode: str) -> str:
+    assignments: list[str] = []
+    for poi in pois:
+        assigned_value = value if (mode == "all-pois" or poi == target_poi) else 0.0
+        assignments.append(f"{poi}={format_number(assigned_value)}")
+    return ",".join(assignments)
+
+
+def append_set_parameter(assignments: str, name: str, value: float | int) -> str:
+    suffix = f"{name}={format_number(float(value))}"
+    return f"{assignments},{suffix}" if assignments else suffix
+
+
+def parameter_ranges_argument(pois: tuple[str, ...], lower: float, upper: float) -> str:
+    return ":".join(f"{poi}={format_number(lower)},{format_number(upper)}" for poi in pois)
+
+
+def build_workspace_job(run_dir: Path, datacard_path: Path, mass: str, scheme: PoiScheme) -> CommandJob:
+    cwd = run_dir / scheme.name / "workspace_build"
+    reset_directory(cwd)
+    _, inputs = stage_datacard_inputs(datacard_path, cwd)
+    command: list[str] = [
+        "text2workspace.py",
+        LOCAL_DATACARD_NAME,
+        "-m",
+        mass,
+        "-o",
+        WORKSPACE_OUTPUT_NAME,
+        "-P",
+        "HiggsAnalysis.CombinedLimit.PhysicsModel:multiSignalModel",
+    ]
+    for poi_map in scheme.poi_maps:
+        command.extend(["--PO", poi_map])
+    return CommandJob(
+        job_id=f"workspace_{scheme.name}",
+        kind="workspace_build",
+        method="text2workspace.py",
+        cwd=cwd,
+        command=tuple(command),
+        output_patterns=(WORKSPACE_OUTPUT_NAME,),
+        inputs=tuple(inputs),
+        metadata={
+            "scheme": scheme.name,
+            "scheme_title": scheme.title,
+            "scheme_description": scheme.description,
+            "poi_maps": list(scheme.poi_maps),
+            "pois": list(scheme.all_pois),
+            "mass": mass,
+        },
+    )
+
+
+def build_toy_generation_job(
+    run_dir: Path,
+    scheme: PoiScheme,
+    target: PoiTarget,
+    truth_pdf: TruthPdf,
+    injected_r: float,
+    mass: str,
+    workspace_path: Path,
+    datacard_path: Path,
+    args: argparse.Namespace,
+    experiment_index: int,
+) -> CommandJob:
+    cwd = (
+        run_dir
+        / scheme.name
+        / safe_name(target.label)
+        / safe_name(truth_pdf.label)
+        / injection_tag(injected_r)
+        / "toys"
+    )
+    reset_directory(cwd)
+    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
+    set_parameters = set_parameters_argument(
+        scheme.all_pois,
+        target.poi,
+        injected_r,
+        args.injection_mode,
+    )
+    set_parameters = append_set_parameter(set_parameters, args.pdf_index_name, truth_pdf.index)
+    command = [
+        "combine",
+        "-M",
+        "GenerateOnly",
+        LOCAL_WORKSPACE_NAME,
+        "-t",
+        str(args.toys),
+        "--saveToys",
+        "--toysFrequentist",
+        "--bypassFrequentistFit",
+        "--setParameters",
+        set_parameters,
+        "--freezeParameters",
+        args.pdf_index_name,
+        "--setParameterRanges",
+        parameter_ranges_argument(scheme.all_pois, args.poi_min, args.poi_max),
+        "-m",
+        mass,
+        "-n",
+        f".toys.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
+    ]
+    seed = None
+    if args.random_seeds:
+        seed = -1
+        command.extend(["-s", str(seed)])
+    elif args.seed_base is not None:
+        seed = int(args.seed_base) + experiment_index
+        command.extend(["-s", str(seed)])
+    return CommandJob(
+        job_id=(
+            f"toys_{scheme.name}_{safe_name(target.label)}_"
+            f"{safe_name(truth_pdf.label)}_{injection_tag(injected_r)}"
+        ),
+        kind="toy_generation",
+        method="GenerateOnly",
+        cwd=cwd,
+        command=tuple(command),
+        output_patterns=("higgsCombine*.root",),
+        inputs=tuple(inputs),
+        metadata={
+            "scheme": scheme.name,
+            "target_label": target.label,
+            "target_poi": target.poi,
+            "target_processes": list(target.processes),
+            "truth_pdf_index": truth_pdf.index,
+            "truth_pdf": truth_pdf.name,
+            "truth_pdf_label": truth_pdf.label,
+            "truth_pdf_family": truth_pdf.family,
+            "injected_r": injected_r,
+            "injection_mode": args.injection_mode,
+            "toys": args.toys,
+            "seed": seed,
+            "poi_min": args.poi_min,
+            "poi_max": args.poi_max,
+            "pdf_index_name": args.pdf_index_name,
+            "mass": mass,
+        },
+    )
+
+
+def build_fit_job(
+    run_dir: Path,
+    scheme: PoiScheme,
+    target: PoiTarget,
+    truth_pdf: TruthPdf,
+    injected_r: float,
+    mass: str,
+    workspace_path: Path,
+    datacard_path: Path,
+    toys_path: Path,
+    args: argparse.Namespace,
+) -> CommandJob:
+    cwd = (
+        run_dir
+        / scheme.name
+        / safe_name(target.label)
+        / safe_name(truth_pdf.label)
+        / injection_tag(injected_r)
+        / "fit"
+    )
+    reset_directory(cwd)
+    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
+    inputs.append(copy_file(toys_path, cwd / LOCAL_TOYS_NAME))
+    set_parameters = set_parameters_argument(
+        scheme.all_pois,
+        target.poi,
+        injected_r,
+        args.injection_mode,
+    )
+    command = [
+        "combine",
+        "-M",
+        "MultiDimFit",
+        LOCAL_WORKSPACE_NAME,
+        "--algo",
+        "singles",
+        "--toysFile",
+        LOCAL_TOYS_NAME,
+        "-t",
+        str(args.toys),
+        "--toysFrequentist",
+        "--bypassFrequentistFit",
+        "--redefineSignalPOIs",
+        ",".join(scheme.all_pois),
+        "--setParameters",
+        set_parameters,
+        "--setParameterRanges",
+        parameter_ranges_argument(scheme.all_pois, args.poi_min, args.poi_max),
+        "--cminDefaultMinimizerStrategy",
+        str(args.cmin_default_minimizer_strategy),
+        "--trackParameters",
+        ",".join(scheme.all_pois),
+        "--trackErrors",
+        ",".join(scheme.all_pois),
+        "--saveSpecifiedIndex",
+        args.pdf_index_name,
+        "-m",
+        mass,
+        "-n",
+        f".fit.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
+    ]
+    if args.profile_freeze_disassociated_params:
+        command.extend(["--X-rtd", "MINIMIZER_freezeDisassociatedParams"])
+
+    return CommandJob(
+        job_id=(
+            f"fit_{scheme.name}_{safe_name(target.label)}_"
+            f"{safe_name(truth_pdf.label)}_{injection_tag(injected_r)}"
+        ),
+        kind="toy_fit",
+        method="MultiDimFit",
+        cwd=cwd,
+        command=tuple(command),
+        output_patterns=("higgsCombine*.root",),
+        inputs=tuple(inputs),
+        metadata={
+            "scheme": scheme.name,
+            "target_label": target.label,
+            "target_poi": target.poi,
+            "all_pois": list(scheme.all_pois),
+            "target_processes": list(target.processes),
+            "truth_pdf_index": truth_pdf.index,
+            "truth_pdf": truth_pdf.name,
+            "truth_pdf_label": truth_pdf.label,
+            "truth_pdf_family": truth_pdf.family,
+            "fit_method": "MultiDimFit",
+            "fit_algo": "singles",
+            "fit_pdf_mode": "free",
+            "fit_pdf_index": None,
+            "free_floating_pois": list(scheme.all_pois),
+            "free_floating_pdf_indexes": [args.pdf_index_name],
+            "injected_r": injected_r,
+            "injection_mode": args.injection_mode,
+            "toys": args.toys,
+            "poi_min": args.poi_min,
+            "poi_max": args.poi_max,
+            "pdf_index_name": args.pdf_index_name,
+            "mass": mass,
+        },
+    )
+
+
+def format_duration(total_seconds: float) -> str:
+    total_milliseconds = max(0, int(round(total_seconds * 1000.0)))
+    total_seconds_int, milliseconds = divmod(total_milliseconds, 1000)
+    total_minutes, seconds = divmod(total_seconds_int, 60)
+    total_hours, minutes = divmod(total_minutes, 60)
+    days, hours = divmod(total_hours, 24)
+    return f"{days:02d}:{hours:02d}:{minutes:02d}:{seconds:02d}:{milliseconds:03d}"
+
+
+def run_command_job(job: CommandJob) -> dict[str, Any]:
+    job.cwd.mkdir(parents=True, exist_ok=True)
+    command_string = shlex.join(job.command)
+    command_path = job.cwd / "command.txt"
+    command_path.write_text(command_string + "\n", encoding="utf-8")
+    started_at = dt.datetime.now(dt.timezone.utc)
+    start_time = time.monotonic()
+    stdout = ""
+    stderr = ""
+    returncode = 0
+
+    try:
+        completed = subprocess.run(
+            list(job.command),
+            cwd=job.cwd,
+            capture_output=True,
+            text=True,
+        )
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        returncode = int(completed.returncode)
+    except FileNotFoundError as exc:
+        returncode = 127
+        stderr = str(exc)
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        returncode = 1
+        stderr = f"Unhandled exception while running command: {exc}"
+
+    ended_at = dt.datetime.now(dt.timezone.utc)
+    duration = time.monotonic() - start_time
+    stdout_path = job.cwd / "stdout.txt"
+    stderr_path = job.cwd / "stderr.txt"
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+
+    produced_files: list[str] = []
+    for pattern in job.output_patterns:
+        produced_files.extend(path.name for path in sorted(job.cwd.glob(pattern)))
+    produced_files = sorted(set(produced_files))
+
+    result = {
+        "schema_version": 1,
+        "job_id": job.job_id,
+        "kind": job.kind,
+        "method": job.method,
+        "cwd": str(job.cwd.resolve()),
+        "cwd_repo_relative": repo_relative(job.cwd),
+        "command": list(job.command),
+        "command_string": command_string,
+        "command_path": str(command_path.resolve()),
+        "command_path_repo_relative": repo_relative(command_path),
+        "returncode": returncode,
+        "status": "ok" if returncode == 0 else "failed",
+        "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "duration_seconds": duration,
+        "duration": format_duration(duration),
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_path": str(stdout_path.resolve()),
+        "stderr_path": str(stderr_path.resolve()),
+        "stdout_path_repo_relative": repo_relative(stdout_path),
+        "stderr_path_repo_relative": repo_relative(stderr_path),
+        "produced_root_files": produced_files,
+        "inputs": list(job.inputs),
+        "metadata": job.metadata,
+    }
+    write_job_summary(result)
+    return result
+
+
+def executor_exception_result(job: CommandJob, exc: Exception) -> dict[str, Any]:
+    job.cwd.mkdir(parents=True, exist_ok=True)
+    command_string = shlex.join(job.command)
+    command_path = job.cwd / "command.txt"
+    stdout_path = job.cwd / "stdout.txt"
+    stderr_path = job.cwd / "stderr.txt"
+    command_path.write_text(command_string + "\n", encoding="utf-8")
+    stdout_path.write_text("", encoding="utf-8")
+    stderr_text = f"Unhandled executor exception: {exc}"
+    stderr_path.write_text(stderr_text, encoding="utf-8")
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    result = {
+        "schema_version": 1,
+        "job_id": job.job_id,
+        "kind": job.kind,
+        "method": job.method,
+        "cwd": str(job.cwd.resolve()),
+        "cwd_repo_relative": repo_relative(job.cwd),
+        "command": list(job.command),
+        "command_string": command_string,
+        "command_path": str(command_path.resolve()),
+        "command_path_repo_relative": repo_relative(command_path),
+        "returncode": 1,
+        "status": "failed",
+        "started_at": now,
+        "ended_at": now,
+        "duration_seconds": 0.0,
+        "duration": format_duration(0.0),
+        "stdout": "",
+        "stderr": stderr_text,
+        "stdout_path": str(stdout_path.resolve()),
+        "stderr_path": str(stderr_path.resolve()),
+        "stdout_path_repo_relative": repo_relative(stdout_path),
+        "stderr_path_repo_relative": repo_relative(stderr_path),
+        "produced_root_files": [],
+        "inputs": list(job.inputs),
+        "metadata": job.metadata,
+    }
+    write_job_summary(result)
+    return result
+
+
+def job_manifest_label(job: CommandJob) -> str:
+    metadata = job.metadata
+    details: list[str] = []
+    for key in ("scheme", "target_poi", "truth_pdf_label", "injected_r"):
+        if metadata.get(key) is not None:
+            details.append(f"{key}={metadata[key]}")
+    return "; ".join(details) if details else "preparation"
+
+
+def print_job_manifest(wave_name: str, jobs: list[CommandJob], workers: int) -> None:
+    if not jobs:
+        log(f"No jobs planned for {wave_name}.")
+        return
+    max_workers = resolve_worker_count(len(jobs), workers)
+    log(f"Planned jobs for {wave_name}: {len(jobs)} job(s), {max_workers} worker(s)")
+    log(f"Worker policy: {worker_policy_text(workers, len(jobs))}")
+    log("Each listed working directory has been cleared before input staging.")
+    for index, job in enumerate(jobs, start=1):
+        log(f"  {index}. {job.job_id} [{job.method}; {job_manifest_label(job)}]")
+        log(f"     cwd: {repo_relative(job.cwd)}")
+        log(f"     command: {shlex.join(job.command)}")
+
+
+def run_jobs_parallel(jobs: list[CommandJob], workers: int, wave_name: str) -> list[dict[str, Any]]:
+    print_job_manifest(wave_name, jobs, workers)
+    if not jobs:
+        return []
+    max_workers = resolve_worker_count(len(jobs), workers)
+    log(f"Running {len(jobs)} command(s) with {max_workers} worker(s)")
+    results: list[dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_job = {executor.submit(run_command_job, job): job for job in jobs}
+        pending_job_ids = {job.job_id for job in jobs}
+        for future in concurrent.futures.as_completed(future_to_job):
+            job = future_to_job[future]
+            try:
+                result = future.result()
+            except Exception as exc:  # pragma: no cover - defensive runtime guard
+                result = executor_exception_result(job, exc)
+            results.append(result)
+            pending_job_ids.discard(job.job_id)
+            completed = len(results)
+            remaining = len(jobs) - completed
+            status_text = str(result["status"])
+            status_style = "bold green" if status_text == "ok" else "bold red"
+            CONSOLE.print(
+                Text("[bias_study]", style="dim cyan"),
+                Text(status_text, style=status_style),
+                f": {job.job_id} "
+                f"in {result.get('duration', format_duration(float(result.get('duration_seconds', 0.0))))}"
+                f" [{completed}/{len(jobs)} done, {remaining} remaining]",
+            )
+            if remaining < 10:
+                remaining_jobs = ", ".join(sorted(pending_job_ids)) or "none"
+                log(f"remaining jobs ({remaining}): {remaining_jobs}")
+    return sorted(results, key=lambda item: str(item["job_id"]))
+
+
+def result_successful(result: dict[str, Any]) -> bool:
+    return int(result.get("returncode", 1)) == 0
+
+
+def result_output_path(result: dict[str, Any], expected_name: str | None = None) -> Path | None:
+    cwd = Path(result["cwd"])
+    root_files = [cwd / name for name in result.get("produced_root_files", [])]
+    if expected_name is not None:
+        for root_file in root_files:
+            if root_file.name == expected_name:
+                return root_file
+    return root_files[0] if root_files else None
+
+
+def first_root_file(result: dict[str, Any], prefix: str) -> Path | None:
+    cwd = Path(result["cwd"])
+    for root_name in result.get("produced_root_files", []):
+        if root_name.startswith(prefix):
+            return cwd / root_name
+    return None
+
+
+def open_workspace_from_file(root_path: Path, preferred_names: tuple[str, ...] = ("w", "combined_workspace")) -> tuple[Any, Any, Any]:
+    from statistical_test_fit.root_runtime import configure_root
+
+    ROOT = configure_root()
+    root_file = ROOT.TFile.Open(str(root_path))
+    if root_file is None or root_file.IsZombie():
+        raise RuntimeError(f"Could not open ROOT file {root_path}")
+
+    for workspace_name in preferred_names:
+        workspace = root_file.Get(workspace_name)
+        if workspace is not None and workspace.InheritsFrom("RooWorkspace"):
+            return ROOT, root_file, workspace
+
+    for key in list(root_file.GetListOfKeys()):
+        obj = root_file.Get(key.GetName())
+        if obj is not None and obj.InheritsFrom("RooWorkspace"):
+            return ROOT, root_file, obj
+
+    root_file.Close()
+    raise RuntimeError(f"No RooWorkspace found in {root_path}")
+
+
+def infer_pdf_family(name: str) -> str:
+    lower = name.lower()
+    if "johnson" in lower:
+        return "johnson"
+    if "bernstein" in lower:
+        return "bernstein"
+    if "chebychev" in lower or "cheb" in lower:
+        return "chebychev"
+    return "other"
+
+
+def discover_truth_pdfs(workspace_path: Path, requested_families: tuple[str, ...]) -> tuple[list[TruthPdf], dict[str, Any]]:
+    ROOT, root_file, workspace = open_workspace_from_file(workspace_path)
+    try:
+        multipdf_candidates = []
+        for pdf in list(workspace.allPdfs()):
+            if hasattr(pdf, "getNumPdfs") and hasattr(pdf, "getPdf"):
+                try:
+                    n_pdfs = int(pdf.getNumPdfs())
+                except Exception:
+                    continue
+                if n_pdfs <= 0:
+                    continue
+                name = str(pdf.GetName())
+                score = 0
+                lower = name.lower()
+                if NON_RESONANT_PROCESS_NAME in name:
+                    score += 10
+                if "non_resonant" in lower or "nonres" in lower:
+                    score += 5
+                multipdf_candidates.append((score, name, pdf, n_pdfs))
+        if not multipdf_candidates:
+            raise RuntimeError(
+                f"Could not find a RooMultiPdf-like object in {workspace_path}. "
+                "The bias study needs the non-resonant RooMultiPdf states."
+            )
+        multipdf_candidates.sort(key=lambda item: (-item[0], item[1]))
+        score, multipdf_name, multipdf, n_pdfs = multipdf_candidates[0]
+        truths: list[TruthPdf] = []
+        for index in range(n_pdfs):
+            pdf = multipdf.getPdf(index)
+            pdf_name = str(pdf.GetName()) if pdf is not None else f"pdf_{index}"
+            family = infer_pdf_family(pdf_name)
+            if requested_families != ("all",) and family not in requested_families:
+                continue
+            label = f"pdf{index}_{family}"
+            if family == "other":
+                label = f"pdf{index}_{safe_name(pdf_name)}"
+            truths.append(TruthPdf(index=index, name=pdf_name, family=family, label=label))
+
+        category_names = [cat.GetName() for cat in list(workspace.allCats())]
+        metadata = {
+            "workspace": workspace.GetName(),
+            "multipdf": multipdf_name,
+            "multipdf_score": score,
+            "multipdf_states_total": n_pdfs,
+            "categories": category_names,
+            "selected_truth_pdfs": [truth.__dict__ for truth in truths],
+        }
+        if not truths:
+            raise RuntimeError(
+                f"No RooMultiPdf states matched requested families {requested_families}. "
+                f"Available states are under {multipdf_name} with {n_pdfs} entries."
+            )
+        return truths, metadata
+    finally:
+        root_file.Close()
+
+
+def leaf_value(tree: Any, name: str) -> float | None:
+    leaf = tree.GetLeaf(name)
+    if leaf is None:
+        return None
+    return float(leaf.GetValue())
+
+
+def extract_pull_values(
+    fit_root_path: Path,
+    poi: str,
+    all_pois: list[str],
+    injected_r: float,
+    pdf_index_name: str,
+) -> dict[str, Any]:
+    from statistical_test_fit.root_runtime import configure_root
+
+    ROOT = configure_root()
+    root_file = ROOT.TFile.Open(str(fit_root_path))
+    if root_file is None or root_file.IsZombie():
+        return {
+            "status": "failed",
+            "message": f"Could not open {fit_root_path}",
+            "pulls": [],
+        }
+    try:
+        tree = root_file.Get("limit")
+        if tree is None:
+            return {
+                "status": "failed",
+                "message": "limit tree not found",
+                "pulls": [],
+            }
+        branches = [branch.GetName() for branch in list(tree.GetListOfBranches())]
+        required_branches = [poi, "quantileExpected"]
+        missing = [branch for branch in required_branches if branch not in branches]
+        if missing:
+            return {
+                "status": "failed",
+                "message": "Missing required branches: " + ", ".join(missing),
+                "branches": branches,
+                "pulls": [],
+            }
+
+        if poi not in all_pois:
+            all_pois = [poi]
+        poi_index = all_pois.index(poi)
+
+        row_entries: list[dict[str, Any]] = []
+        for entry_index in range(int(tree.GetEntries())):
+            tree.GetEntry(entry_index)
+            row: dict[str, Any] = {
+                "entry": entry_index,
+                "quantileExpected": leaf_value(tree, "quantileExpected"),
+                "iToy": leaf_value(tree, "iToy"),
+                "iSeed": leaf_value(tree, "iSeed"),
+                "deltaNLL": leaf_value(tree, "deltaNLL"),
+                pdf_index_name: leaf_value(tree, pdf_index_name),
+            }
+            for poi_name in all_pois:
+                row[poi_name] = leaf_value(tree, poi_name)
+                row[f"trackedParam_{poi_name}"] = leaf_value(tree, f"trackedParam_{poi_name}")
+                row[f"trackedError_{poi_name}"] = leaf_value(tree, f"trackedError_{poi_name}")
+            row_entries.append(row)
+
+        grouped_rows: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        fallback_toy = 0
+        for row in row_entries:
+            i_toy_value = row.get("iToy")
+            i_seed_value = row.get("iSeed")
+            if i_toy_value is None:
+                if row.get("quantileExpected") is not None and math.isclose(
+                    float(row["quantileExpected"]), -1.0, rel_tol=0.0, abs_tol=1e-5
+                ):
+                    fallback_toy += 1
+                i_toy = fallback_toy
+            else:
+                i_toy = int(round(float(i_toy_value)))
+            i_seed = int(round(float(i_seed_value))) if i_seed_value is not None else 0
+            grouped_rows.setdefault((i_seed, i_toy), []).append(row)
+
+        pulls: list[float] = []
+        entries: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for (i_seed, i_toy), rows in sorted(grouped_rows.items()):
+            rows = sorted(rows, key=lambda item: int(item["entry"]))
+            best_rows = [
+                row
+                for row in rows
+                if row.get("quantileExpected") is not None
+                and math.isclose(float(row["quantileExpected"]), -1.0, rel_tol=0.0, abs_tol=1e-5)
+            ]
+            if not best_rows:
+                skipped.append(
+                    {
+                        "iSeed": i_seed,
+                        "iToy": i_toy,
+                        "skip_reason": "missing_best_fit_entry",
+                    }
+                )
+                continue
+            best = best_rows[0]
+            best_position = rows.index(best)
+            r_hat = best.get(poi)
+            tracked_error = best.get(f"trackedError_{poi}")
+            lower_row_index = best_position + 1 + 2 * poi_index
+            upper_row_index = best_position + 2 + 2 * poi_index
+            lower_value = None
+            upper_value = None
+            if upper_row_index < len(rows):
+                lower_value = rows[lower_row_index].get(poi)
+                upper_value = rows[upper_row_index].get(poi)
+            record = {
+                "entry": best.get("entry"),
+                "iSeed": i_seed,
+                "iToy": i_toy,
+                "r_hat": r_hat,
+                "tracked_error": tracked_error,
+                "lower_endpoint": lower_value,
+                "upper_endpoint": upper_value,
+                "pdfindex_fit": best.get(pdf_index_name),
+                "deltaNLL": best.get("deltaNLL"),
+            }
+            if r_hat is None:
+                record["skip_reason"] = "missing_value"
+                skipped.append(record)
+                continue
+
+            sigma_source = "profile_endpoints"
+            sigma = None
+            if lower_value is not None and upper_value is not None:
+                lo_err = abs(float(r_hat) - float(lower_value))
+                hi_err = abs(float(upper_value) - float(r_hat))
+                sigma = 0.5 * (lo_err + hi_err)
+                record["lo_err"] = lo_err
+                record["hi_err"] = hi_err
+            if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
+                if tracked_error is not None:
+                    sigma = abs(float(tracked_error))
+                    sigma_source = "tracked_error"
+            if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
+                record["skip_reason"] = "invalid_error"
+                record["sigma"] = sigma
+                skipped.append(record)
+                continue
+            pull = (float(r_hat) - injected_r) / sigma
+            if not math.isfinite(pull):
+                record["skip_reason"] = "invalid_pull"
+                record["sigma"] = sigma
+                skipped.append(record)
+                continue
+            record["sigma"] = sigma
+            record["sigma_source"] = sigma_source
+            record["pull"] = pull
+            pulls.append(pull)
+            entries.append(record)
+
+        return {
+            "status": "ok",
+            "fit_root": str(fit_root_path.resolve()),
+            "fit_root_repo_relative": repo_relative(fit_root_path),
+            "tree": "limit",
+            "branches": branches,
+            "poi": poi,
+            "all_pois": all_pois,
+            "injected_r": injected_r,
+            "pulls": pulls,
+            "entries": entries,
+            "skipped_entries": skipped,
+            "entries_total": len(grouped_rows),
+            "tree_entries_total": int(tree.GetEntries()),
+            "entries_used": len(entries),
+            "entries_skipped": len(skipped),
+        }
+    finally:
+        root_file.Close()
+
+
+def sample_mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def sample_std(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return math.sqrt(max(0.0, variance))
+
+
+def set_marker_alpha(graph: Any, color: int, alpha: float) -> None:
+    if hasattr(graph, "SetMarkerColorAlpha"):
+        graph.SetMarkerColorAlpha(color, alpha)
+    else:
+        graph.SetMarkerColor(color)
+
+
+def make_pull_distribution_plot(
+    pulls: list[float],
+    output_dir: Path,
+    title: str,
+    pull_range: tuple[float, float],
+    bins: int,
+    min_fit_entries: int,
+) -> dict[str, Any]:
+    from statistical_test_fit.root_runtime import configure_root
+
+    ROOT = configure_root()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    png_path = output_dir / "pull_distribution.png"
+    pdf_path = output_dir / "pull_distribution.pdf"
+    hist_name = "h_pull_" + safe_name(title)
+    hist = ROOT.TH1F(hist_name, title, bins, pull_range[0], pull_range[1])
+    hist.SetDirectory(0)
+    hist.SetStats(0)
+    ROOT.gStyle.SetOptStat(0)
+    hist.SetLineColor(ROOT.kAzure + 1)
+    hist.SetFillColorAlpha(ROOT.kAzure - 9, 0.45)
+    hist.GetXaxis().SetTitle("pull")
+    hist.GetYaxis().SetTitle("toys")
+    for pull in pulls:
+        hist.Fill(float(pull))
+
+    gaussian_status = "skipped"
+    gaussian_mean = sample_mean(pulls)
+    gaussian_sigma = sample_std(pulls)
+    gaussian_mean_error = None
+    gaussian_sigma_error = None
+    fit_status = None
+    fit_curve = None
+    if len(pulls) >= min_fit_entries and hist.GetEntries() > 0:
+        initial_norm = max(1.0, float(hist.GetMaximum()))
+        initial_mean = float(gaussian_mean if gaussian_mean is not None else 0.0)
+        initial_sigma = abs(float(gaussian_sigma if gaussian_sigma is not None else 1.0))
+        if initial_sigma <= 0.0 or not math.isfinite(initial_sigma):
+            initial_sigma = 1.0
+        fit_curve = ROOT.TF1(
+            "f_pull_normal_" + safe_name(title),
+            "gaus",
+            pull_range[0],
+            pull_range[1],
+        )
+        fit_curve.SetParameters(initial_norm, initial_mean, initial_sigma)
+        fit_curve.SetParNames("normalization", "mean", "sigma")
+        fit_result = hist.Fit(fit_curve, "QSN")
+        fit_status = int(fit_result.Status()) if fit_result is not None else None
+        if fit_curve:
+            gaussian_mean = float(fit_curve.GetParameter(1))
+            gaussian_sigma = abs(float(fit_curve.GetParameter(2)))
+            gaussian_mean_error = float(fit_curve.GetParError(1))
+            gaussian_sigma_error = float(fit_curve.GetParError(2))
+        if fit_curve and (fit_status is None or fit_status == 0):
+            gaussian_status = "ok"
+        else:
+            gaussian_status = "failed"
+
+    canvas = ROOT.TCanvas("c_pull", "c_pull", 1100, 760)
+    canvas.SetRightMargin(0.34)
+    canvas.SetGridx(True)
+    canvas.SetGridy(True)
+    hist.Draw("HIST")
+    if fit_curve:
+        fit_curve.SetLineColor(ROOT.kRed + 1 if gaussian_status == "ok" else ROOT.kOrange + 7)
+        fit_curve.SetLineStyle(1 if gaussian_status == "ok" else 2)
+        fit_curve.SetLineWidth(3)
+        fit_curve.Draw("SAME")
+
+    legend = ROOT.TLegend(0.70, 0.74, 0.98, 0.90)
+    legend.SetBorderSize(0)
+    legend.SetFillStyle(0)
+    legend.SetTextSize(0.030)
+    legend.AddEntry(hist, "Pull distribution", "f")
+    if fit_curve:
+        fit_label = (
+            "Fitted normal (red)"
+            if gaussian_status == "ok"
+            else "Normal fit attempt (orange)"
+        )
+        legend.AddEntry(fit_curve, fit_label, "l")
+    else:
+        empty_graph = ROOT.TGraph(0)
+        legend.AddEntry(empty_graph, "Fitted normal: not drawn", "")
+    legend.Draw()
+
+    stats = ROOT.TPaveText(0.70, 0.48, 0.98, 0.70, "NDC")
+    stats.SetBorderSize(0)
+    stats.SetFillColor(0)
+    stats.SetFillStyle(0)
+    stats.SetTextAlign(12)
+    stats.SetTextSize(0.030)
+    stats.AddText(f"N used = {len(pulls)}")
+    stats.AddText(f"mean = {gaussian_mean:.4g}" if gaussian_mean is not None else "mean = n/a")
+    stats.AddText(f"sigma = {gaussian_sigma:.4g}" if gaussian_sigma is not None else "sigma = n/a")
+    stats.AddText(f"normal fit = {gaussian_status}")
+    if gaussian_mean_error is not None:
+        stats.AddText(f"mean err = {gaussian_mean_error:.3g}")
+    if gaussian_sigma_error is not None:
+        stats.AddText(f"sigma err = {gaussian_sigma_error:.3g}")
+    stats.Draw()
+    canvas.SaveAs(str(png_path))
+    canvas.SaveAs(str(pdf_path))
+
+    return {
+        "plot_png": str(png_path.resolve()),
+        "plot_png_repo_relative": repo_relative(png_path),
+        "plot_pdf": str(pdf_path.resolve()),
+        "plot_pdf_repo_relative": repo_relative(pdf_path),
+        "hist_entries": int(hist.GetEntries()),
+        "pull_range": list(pull_range),
+        "pull_bins": bins,
+        "sample_mean": sample_mean(pulls),
+        "sample_sigma": sample_std(pulls),
+        "gaussian_status": gaussian_status,
+        "gaussian_fit_status": fit_status,
+        "gaussian_mean": gaussian_mean,
+        "gaussian_mean_error": gaussian_mean_error,
+        "gaussian_sigma": gaussian_sigma,
+        "gaussian_sigma_error": gaussian_sigma_error,
+        "normal_fit_attempted": fit_curve is not None,
+        "normal_fit_drawn": fit_curve is not None,
+    }
+
+
+def analyze_fit_result(result: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    metadata = result.get("metadata", {})
+    fit_root = first_root_file(result, "higgsCombine")
+    if fit_root is None:
+        analysis = {
+            "status": "failed",
+            "message": "No higgsCombine*.root file produced by MultiDimFit.",
+            "pulls": [],
+        }
+    else:
+        analysis = extract_pull_values(
+            fit_root,
+            str(metadata["target_poi"]),
+            list(metadata.get("all_pois", [metadata["target_poi"]])),
+            float(metadata["injected_r"]),
+            str(metadata.get("pdf_index_name", args.pdf_index_name)),
+        )
+    if analysis.get("status") == "ok":
+        plot = make_pull_distribution_plot(
+            [float(value) for value in analysis.get("pulls", [])],
+            Path(result["cwd"]),
+            (
+                f"{metadata.get('scheme')} {metadata.get('target_poi')} "
+                f"truth={metadata.get('truth_pdf_label')} r={metadata.get('injected_r')}"
+            ),
+            args.pull_range,
+            args.pull_bins,
+            args.min_fit_entries,
+        )
+        analysis["pull_distribution"] = plot
+        mean = plot.get("gaussian_mean")
+        sigma = plot.get("gaussian_sigma")
+        if plot.get("gaussian_status") == "ok":
+            analysis["bias_flag"] = bool(
+                mean is not None and abs(float(mean)) >= args.bias_pull_threshold
+            )
+            analysis["pull_width_flag"] = bool(
+                sigma is not None and abs(float(sigma) - 1.0) >= args.pull_width_threshold
+            )
+        else:
+            analysis["bias_flag"] = None
+            analysis["pull_width_flag"] = None
+    else:
+        analysis["bias_flag"] = None
+        analysis["pull_width_flag"] = None
+    result["bias_analysis"] = analysis
+    write_job_summary(result)
+    return result
+
+
+def html_escape(value: Any) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def html_document(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>{html_escape(title)}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #070b12;
+      --panel: #101826;
+      --panel-2: #0c1320;
+      --text: #e6edf7;
+      --muted: #9aa8bd;
+      --line: #243247;
+      --accent: #7dd3fc;
+      --ok: #34d399;
+      --fail: #fb7185;
+      --warn: #fbbf24;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: radial-gradient(circle at top left, rgba(125, 211, 252, 0.13), transparent 32rem),
+        linear-gradient(180deg, #070b12 0%, #0a101c 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }}
+    main {{ max-width: 1400px; margin: 0 auto; padding: 2.2rem; }}
+    h1 {{ margin: 0 0 0.5rem; font-size: clamp(1.9rem, 4vw, 3.1rem); letter-spacing: -0.04em; }}
+    h2 {{ margin: 0 0 1rem; color: var(--accent); font-size: 1.05rem; text-transform: uppercase; letter-spacing: 0.12em; }}
+    .subtitle {{ color: var(--muted); margin: 0 0 2rem; }}
+    .card {{
+      background: linear-gradient(180deg, rgba(16, 24, 38, 0.96), rgba(12, 19, 32, 0.96));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 1.2rem;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
+      margin: 1rem 0;
+      overflow: auto;
+    }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
+    th, td {{ padding: 0.68rem 0.78rem; border-bottom: 1px solid var(--line); vertical-align: top; }}
+    th {{ color: #dbeafe; background: rgba(125, 211, 252, 0.08); text-align: left; font-weight: 700; }}
+    tr:hover td {{ background: rgba(125, 211, 252, 0.045); }}
+    code, pre {{ font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }}
+    pre {{
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #050914;
+      color: #dbeafe;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem;
+      overflow: auto;
+    }}
+    a {{ color: var(--accent); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .pill {{ display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.8rem; font-weight: 700; }}
+    .ok {{ color: #052e1b; background: var(--ok); }}
+    .failed {{ color: #3f0712; background: var(--fail); }}
+    .warn {{ color: #422006; background: var(--warn); }}
+    .muted {{ color: var(--muted); }}
+    img {{ max-width: 100%; border: 1px solid var(--line); border-radius: 14px; background: #fff; }}
+  </style>
+</head>
+<body>
+  <main>
+{body}
+  </main>
+</body>
+</html>
+"""
+
+
+def html_table(headers: list[str], rows: list[list[Any]]) -> str:
+    if not rows:
+        rows = [["-" for _ in headers]]
+    header_html = "".join(f"<th>{html_escape(header)}</th>" for header in headers)
+    row_html = []
+    for row in rows:
+        row_html.append("<tr>" + "".join(f"<td>{html_escape(value)}</td>" for value in row) + "</tr>")
+    return "<table><thead><tr>" + header_html + "</tr></thead><tbody>" + "".join(row_html) + "</tbody></table>"
+
+
+def html_table_raw(headers: list[str], rows: list[list[Any]]) -> str:
+    if not rows:
+        rows = [["-" for _ in headers]]
+    header_html = "".join(f"<th>{html_escape(header)}</th>" for header in headers)
+    row_html = []
+    for row in rows:
+        row_html.append("<tr>" + "".join(f"<td>{value}</td>" for value in row) + "</tr>")
+    return "<table><thead><tr>" + header_html + "</tr></thead><tbody>" + "".join(row_html) + "</tbody></table>"
+
+
+def html_link(label: str, href: str) -> str:
+    return f'<a href="{html_escape(href)}">{html_escape(label)}</a>'
+
+
+def status_pill(status: Any) -> str:
+    status_text = str(status)
+    css = "ok" if status_text == "ok" else "failed" if status_text == "failed" else "muted"
+    return f'<span class="pill {css}">{html_escape(status_text)}</span>'
+
+
+def flag_pill(flag: Any) -> str:
+    if flag is True:
+        return '<span class="pill warn">flagged</span>'
+    if flag is False:
+        return '<span class="pill ok">ok</span>'
+    return '<span class="pill muted">n/a</span>'
+
+
+def make_job_html_summary(result: dict[str, Any]) -> str:
+    metadata = result.get("metadata", {})
+    input_rows = [
+        [item.get("staged_name", "-"), item.get("source_repo_relative", item.get("source", "-"))]
+        for item in result.get("inputs", [])
+    ]
+    output_rows = [[name] for name in result.get("produced_root_files", [])]
+    status_rows = [
+        ["Kind", result.get("kind", "-")],
+        ["Method", result.get("method", "-")],
+        ["Status", result.get("status", "-")],
+        ["Return code", result.get("returncode", "-")],
+        ["Duration", result.get("duration", "-")],
+        ["Working directory", result.get("cwd_repo_relative", result.get("cwd", "-"))],
+    ]
+    metadata_rows = [[key, json.dumps(value) if isinstance(value, (list, dict)) else value] for key, value in sorted(metadata.items())]
+    logs_rows = [
+        ["command", html_link("command.txt", "command.txt")],
+        ["stdout", html_link("stdout.txt", "stdout.txt")],
+        ["stderr", html_link("stderr.txt", "stderr.txt")],
+        ["json", html_link("summary.json", "summary.json")],
+    ]
+    analysis = result.get("bias_analysis") or {}
+    analysis_section = ""
+    if analysis:
+        plot = (analysis.get("pull_distribution") or {}).get("plot_png_repo_relative")
+        analysis_rows = [
+            ["Analysis status", analysis.get("status", "-")],
+            ["Entries used", analysis.get("entries_used", "-")],
+            ["Entries skipped", analysis.get("entries_skipped", "-")],
+            ["Gaussian mean", (analysis.get("pull_distribution") or {}).get("gaussian_mean", "-")],
+            ["Gaussian sigma", (analysis.get("pull_distribution") or {}).get("gaussian_sigma", "-")],
+            ["Bias flag", "yes" if analysis.get("bias_flag") else "no" if analysis.get("bias_flag") is False else "n/a"],
+            ["Pull-width flag", "yes" if analysis.get("pull_width_flag") else "no" if analysis.get("pull_width_flag") is False else "n/a"],
+        ]
+        image_html = f'<p><img src="{html_escape(Path(plot).name)}" alt="pull distribution"></p>' if plot else ""
+        analysis_section = f"""
+    <section class="card"><h2>Pull Analysis</h2>{html_table(['Field', 'Value'], analysis_rows)}{image_html}</section>
+        """
+    body = f"""
+    <h1>{html_escape(result['job_id'])}</h1>
+    <p class="subtitle">Per-job Combine execution summary</p>
+    <section class="card"><h2>Status</h2>{html_table(['Field', 'Value'], status_rows)}</section>
+    <section class="card"><h2>Command</h2><pre>{html_escape(result.get('command_string', ''))}</pre></section>
+    <section class="card"><h2>Metadata</h2>{html_table(['Field', 'Value'], metadata_rows)}</section>
+    {analysis_section}
+    <section class="card"><h2>Inputs</h2>{html_table(['Local file', 'Source'], input_rows)}</section>
+    <section class="card"><h2>ROOT Outputs</h2>{html_table(['File'], output_rows)}</section>
+    <section class="card"><h2>Logs</h2>{html_table_raw(['Stream', 'Path'], logs_rows)}</section>
+    """
+    return html_document(str(result["job_id"]), body)
+
+
+def write_job_summary(result: dict[str, Any]) -> None:
+    cwd = Path(result["cwd"])
+    result["summary_json_path"] = str((cwd / "summary.json").resolve())
+    result["summary_json_path_repo_relative"] = repo_relative(cwd / "summary.json")
+    result["summary_html_path"] = str((cwd / "summary.html").resolve())
+    result["summary_html_path_repo_relative"] = repo_relative(cwd / "summary.html")
+    (cwd / "summary.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (cwd / "summary.html").write_text(make_job_html_summary(result), encoding="utf-8")
+
+
+def short_result(result: dict[str, Any]) -> dict[str, Any]:
+    metadata = result.get("metadata", {})
+    return {
+        "job_id": result.get("job_id"),
+        "kind": result.get("kind"),
+        "method": result.get("method"),
+        "status": result.get("status"),
+        "returncode": result.get("returncode"),
+        "duration": result.get("duration"),
+        "cwd": result.get("cwd_repo_relative", result.get("cwd")),
+        "command_file": result.get("command_path_repo_relative", result.get("command_path")),
+        "summary_json": result.get("summary_json_path_repo_relative", result.get("summary_json_path")),
+        "summary_html": result.get("summary_html_path_repo_relative", result.get("summary_html_path")),
+        "scheme": metadata.get("scheme"),
+        "target_poi": metadata.get("target_poi"),
+        "target_label": metadata.get("target_label"),
+        "truth_pdf_index": metadata.get("truth_pdf_index"),
+        "truth_pdf_label": metadata.get("truth_pdf_label"),
+        "truth_pdf_family": metadata.get("truth_pdf_family"),
+        "fit_pdf_mode": metadata.get("fit_pdf_mode"),
+        "fit_pdf_index": metadata.get("fit_pdf_index"),
+        "injected_r": metadata.get("injected_r"),
+        "bias_analysis": result.get("bias_analysis"),
+    }
+
+
+def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str, Any]:
+    metadata = result.get("metadata", {})
+    analysis = result.get("bias_analysis") or {}
+    distribution = analysis.get("pull_distribution") or {}
+    return {
+        "experiment_index": index,
+        "job_id": result.get("job_id"),
+        "status": result.get("status"),
+        "scheme": metadata.get("scheme"),
+        "target_label": metadata.get("target_label"),
+        "target_poi": metadata.get("target_poi"),
+        "truth_pdf_index": metadata.get("truth_pdf_index"),
+        "truth_pdf": metadata.get("truth_pdf"),
+        "truth_pdf_label": metadata.get("truth_pdf_label"),
+        "truth_pdf_family": metadata.get("truth_pdf_family"),
+        "fit_pdf_mode": metadata.get("fit_pdf_mode"),
+        "fit_pdf_index": metadata.get("fit_pdf_index"),
+        "injected_r": metadata.get("injected_r"),
+        "injection_mode": metadata.get("injection_mode"),
+        "toys_requested": metadata.get("toys"),
+        "entries_total": analysis.get("entries_total"),
+        "entries_used": analysis.get("entries_used"),
+        "entries_skipped": analysis.get("entries_skipped"),
+        "gaussian_mean": distribution.get("gaussian_mean"),
+        "gaussian_mean_error": distribution.get("gaussian_mean_error"),
+        "gaussian_sigma": distribution.get("gaussian_sigma"),
+        "gaussian_sigma_error": distribution.get("gaussian_sigma_error"),
+        "gaussian_status": distribution.get("gaussian_status"),
+        "sample_mean": distribution.get("sample_mean"),
+        "sample_sigma": distribution.get("sample_sigma"),
+        "bias_flag": analysis.get("bias_flag"),
+        "pull_width_flag": analysis.get("pull_width_flag"),
+        "fit_summary_html": result.get("summary_html_path_repo_relative"),
+        "pull_plot": distribution.get("plot_png_repo_relative"),
+    }
+
+
+def root_color_for_family(family: str) -> int:
+    from statistical_test_fit.root_runtime import configure_root
+
+    ROOT = configure_root()
+    colors = {
+        "johnson": ROOT.kAzure + 1,
+        "bernstein": ROOT.kOrange + 7,
+        "chebychev": ROOT.kGreen + 2,
+        "other": ROOT.kMagenta + 1,
+    }
+    return int(colors.get(family, ROOT.kGray + 2))
+
+
+def finite_float_or_none(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def scatter_point_values(experiment: dict[str, Any]) -> tuple[float, float, str] | None:
+    status = str(experiment.get("gaussian_status", ""))
+    if status not in {"ok", "failed"}:
+        return None
+    mean = finite_float_or_none(experiment.get("gaussian_mean"))
+    sigma = finite_float_or_none(experiment.get("gaussian_sigma"))
+    source = "normal_fit_ok" if status == "ok" else "normal_fit_failed"
+    if mean is None or sigma is None:
+        return None
+    return mean, abs(sigma), source
+
+
+def experiment_full_label(experiment: dict[str, Any]) -> str:
+    return (
+        f"{experiment.get('scheme', '-')} / {experiment.get('target_poi', '-')}\n"
+        f"r = {format_number(float(experiment.get('injected_r', 0.0)))}\n"
+        f"truth pdf index {experiment.get('truth_pdf_index', '?')}: {experiment.get('truth_pdf_label', '-')}\n"
+        f"{experiment.get('truth_pdf', '-')}"
+    )
+
+
+def make_global_scatter_plot(
+    experiments: list[dict[str, Any]],
+    run_dir: Path,
+    bias_threshold: float,
+) -> dict[str, Any]:
+    plot_dir = run_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    png_path = plot_dir / "pull_mean_sigma_scatter.png"
+    pdf_path = plot_dir / "pull_mean_sigma_scatter.pdf"
+    map_path = plot_dir / "pull_mean_sigma_scatter_experiments.json"
+
+    point_records: list[dict[str, Any]] = []
+    map_records: list[dict[str, Any]] = []
+    for fallback_index, experiment in enumerate(experiments, start=1):
+        record = dict(experiment)
+        record["experiment_index"] = int(record.get("experiment_index", fallback_index))
+        values = scatter_point_values(experiment)
+        if values is None:
+            record["scatter_mean"] = None
+            record["scatter_sigma"] = None
+            record["scatter_source"] = None
+            map_records.append(record)
+            continue
+        mean, sigma, source = values
+        record["scatter_mean"] = mean
+        record["scatter_sigma"] = sigma
+        record["scatter_source"] = source
+        map_records.append(record)
+        point_records.append(record)
+    map_path.write_text(json.dumps(map_records, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.lines import Line2D
+        from matplotlib.patches import Patch
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "message": f"Could not import matplotlib for scatter plot: {exc}",
+            "points": len(point_records),
+            "experiment_map": str(map_path.resolve()),
+            "experiment_map_repo_relative": repo_relative(map_path),
+        }
+
+    n_points = len(point_records)
+    max_experiment_index = max(
+        [int(experiment.get("experiment_index", idx)) for idx, experiment in enumerate(point_records, start=1)]
+        or [1]
+    )
+    y_values = [float(experiment["scatter_mean"]) for experiment in point_records]
+    y_min = min(y_values + [-bias_threshold, 0.0])
+    y_max = max(y_values + [bias_threshold, 0.0])
+    margin = max(0.5, 0.15 * (y_max - y_min if y_max > y_min else 1.0))
+    y_min -= margin
+    y_max += margin
+
+    pdf_index_colors = {
+        0: "#1f77b4",
+        1: "#ff7f0e",
+        2: "#2ca02c",
+        3: "#d62728",
+        4: "#9467bd",
+        5: "#8c564b",
+        6: "#e377c2",
+    }
+    point_records.sort(
+        key=lambda item: (
+            str(item.get("scheme", "")),
+            str(item.get("target_poi", "")),
+            float(item.get("injected_r", 0.0)),
+            str(item.get("truth_pdf_label", "")),
+        )
+    )
+    for index, experiment in enumerate(point_records, start=1):
+        experiment["scatter_x"] = index
+
+    side = min(max(15.0, 0.50 * max(1, n_points) + 8.0), 38.0)
+    fig, ax = plt.subplots(figsize=(side, side), constrained_layout=False)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#f8fafc")
+    ax.grid(True, axis="y", color="#cbd5e1", alpha=0.75, linewidth=0.8)
+    ax.grid(True, axis="x", color="#e2e8f0", alpha=0.45, linewidth=0.5)
+
+    if point_records:
+        x_values = [int(experiment["scatter_x"]) for experiment in point_records]
+        means = [float(experiment["scatter_mean"]) for experiment in point_records]
+        sigmas = [abs(float(experiment["scatter_sigma"])) for experiment in point_records]
+        colors = [
+            pdf_index_colors.get(int(experiment.get("truth_pdf_index", -1)), "#7f7f7f")
+            for experiment in point_records
+        ]
+        statuses = [str(experiment.get("scatter_source", "normal_fit_failed")) for experiment in point_records]
+        sizes = [max(180.0, min(3400.0, 220.0 + 420.0 * min(sigma, 7.0))) for sigma in sigmas]
+
+        for status in ("normal_fit_ok", "normal_fit_failed"):
+            indices = [index for index, value in enumerate(statuses) if value == status]
+            if not indices:
+                continue
+            ax.scatter(
+                [x_values[index] for index in indices],
+                [means[index] for index in indices],
+                s=[sizes[index] for index in indices],
+                c=[colors[index] for index in indices],
+                marker="o",
+                alpha=0.55 if status == "normal_fit_ok" else 0.30,
+                edgecolors="#0f172a" if status == "normal_fit_ok" else "#dc2626",
+                linewidths=0.85 if status == "normal_fit_ok" else 3.0,
+                zorder=3,
+            )
+
+        for experiment in point_records:
+            mean = float(experiment["scatter_mean"])
+            if abs(mean) < bias_threshold:
+                continue
+            ax.annotate(
+                experiment_full_label(experiment),
+                xy=(float(experiment["scatter_x"]), mean),
+                xytext=(14, 14 if mean >= 0.0 else -28),
+                textcoords="offset points",
+                fontsize=20,
+                color="#111827",
+                ha="left",
+                va="bottom" if mean >= 0.0 else "top",
+                arrowprops={"arrowstyle": "-", "color": "#64748b", "linewidth": 1.2},
+                bbox={"boxstyle": "round,pad=0.25", "fc": "white", "ec": "#cbd5e1", "alpha": 0.78},
+                zorder=5,
+            )
+
+    ax.axhline(0.0, color="#0f172a", linewidth=1.6, zorder=2)
+    ax.axhline(bias_threshold, color="#dc2626", linestyle="--", linewidth=1.4, zorder=2)
+    ax.axhline(-bias_threshold, color="#dc2626", linestyle="--", linewidth=1.4, zorder=2)
+    ax.set_xlim(0.5, max(1, n_points) + 0.5)
+    ax.set_yscale("symlog", linthresh=max(1e-3, bias_threshold), linscale=1.0)
+    ax.set_ylim(y_min, y_max)
+    ax.set_ylabel("Fitted normal mean of pull distribution", fontsize=34)
+    ax.set_xlabel("", fontsize=34)
+    ax.tick_params(axis="y", labelsize=28)
+    ax.tick_params(axis="x", labelsize=24)
+
+    max_x_ticks = 24
+    if n_points <= max_x_ticks:
+        x_ticks = list(range(1, n_points + 1))
+    else:
+        step = max(1, math.ceil((n_points - 1) / (max_x_ticks - 1)))
+        x_ticks = list(range(1, n_points + 1, step))
+        if x_ticks[-1] != n_points:
+            x_ticks.append(n_points)
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels([str(index) for index in x_ticks], rotation=0, ha="center")
+
+    group_start = 1
+    groups: list[tuple[int, int, str]] = []
+    while group_start <= n_points:
+        current = point_records[group_start - 1]
+        group_key = (current.get("scheme"), current.get("target_poi"))
+        group_end = group_start
+        while group_end <= n_points:
+            candidate = point_records[group_end - 1]
+            if (candidate.get("scheme"), candidate.get("target_poi")) != group_key:
+                break
+            group_end += 1
+        end_index = group_end - 1
+        group_label = f"{group_key[0]} / {group_key[1]}"
+        groups.append((group_start, end_index, group_label))
+        group_start = group_end
+
+    for group_index, (start, end, group_label) in enumerate(groups):
+        if group_index % 2 == 0:
+            ax.axvspan(start - 0.5, end + 0.5, color="#e2e8f0", alpha=0.32, zorder=0)
+        if start > 1:
+            ax.axvline(start - 0.5, color="#64748b", linewidth=1.0, alpha=0.65, zorder=1)
+        midpoint = 0.5 * (start + end)
+        ax.text(
+            midpoint,
+            1.015,
+            group_label,
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom",
+            fontsize=24,
+            color="#334155",
+            rotation=0,
+            clip_on=False,
+        )
+
+    pdf_labels: dict[int, str] = {}
+    for experiment in point_records:
+        pdf_index = int(experiment.get("truth_pdf_index", -1))
+        pdf_label = str(experiment.get("truth_pdf_label", f"pdf{pdf_index}"))
+        pdf_labels.setdefault(pdf_index, pdf_label)
+    pdf_handles = [
+        Patch(
+            facecolor=pdf_index_colors.get(pdf_index, "#7f7f7f"),
+            edgecolor="#0f172a",
+            alpha=0.62,
+            label=f"Truth PDF index {pdf_index}: {pdf_labels[pdf_index]}",
+        )
+        for pdf_index in sorted(pdf_labels)
+    ]
+    status_handles = []
+    if any(experiment.get("scatter_source") == "normal_fit_ok" for experiment in point_records):
+        status_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Filled circle: normal fit converged; y is fitted mean, area is fitted sigma",
+                markerfacecolor="#64748b",
+                markeredgecolor="#0f172a",
+                markersize=20,
+            )
+        )
+    if any(experiment.get("scatter_source") == "normal_fit_failed" for experiment in point_records):
+        status_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Red outline: normal fit failed; y/area use attempted fit parameters",
+                markerfacecolor="#64748b",
+                markeredgecolor="#dc2626",
+                markeredgewidth=3.0,
+                markersize=20,
+            )
+        )
+    handles = pdf_handles + status_handles
+    if handles:
+        ax.legend(
+            handles=handles,
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            frameon=False,
+            borderaxespad=0.0,
+            title="",
+            title_fontsize=30,
+            fontsize=24,
+            labelspacing=1.0,
+            handlelength=1.8,
+        )
+
+    if not point_records:
+        ax.text(0.5, 0.5, "No valid fitted-normal summaries available", transform=ax.transAxes, ha="center", va="center", fontsize=28)
+
+    bottom_margin = 0.14 if n_points <= 40 else 0.18
+    fig.subplots_adjust(left=0.14, right=0.62, top=0.86, bottom=bottom_margin)
+    fig.savefig(png_path, dpi=180)
+    fig.savefig(pdf_path)
+    plt.close(fig)
+
+    map_path.write_text(json.dumps(map_records, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "status": "ok",
+        "points": n_points,
+        "plot_png": str(png_path.resolve()),
+        "plot_png_repo_relative": repo_relative(png_path),
+        "plot_pdf": str(pdf_path.resolve()),
+        "plot_pdf_repo_relative": repo_relative(pdf_path),
+        "experiment_map": str(map_path.resolve()),
+        "experiment_map_repo_relative": repo_relative(map_path),
+        "note": "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Points above the bias threshold are annotated with the full name.",
+    }
+
+
+def prepare_run_dir(output_dir: Path, run_name: str | None) -> Path:
+    if run_name is None:
+        run_name = dt.datetime.now(dt.timezone.utc).strftime("run_%Y%m%d_%H%M%S")
+    run_dir = output_dir / run_name
+    if run_dir.exists():
+        log(f"Clearing run directory before starting: {repo_relative(run_dir)}")
+        shutil.rmtree(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def write_run_summary(
+    run_dir: Path,
+    output_dir: Path,
+    args: argparse.Namespace,
+    processes: DatacardProcesses,
+    schemes: tuple[PoiScheme, ...],
+    truth_pdf_metadata: dict[str, Any],
+    results: list[dict[str, Any]],
+    scatter_plot: dict[str, Any] | None,
+) -> None:
+    fit_results = [result for result in results if result.get("method") == "MultiDimFit"]
+    experiments = [experiment_summary_from_fit(result, index) for index, result in enumerate(fit_results, start=1)]
+    bias_flags = [experiment for experiment in experiments if experiment.get("bias_flag") is True]
+    width_flags = [experiment for experiment in experiments if experiment.get("pull_width_flag") is True]
+    payload = {
+        "schema_version": 1,
+        "run_dir": str(run_dir.resolve()),
+        "run_dir_repo_relative": repo_relative(run_dir),
+        "summary_json": str((run_dir / "summary.json").resolve()),
+        "summary_html": str((run_dir / "summary.html").resolve()),
+        "datacard": str(Path(args.datacard).resolve()),
+        "datacard_repo_relative": repo_relative(Path(args.datacard).resolve()),
+        "mass": args.mass,
+        "toys": args.toys,
+        "nproc": nproc(),
+        "workers_requested": args.workers,
+        "workers_effective_cap": nproc() if args.workers <= 0 else min(args.workers, nproc()),
+        "worker_policy": "Each dependency wave uses min(ready_jobs, requested_workers_or_nproc, nproc).",
+        "injections": list(args.injections),
+        "injection_mode": args.injection_mode,
+        "fit_method": "MultiDimFit",
+        "fit_algo": "singles",
+        "fit_pdf_mode": "free",
+        "fit_pdf_index": None,
+        "pdf_index_name": args.pdf_index_name,
+        "poi_min": args.poi_min,
+        "poi_max": args.poi_max,
+        "bias_pull_threshold": args.bias_pull_threshold,
+        "pull_width_threshold": args.pull_width_threshold,
+        "signals": processes.signals,
+        "backgrounds": processes.backgrounds,
+        "schemes": [
+            {
+                "name": scheme.name,
+                "title": scheme.title,
+                "description": scheme.description,
+                "pois": list(scheme.all_pois),
+                "poi_maps": list(scheme.poi_maps),
+                "targets": [
+                    {
+                        "label": target.label,
+                        "poi": target.poi,
+                        "processes": list(target.processes),
+                    }
+                    for target in scheme.targets
+                ],
+            }
+            for scheme in schemes
+        ],
+        "truth_pdf_metadata": truth_pdf_metadata,
+        "jobs": [short_result(result) for result in results],
+        "experiments": experiments,
+        "scatter_plot": scatter_plot,
+        "bias_flags": bias_flags,
+        "pull_width_flags": width_flags,
+        "answer": {
+            "question": "Did the choice of non-resonant background introduce a non-negligible bias?",
+            "non_negligible_bias_found": bool(bias_flags),
+            "criterion": f"abs(fitted normal pull mean) >= {format_number(args.bias_pull_threshold)}",
+            "flagged_experiments": len(bias_flags),
+            "pull_width_issue_found": bool(width_flags),
+            "pull_width_criterion": f"abs(fitted normal pull sigma - 1) >= {format_number(args.pull_width_threshold)}",
+        },
+    }
+    (run_dir / "summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    summary_rows = [
+        ["Run directory", repo_relative(run_dir)],
+        ["Datacard", repo_relative(Path(args.datacard).resolve())],
+        ["Mass", args.mass],
+        ["Toys per experiment", args.toys],
+        ["Worker request", "auto" if args.workers <= 0 else args.workers],
+        ["System nproc", nproc()],
+        ["Worker cap", nproc() if args.workers <= 0 else min(args.workers, nproc())],
+        ["POI schemes", ", ".join(scheme.name for scheme in schemes)],
+        ["Injections", ", ".join(format_number(value) for value in args.injections)],
+        ["Injection mode", args.injection_mode],
+        ["Fit method", "MultiDimFit --algo singles"],
+        ["Fit PDF mode", "free-floating pdfindex"],
+        ["Bias threshold", args.bias_pull_threshold],
+        ["Pull-width threshold", args.pull_width_threshold],
+        ["Aggregate JSON", html_link("summary.json", "summary.json")],
+    ]
+    answer_rows = [
+        ["Non-negligible bias found", "yes" if bias_flags else "no"],
+        ["Flagged bias experiments", len(bias_flags)],
+        ["Pull-width issue found", "yes" if width_flags else "no"],
+        ["Flagged pull-width experiments", len(width_flags)],
+    ]
+    scatter_section = ""
+    if scatter_plot and scatter_plot.get("status") == "ok":
+        scatter_href = href_relative_to(run_dir, Path(scatter_plot["plot_png"]))
+        scatter_section = f"""
+    <section class="card"><h2>Global Pull Scatter</h2>
+      <p class="muted">{html_escape(scatter_plot.get('note', ''))}</p>
+      <p><img src="{html_escape(scatter_href)}" alt="pull mean and sigma scatter"></p>
+    </section>
+        """
+    experiment_rows = []
+    for experiment in experiments:
+        pull_plot = experiment.get("pull_plot")
+        fit_html = experiment.get("fit_summary_html")
+        experiment_rows.append(
+            [
+                html_escape(experiment.get("experiment_index", "-")),
+                html_escape(experiment.get("scheme", "-")),
+                html_escape(experiment.get("target_poi", "-")),
+                html_escape(experiment.get("injected_r", "-")),
+                html_escape(experiment.get("truth_pdf_label", "-")),
+                html_escape(experiment.get("truth_pdf_family", "-")),
+                html_escape(experiment.get("entries_used", "-")),
+                html_escape(experiment.get("gaussian_mean", "-")),
+                html_escape(experiment.get("gaussian_sigma", "-")),
+                flag_pill(experiment.get("bias_flag")),
+                flag_pill(experiment.get("pull_width_flag")),
+                html_link("pull", href_relative_to(run_dir, REPO_ROOT / pull_plot)) if pull_plot else "-",
+                html_link("fit", href_relative_to(run_dir, REPO_ROOT / fit_html)) if fit_html else "-",
+            ]
+        )
+    job_rows = [
+        [
+            html_escape(result.get("job_id", "-")),
+            html_escape(result.get("method", "-")),
+            status_pill(result.get("status", "-")),
+            html_escape(result.get("metadata", {}).get("scheme", "-")),
+            html_escape(result.get("metadata", {}).get("target_poi", "-")),
+            html_escape(result.get("metadata", {}).get("truth_pdf_label", "-")),
+            html_escape(result.get("metadata", {}).get("injected_r", "-")),
+            html_escape(result.get("duration", "-")),
+            html_link("summary", href_relative_to(run_dir, Path(result.get("summary_html_path", ""))))
+            if result.get("summary_html_path")
+            else "-",
+        ]
+        for result in results
+    ]
+    policy_note = """
+      <p>Toy generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so the generated toys are based on pre-fit model values and do not use observed data to determine nuisance values.</p>
+      <p>Toy fitting uses <code>MultiDimFit --algo singles</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so both the POIs and the non-resonant discrete PDF choice float/profile against each toy.</p>
+    """
+    body = f"""
+    <h1>Bias Study Run</h1>
+    <p class="subtitle">Toy-generation and MultiDimFit pull study for non-resonant-background model bias.</p>
+    <section class="card"><h2>Summary</h2>{html_table_raw(['Field', 'Value'], [[html_escape(k), v if str(v).startswith('<a ') else html_escape(v)] for k, v in summary_rows])}</section>
+    <section class="card"><h2>Answer</h2>{html_table(['Field', 'Value'], answer_rows)}</section>
+    <section class="card"><h2>Combine Prescription</h2>{policy_note}</section>
+    {scatter_section}
+    <section class="card"><h2>Experiments</h2>{html_table_raw(['Index', 'Scheme', 'Target POI', 'Injected r', 'Truth PDF', 'Family', 'Used Toys', 'Pull Mean', 'Pull Sigma', 'Bias', 'Width', 'Pull Plot', 'Fit Job'], experiment_rows)}</section>
+    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Truth PDF', 'Injected r', 'Duration', 'Summary'], job_rows)}</section>
+    """
+    (run_dir / "summary.html").write_text(html_document("Bias Study Run", body), encoding="utf-8")
+    write_global_summary(output_dir)
+
+
+def write_global_summary(output_dir: Path) -> None:
+    summaries: list[dict[str, Any]] = []
+    for summary_path in sorted(output_dir.glob("*/summary.json"), reverse=True):
+        try:
+            summaries.append(json.loads(summary_path.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    rows = []
+    for summary in summaries:
+        run_dir = Path(summary.get("run_dir", ""))
+        rows.append(
+            [
+                html_escape(summary.get("run_dir_repo_relative", run_dir.name)),
+                html_escape(summary.get("toys", "-")),
+                html_escape(", ".join(str(value) for value in summary.get("injections", []))),
+                html_escape(summary.get("fit_pdf_mode", "-")),
+                html_escape(summary.get("answer", {}).get("flagged_experiments", "-")),
+                "yes" if summary.get("answer", {}).get("non_negligible_bias_found") else "no",
+                html_link("summary.html", href_relative_to(output_dir, run_dir / "summary.html")),
+                html_link("summary.json", href_relative_to(output_dir, run_dir / "summary.json")),
+            ]
+        )
+    body = f"""
+    <h1>Bias Study</h1>
+    <p class="subtitle">Global index of bias-study runs.</p>
+    <section class="card"><h2>Runs</h2>{html_table_raw(['Run', 'Toys', 'Injections', 'Fit PDF Mode', 'Flagged Bias Experiments', 'Bias Found', 'HTML', 'JSON'], rows)}</section>
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "bias_study.html").write_text(html_document("Bias Study", body), encoding="utf-8")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run a Combine toy bias study for non-resonant-background PDF choices using "
+            "GenerateOnly and MultiDimFit."
+        )
+    )
+    parser.add_argument(
+        "--datacard",
+        default=str(DEFAULT_DATACARD),
+        help="Input text datacard produced by scripts/build_bundled_workspace.py.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Parent directory for bias-study runs.",
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="Run subdirectory name. Defaults to a UTC timestamp.",
+    )
+    parser.add_argument("--mass", default=DEFAULT_MASS, help="Mass label passed to Combine.")
+    parser.add_argument(
+        "--poi-scheme",
+        choices=("six", "z_grouped", "h_grouped", "grouped", "both"),
+        default="both",
+        help=(
+            "POI scheme to run. `grouped` runs z_grouped and h_grouped; "
+            "the default `both` runs six plus both grouped schemes."
+        ),
+    )
+    parser.add_argument(
+        "--injections",
+        type=parse_float_list,
+        default=DEFAULT_INJECTIONS,
+        help="Comma-separated injected signal strengths.",
+    )
+    parser.add_argument(
+        "--toys",
+        type=int,
+        default=DEFAULT_TOYS,
+        help="Number of toys per truth-PDF/injection/target experiment.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Parallel subprocess workers per dependency wave. Use 0 for auto; the effective value is capped at nproc.",
+    )
+    parser.add_argument(
+        "--poi-initial",
+        type=float,
+        default=DEFAULT_POI_INITIAL,
+        help="Initial value used when defining POIs in text2workspace.py.",
+    )
+    parser.add_argument(
+        "--poi-min",
+        type=float,
+        default=DEFAULT_POI_MIN,
+        help="Lower bound for fitted POI ranges. Bias studies default negative to avoid r=0 boundary pulls.",
+    )
+    parser.add_argument(
+        "--poi-max",
+        type=float,
+        default=DEFAULT_POI_MAX,
+        help="Upper bound for fitted POI ranges.",
+    )
+    parser.add_argument(
+        "--injection-mode",
+        choices=("target-only", "all-pois"),
+        default="target-only",
+        help="Inject the requested r into only the target POI, or into all POIs in the scheme.",
+    )
+    parser.add_argument(
+        "--pdf-families",
+        type=parse_family_list,
+        default=("all",),
+        help="Comma-separated truth PDF families to generate from: all,johnson,bernstein,chebychev.",
+    )
+    parser.add_argument(
+        "--pdf-index-name",
+        default=DEFAULT_PDF_INDEX_NAME,
+        help="Name of the RooMultiPdf discrete category in the Combine workspace.",
+    )
+    parser.add_argument(
+        "--profile-freeze-disassociated-params",
+        action="store_true",
+        help="Pass --X-rtd MINIMIZER_freezeDisassociatedParams while leaving pdfindex free to float.",
+    )
+    parser.add_argument(
+        "--cmin-default-minimizer-strategy",
+        type=int,
+        default=0,
+        help="Value passed as --cminDefaultMinimizerStrategy to MultiDimFit.",
+    )
+    parser.add_argument(
+        "--seed-base",
+        type=int,
+        default=DEFAULT_SEED_BASE,
+        help="Base seed for GenerateOnly jobs. Use --random-seeds to pass -s -1 instead of deterministic seeds.",
+    )
+    parser.add_argument(
+        "--random-seeds",
+        action="store_true",
+        help="Use random Combine seeds (-s -1) for toy generation instead of deterministic seeds.",
+    )
+    parser.add_argument(
+        "--pull-range",
+        type=parse_float_list,
+        default=DEFAULT_PULL_RANGE,
+        help="Comma-separated pull histogram range, e.g. -5,5.",
+    )
+    parser.add_argument("--pull-bins", type=int, default=DEFAULT_PULL_BINS)
+    parser.add_argument(
+        "--min-fit-entries",
+        type=int,
+        default=DEFAULT_MIN_FIT_ENTRIES,
+        help="Minimum usable toy entries required before fitting the pull histogram to a normal function.",
+    )
+    parser.add_argument(
+        "--bias-pull-threshold",
+        type=float,
+        default=DEFAULT_BIAS_PULL_THRESHOLD,
+        help="Flag experiments with abs(fitted normal pull mean) at or above this value.",
+    )
+    parser.add_argument(
+        "--pull-width-threshold",
+        type=float,
+        default=DEFAULT_PULL_WIDTH_THRESHOLD,
+        help="Flag experiments with abs(fitted normal pull sigma - 1) at or above this value.",
+    )
+    parser.add_argument(
+        "--skip-fits",
+        action="store_true",
+        help="Only build workspaces and generate toys; do not run MultiDimFit.",
+    )
+    return parser
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if args.toys <= 0:
+        raise ValueError("--toys must be positive")
+    if args.workers < 0:
+        raise ValueError("--workers must be non-negative")
+    if args.poi_max <= args.poi_min:
+        raise ValueError("--poi-max must be greater than --poi-min")
+    if len(args.pull_range) != 2 or args.pull_range[1] <= args.pull_range[0]:
+        raise ValueError("--pull-range must contain two increasing values")
+    if args.pull_bins <= 0:
+        raise ValueError("--pull-bins must be positive")
+    if args.min_fit_entries <= 0:
+        raise ValueError("--min-fit-entries must be positive")
+    args.pull_range = (float(args.pull_range[0]), float(args.pull_range[1]))
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    validate_args(args)
+    datacard_path = Path(args.datacard).resolve()
+    args.datacard = str(datacard_path)
+    ensure_file(datacard_path, "Input datacard not found")
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = prepare_run_dir(output_dir, args.run_name)
+    processes = parse_datacard_processes(datacard_path)
+    schemes = selected_schemes(args, processes.signals)
+
+    log(f"Run directory: {repo_relative(run_dir)}")
+    log(f"Signals: {', '.join(processes.signals)}")
+    log(f"Backgrounds: {', '.join(processes.backgrounds)}")
+    log(f"POI schemes: {', '.join(scheme.name for scheme in schemes)}")
+    log(f"Injections: {', '.join(format_number(value) for value in args.injections)}")
+    log(f"Toys per experiment: {args.toys}")
+    log(f"Worker policy: {worker_policy_text(args.workers, max(1, len(schemes)))}")
+    log("Fit method: MultiDimFit --algo singles with all POIs and pdfindex free")
+
+    all_results: list[dict[str, Any]] = []
+    workspace_jobs = [build_workspace_job(run_dir, datacard_path, args.mass, scheme) for scheme in schemes]
+    workspace_results = run_jobs_parallel(workspace_jobs, args.workers, "workspace builds")
+    all_results.extend(workspace_results)
+    if not all(result_successful(result) for result in workspace_results):
+        write_run_summary(run_dir, output_dir, args, processes, schemes, {}, all_results, None)
+        return 1
+
+    workspace_paths: dict[str, Path] = {}
+    staged_datacards: dict[str, Path] = {}
+    for result in workspace_results:
+        scheme_name = str(result["metadata"]["scheme"])
+        workspace_path = result_output_path(result, WORKSPACE_OUTPUT_NAME)
+        if workspace_path is None:
+            raise RuntimeError(f"No {WORKSPACE_OUTPUT_NAME} output found for {scheme_name}")
+        workspace_paths[scheme_name] = workspace_path
+        staged_datacards[scheme_name] = Path(result["cwd"]) / LOCAL_DATACARD_NAME
+
+    first_scheme = schemes[0]
+    truth_pdfs, truth_pdf_metadata = discover_truth_pdfs(
+        workspace_paths[first_scheme.name],
+        args.pdf_families,
+    )
+    log(
+        "Truth PDFs: "
+        + ", ".join(f"{truth.index}:{truth.label}({truth.name})" for truth in truth_pdfs)
+    )
+
+    toy_jobs: list[CommandJob] = []
+    experiment_index = 0
+    for scheme in schemes:
+        for target in scheme.targets:
+            for truth_pdf in truth_pdfs:
+                for injected_r in args.injections:
+                    experiment_index += 1
+                    toy_jobs.append(
+                        build_toy_generation_job(
+                            run_dir,
+                            scheme,
+                            target,
+                            truth_pdf,
+                            injected_r,
+                            args.mass,
+                            workspace_paths[scheme.name],
+                            staged_datacards[scheme.name],
+                            args,
+                            experiment_index,
+                        )
+                    )
+
+    toy_results = run_jobs_parallel(toy_jobs, args.workers, "toy generation jobs")
+    all_results.extend(toy_results)
+    if not all(result_successful(result) for result in toy_results):
+        write_run_summary(run_dir, output_dir, args, processes, schemes, truth_pdf_metadata, all_results, None)
+        return 1
+
+    if args.skip_fits:
+        write_run_summary(run_dir, output_dir, args, processes, schemes, truth_pdf_metadata, all_results, None)
+        log(f"Completed toy generation only. Summary: {repo_relative(run_dir / 'summary.json')}")
+        return 0
+
+    toy_result_by_key: dict[tuple[str, str, int, float], dict[str, Any]] = {}
+    for result in toy_results:
+        metadata = result.get("metadata", {})
+        key = (
+            str(metadata["scheme"]),
+            str(metadata["target_poi"]),
+            int(metadata["truth_pdf_index"]),
+            float(metadata["injected_r"]),
+        )
+        toy_result_by_key[key] = result
+
+    fit_jobs: list[CommandJob] = []
+    for scheme in schemes:
+        for target in scheme.targets:
+            for truth_pdf in truth_pdfs:
+                for injected_r in args.injections:
+                    toy_result = toy_result_by_key[
+                        (scheme.name, target.poi, truth_pdf.index, float(injected_r))
+                    ]
+                    toys_path = first_root_file(toy_result, "higgsCombine")
+                    if toys_path is None:
+                        raise RuntimeError(f"No GenerateOnly ROOT file found for {toy_result['job_id']}")
+                    fit_jobs.append(
+                        build_fit_job(
+                            run_dir,
+                            scheme,
+                            target,
+                            truth_pdf,
+                            injected_r,
+                            args.mass,
+                            workspace_paths[scheme.name],
+                            staged_datacards[scheme.name],
+                            toys_path,
+                            args,
+                        )
+                    )
+
+    fit_results = run_jobs_parallel(fit_jobs, args.workers, "MultiDimFit jobs")
+    analyzed_fit_results = [analyze_fit_result(result, args) for result in fit_results]
+    all_results.extend(analyzed_fit_results)
+    experiments = [
+        experiment_summary_from_fit(result, index)
+        for index, result in enumerate(analyzed_fit_results, start=1)
+    ]
+    scatter_plot = make_global_scatter_plot(
+        experiments,
+        run_dir,
+        args.bias_pull_threshold,
+    )
+    write_run_summary(
+        run_dir,
+        output_dir,
+        args,
+        processes,
+        schemes,
+        truth_pdf_metadata,
+        all_results,
+        scatter_plot,
+    )
+
+    failed = [result for result in all_results if not result_successful(result)]
+    if failed:
+        log(f"Completed with {len(failed)} failed command(s).")
+        return 1
+
+    log(f"Completed successfully. Summary: {repo_relative(run_dir / 'summary.json')}")
+    log(f"Global summary: {repo_relative(output_dir / 'bias_study.html')}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
