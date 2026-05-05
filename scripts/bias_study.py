@@ -1637,10 +1637,9 @@ def scatter_point_values(experiment: dict[str, Any]) -> tuple[float, float, str]
 
 def experiment_full_label(experiment: dict[str, Any]) -> str:
     return (
-        f"{experiment.get('scheme', '-')} / {experiment.get('target_poi', '-')}\n"
+        f"{experiment.get('target_poi', '-')}\n"
         f"r = {format_number(float(experiment.get('injected_r', 0.0)))}\n"
-        f"truth pdf index {experiment.get('truth_pdf_index', '?')}: {experiment.get('truth_pdf_label', '-')}\n"
-        f"{experiment.get('truth_pdf', '-')}"
+        f"truth pdf index {experiment.get('truth_pdf_index', '?')}"
     )
 
 
@@ -1809,7 +1808,7 @@ def make_global_scatter_plot(
                 break
             group_end += 1
         end_index = group_end - 1
-        group_label = f"{group_key[0]} / {group_key[1]}"
+        group_label = f"{group_key[1]}"
         groups.append((group_start, end_index, group_label))
         group_start = group_end
 
@@ -1826,7 +1825,7 @@ def make_global_scatter_plot(
             transform=ax.get_xaxis_transform(),
             ha="center",
             va="bottom",
-            fontsize=24,
+            fontsize=20,
             color="#334155",
             rotation=0,
             clip_on=False,
