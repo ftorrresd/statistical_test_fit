@@ -214,10 +214,8 @@ def strategy_dataset_count(dataset_strategy: str, args: argparse.Namespace) -> i
     return int(args.toys) if dataset_strategy == "toys" else 1
 
 
-def effective_poi_range(args: argparse.Namespace, injected_r: float) -> tuple[float, float]:
-    requested_limit = max(abs(float(args.poi_min)), abs(float(args.poi_max)))
-    injection_limit = abs(float(injected_r)) if abs(float(injected_r)) > 100.0 else 0.0
-    symmetric_limit = max(1.0, requested_limit, injection_limit)
+def effective_poi_range(injected_r: float) -> tuple[float, float]:
+    symmetric_limit = max(1.0, abs(float(injected_r))) * 100.0
     return -symmetric_limit, symmetric_limit
 
 
@@ -541,7 +539,7 @@ def build_dataset_generation_job(
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     toys_argument = strategy_toys_argument(dataset_strategy, args)
-    poi_min, poi_max = effective_poi_range(args, injected_r)
+    poi_min, poi_max = effective_poi_range(injected_r)
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -611,7 +609,7 @@ def build_dataset_generation_job(
             "seed": seed,
             "requested_poi_min": args.poi_min,
             "requested_poi_max": args.poi_max,
-            "poi_range_policy": "per-injection symmetric max(requested_limit, abs(injected_r) if abs(injected_r) > 100 else 0, 1)",
+            "poi_range_policy": "per-injection symmetric +/- max(1, abs(injected_r)) * 100",
             "poi_min": poi_min,
             "poi_max": poi_max,
             "pdf_index_name": args.pdf_index_name,
@@ -646,7 +644,7 @@ def build_fit_job(
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     inputs.append(copy_file(toys_path, cwd / LOCAL_TOYS_NAME))
     toys_argument = strategy_toys_argument(dataset_strategy, args)
-    poi_min, poi_max = effective_poi_range(args, injected_r)
+    poi_min, poi_max = effective_poi_range(injected_r)
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -725,7 +723,7 @@ def build_fit_job(
             "pseudo_datasets": strategy_dataset_count(dataset_strategy, args),
             "requested_poi_min": args.poi_min,
             "requested_poi_max": args.poi_max,
-            "poi_range_policy": "per-injection symmetric max(requested_limit, abs(injected_r) if abs(injected_r) > 100 else 0, 1)",
+            "poi_range_policy": "per-injection symmetric +/- max(1, abs(injected_r)) * 100",
             "poi_min": poi_min,
             "poi_max": poi_max,
             "robust_fit": bool(args.robust_fit),
@@ -1535,6 +1533,10 @@ def html_document(title: str, body: str) -> str:
     .failed {{ color: #3f0712; background: var(--fail); }}
     .warn {{ color: #422006; background: var(--warn); }}
     .muted {{ color: var(--muted); }}
+    .plot-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 1rem; }}
+    .plot-tile {{ background: rgba(5, 9, 20, 0.45); border: 1px solid var(--line); border-radius: 14px; padding: 1rem; }}
+    .plot-tile h3 {{ margin: 0 0 0.35rem; font-size: 1rem; color: #dbeafe; }}
+    .plot-links {{ margin: 0.35rem 0 0.9rem; color: var(--muted); }}
     img {{ max-width: 100%; border: 1px solid var(--line); border-radius: 14px; background: #fff; }}
   </style>
 </head>
@@ -1593,6 +1595,46 @@ def html_fixed_number_or_dash(value: Any, digits: int = 3) -> str:
     if not math.isfinite(numeric):
         return "-"
     return html_escape(f"{numeric:.{digits}f}")
+
+
+def scatter_plot_tile_html(plot: dict[str, Any], run_dir: Path) -> str:
+    label = html_escape(plot.get("label", "-"))
+    status = str(plot.get("status", "-"))
+    points = html_escape(plot.get("points", "-"))
+    links = []
+    if plot.get("plot_png"):
+        links.append(html_link("png", href_relative_to(run_dir, Path(str(plot["plot_png"])))))
+    if plot.get("plot_pdf"):
+        links.append(html_link("pdf", href_relative_to(run_dir, Path(str(plot["plot_pdf"])))))
+    if plot.get("experiment_map"):
+        links.append(html_link("map", href_relative_to(run_dir, Path(str(plot["experiment_map"])))))
+    link_html = " | ".join(links) if links else "-"
+    message = html_escape(plot.get("message", ""))
+    message_html = f'<p class="muted">{message}</p>' if message else ""
+    image_html = ""
+    if status == "ok" and plot.get("plot_png"):
+        image_href = href_relative_to(run_dir, Path(str(plot["plot_png"])))
+        image_html = f'<p><img src="{html_escape(image_href)}" alt="{label}"></p>'
+    return f"""
+      <div class="plot-tile">
+        <h3>{label}</h3>
+        <p class="muted">status: {html_escape(status)}; points: {points}</p>
+        {message_html}
+        <p class="plot-links">{link_html}</p>
+        {image_html}
+      </div>
+    """
+
+
+def scatter_plot_grid_section(title: str, plots: list[dict[str, Any]], run_dir: Path) -> str:
+    if not plots:
+        return ""
+    tiles = "\n".join(scatter_plot_tile_html(plot, run_dir) for plot in plots)
+    return f"""
+    <section class="card"><h2>{html_escape(title)}</h2>
+      <div class="plot-grid">{tiles}</div>
+    </section>
+    """
 
 
 def make_job_html_summary(result: dict[str, Any]) -> str:
@@ -1796,17 +1838,22 @@ def experiment_full_label(experiment: dict[str, Any]) -> str:
     )
 
 
-def make_global_scatter_plot(
+def make_scatter_plot(
     experiments: list[dict[str, Any]],
     run_dir: Path,
     bias_threshold: float,
     annotate_outliers: bool,
+    plot_stem: str,
+    label: str,
+    split: dict[str, Any] | None = None,
+    y_limits: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     plot_dir = run_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
-    png_path = plot_dir / "pull_mean_sigma_scatter.png"
-    pdf_path = plot_dir / "pull_mean_sigma_scatter.pdf"
-    map_path = plot_dir / "pull_mean_sigma_scatter_experiments.json"
+    png_path = plot_dir / f"{plot_stem}.png"
+    pdf_path = plot_dir / f"{plot_stem}.pdf"
+    map_path = plot_dir / f"{plot_stem}_experiments.json"
+    split = dict(split or {})
 
     point_records: list[dict[str, Any]] = []
     map_records: list[dict[str, Any]] = []
@@ -1839,22 +1886,24 @@ def make_global_scatter_plot(
         return {
             "status": "failed",
             "message": f"Could not import matplotlib for scatter plot: {exc}",
+            "label": label,
+            "split": split,
+            "plot_stem": plot_stem,
             "points": len(point_records),
             "experiment_map": str(map_path.resolve()),
             "experiment_map_repo_relative": repo_relative(map_path),
         }
 
     n_points = len(point_records)
-    max_experiment_index = max(
-        [int(experiment.get("experiment_index", idx)) for idx, experiment in enumerate(point_records, start=1)]
-        or [1]
-    )
-    y_values = [float(experiment["scatter_mean"]) for experiment in point_records]
-    y_min = min(y_values + [-bias_threshold, 0.0])
-    y_max = max(y_values + [bias_threshold, 0.0])
-    margin = max(0.5, 0.15 * (y_max - y_min if y_max > y_min else 1.0))
-    y_min -= margin
-    y_max += margin
+    if y_limits is None:
+        y_values = [float(experiment["scatter_mean"]) for experiment in point_records]
+        y_min = min(y_values + [-bias_threshold, 0.0])
+        y_max = max(y_values + [bias_threshold, 0.0])
+        margin = max(0.5, 0.15 * (y_max - y_min if y_max > y_min else 1.0))
+        y_min -= margin
+        y_max += margin
+    else:
+        y_min, y_max = y_limits
 
     pdf_index_colors = {
         0: "#1f77b4",
@@ -2112,7 +2161,12 @@ def make_global_scatter_plot(
     )
     return {
         "status": "ok",
+        "label": label,
+        "split": split,
+        "plot_stem": plot_stem,
         "points": n_points,
+        "y_min": y_min,
+        "y_max": y_max,
         "plot_png": str(png_path.resolve()),
         "plot_png_repo_relative": repo_relative(png_path),
         "plot_pdf": str(pdf_path.resolve()),
@@ -2120,8 +2174,117 @@ def make_global_scatter_plot(
         "experiment_map": str(map_path.resolve()),
         "experiment_map_repo_relative": repo_relative(map_path),
         "annotate_outliers": annotate_outliers,
-        "note": "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Point color shows truth PDF, marker shape shows injected signal strength, and point area shows fitted sigma for toy fits. Asimov closure points use fixed area." + annotation_note,
+        "note": ("" if label == "Global" else f"Filtered to {label}. ") + "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Point color shows truth PDF, marker shape shows injected signal strength, and point area shows fitted sigma for toy fits. Asimov closure points use fixed area." + annotation_note,
     }
+
+
+def scatter_y_limits(
+    experiments: list[dict[str, Any]],
+    bias_threshold: float,
+) -> tuple[float, float]:
+    y_values: list[float] = []
+    for experiment in experiments:
+        values = scatter_point_values(experiment)
+        if values is not None:
+            y_values.append(float(values[0]))
+    y_min = min(y_values + [-bias_threshold, 0.0])
+    y_max = max(y_values + [bias_threshold, 0.0])
+    margin = max(0.5, 0.15 * (y_max - y_min if y_max > y_min else 1.0))
+    return y_min - margin, y_max + margin
+
+
+def same_injected_r(experiment: dict[str, Any], injected_r: float) -> bool:
+    value = finite_float_or_none(experiment.get("injected_r"))
+    return value is not None and math.isclose(value, injected_r, rel_tol=0.0, abs_tol=1e-12)
+
+
+def make_summary_scatter_plots(
+    experiments: list[dict[str, Any]],
+    run_dir: Path,
+    bias_threshold: float,
+    annotate_outliers: bool,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    y_limits = scatter_y_limits(experiments, bias_threshold)
+    global_plot = make_scatter_plot(
+        experiments,
+        run_dir,
+        bias_threshold,
+        annotate_outliers,
+        "pull_mean_sigma_scatter",
+        "Global",
+        {},
+        y_limits,
+    )
+
+    variations: dict[str, list[dict[str, Any]]] = {
+        "by_poi_scheme": [],
+        "by_injected_r": [],
+        "by_poi_scheme_and_injected_r": [],
+    }
+    schemes = sorted(
+        {str(experiment.get("scheme")) for experiment in experiments if experiment.get("scheme") is not None}
+    )
+    injected_rs = sorted(
+        {
+            value
+            for experiment in experiments
+            for value in [finite_float_or_none(experiment.get("injected_r"))]
+            if value is not None
+        }
+    )
+
+    for scheme in schemes:
+        label = f"POI scheme {scheme}"
+        variations["by_poi_scheme"].append(
+            make_scatter_plot(
+                [experiment for experiment in experiments if str(experiment.get("scheme")) == scheme],
+                run_dir,
+                bias_threshold,
+                annotate_outliers,
+                f"pull_mean_sigma_scatter__scheme_{safe_name(scheme)}",
+                label,
+                {"scheme": scheme},
+                y_limits,
+            )
+        )
+
+    for injected_r in injected_rs:
+        label = f"Injected r {format_number(injected_r)}"
+        variations["by_injected_r"].append(
+            make_scatter_plot(
+                [experiment for experiment in experiments if same_injected_r(experiment, injected_r)],
+                run_dir,
+                bias_threshold,
+                annotate_outliers,
+                f"pull_mean_sigma_scatter__r_{injection_tag(injected_r)}",
+                label,
+                {"injected_r": injected_r},
+                y_limits,
+            )
+        )
+
+    for scheme in schemes:
+        for injected_r in injected_rs:
+            label = f"POI scheme {scheme}; injected r {format_number(injected_r)}"
+            variations["by_poi_scheme_and_injected_r"].append(
+                make_scatter_plot(
+                    [
+                        experiment
+                        for experiment in experiments
+                        if str(experiment.get("scheme")) == scheme
+                        and same_injected_r(experiment, injected_r)
+                    ],
+                    run_dir,
+                    bias_threshold,
+                    annotate_outliers,
+                    f"pull_mean_sigma_scatter__scheme_{safe_name(scheme)}__r_{injection_tag(injected_r)}",
+                    label,
+                    {"scheme": scheme, "injected_r": injected_r},
+                    y_limits,
+                )
+            )
+
+    return global_plot, variations
 
 
 def prepare_run_dir(output_dir: Path, run_name: str | None) -> Path:
@@ -2144,6 +2307,7 @@ def write_run_summary(
     truth_pdf_metadata: dict[str, Any],
     results: list[dict[str, Any]],
     scatter_plot: dict[str, Any] | None,
+    scatter_plot_variations: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     fit_results = [result for result in results if result.get("method") == "MultiDimFit"]
     experiments = [experiment_summary_from_fit(result, index) for index, result in enumerate(fit_results, start=1)]
@@ -2172,7 +2336,7 @@ def write_run_summary(
         "fit_pdf_mode": "free",
         "fit_pdf_index": None,
         "pdf_index_name": args.pdf_index_name,
-        "poi_range_policy": "per-injection symmetric max(requested_limit, abs(injected_r) if abs(injected_r) > 100 else 0, 1)",
+        "poi_range_policy": "per-injection symmetric +/- max(1, abs(injected_r)) * 100",
         "requested_poi_min": args.poi_min,
         "requested_poi_max": args.poi_max,
         "poi_min": args.poi_min,
@@ -2205,6 +2369,7 @@ def write_run_summary(
         "jobs": [short_result(result) for result in results],
         "experiments": experiments,
         "scatter_plot": scatter_plot,
+        "scatter_plot_variations": scatter_plot_variations or {},
         "bias_flags": bias_flags,
         "pull_width_flags": width_flags,
         "answer": {
@@ -2233,7 +2398,7 @@ def write_run_summary(
         ["Injections", ", ".join(format_number(value) for value in args.injections)],
         ["Injection mode", args.injection_mode],
         ["Requested POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
-        ["Job POI range policy", "per-injection symmetric max(requested limit, abs(injected r) above 100, 1)"],
+        ["Job POI range policy", "per-injection symmetric +/- max(1, abs(injected r)) * 100"],
         ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
         ["Fit PDF mode", "free-floating pdfindex"],
         ["Robust fit", "enabled" if args.robust_fit else "disabled"],
@@ -2264,6 +2429,26 @@ def write_run_summary(
       <p><img src="{html_escape(scatter_href)}" alt="pull mean and sigma scatter"></p>
     </section>
         """
+    variation_plots = scatter_plot_variations or {}
+    scatter_variation_sections = "".join(
+        [
+            scatter_plot_grid_section(
+                "Pull Scatter By POI Scheme",
+                variation_plots.get("by_poi_scheme", []),
+                run_dir,
+            ),
+            scatter_plot_grid_section(
+                "Pull Scatter By Injected R",
+                variation_plots.get("by_injected_r", []),
+                run_dir,
+            ),
+            scatter_plot_grid_section(
+                "Pull Scatter By POI Scheme And Injected R",
+                variation_plots.get("by_poi_scheme_and_injected_r", []),
+                run_dir,
+            ),
+        ]
+    )
     experiment_headers = [
         "Index",
         "Scheme",
@@ -2335,7 +2520,7 @@ def write_run_summary(
     ]
     policy_note = """
       <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
-      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so both the POIs and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges are widened per injection only when needed. Toy pull denominators use the profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. If enabled, robust fitting adds <code>--robustFit 1</code> to the fit commands.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so both the POIs and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges use symmetric <code>+/- max(1, abs(injected r)) * 100</code>. Toy pull denominators use the profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. If enabled, robust fitting adds <code>--robustFit 1</code> to the fit commands.</p>
     """
     body = f"""
     <h1>Bias Study Run</h1>
@@ -2344,6 +2529,7 @@ def write_run_summary(
     <section class="card"><h2>Answer</h2>{html_table(['Field', 'Value'], answer_rows)}</section>
     <section class="card"><h2>Combine Prescription</h2>{policy_note}</section>
     {scatter_section}
+    {scatter_variation_sections}
     <section class="card"><h2>Experiments</h2>{html_table_raw(experiment_headers, experiment_rows)}</section>
     <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Strategy', 'Scheme', 'Target POI', 'Truth PDF', 'Injected r', 'Duration', 'Summary'], job_rows)}</section>
     """
@@ -2449,13 +2635,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--poi-min",
         type=float,
         default=DEFAULT_POI_MIN,
-        help="Requested lower bound for POI ranges. Each job uses a symmetric range enlarged only as needed for that job's injection.",
+        help="Lower bound used when defining POIs in text2workspace.py. GenerateOnly and MultiDimFit jobs override this with +/- max(1, abs(injected r)) * 100.",
     )
     parser.add_argument(
         "--poi-max",
         type=float,
         default=DEFAULT_POI_MAX,
-        help="Requested upper bound for POI ranges. Each job uses a symmetric range enlarged only as needed for that job's injection.",
+        help="Upper bound used when defining POIs in text2workspace.py. GenerateOnly and MultiDimFit jobs override this with +/- max(1, abs(injected r)) * 100.",
     )
     parser.add_argument(
         "--injection-mode",
@@ -2581,7 +2767,7 @@ def main() -> int:
     log(f"POI schemes: {', '.join(scheme.name for scheme in schemes)}")
     log(f"Injections: {', '.join(format_number(value) for value in args.injections)}")
     log(f"Requested POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
-    log("Job POI ranges are widened per injection only when needed.")
+    log("Job POI ranges use symmetric +/- max(1, abs(injected r)) * 100.")
     log(f"Dataset strategies: {', '.join(args.dataset_strategies)}")
     if "toys" in args.dataset_strategies:
         log(f"Toys per toy experiment: {args.toys}")
@@ -2702,7 +2888,7 @@ def main() -> int:
         experiment_summary_from_fit(result, index)
         for index, result in enumerate(analyzed_fit_results, start=1)
     ]
-    scatter_plot = make_global_scatter_plot(
+    scatter_plot, scatter_plot_variations = make_summary_scatter_plots(
         experiments,
         run_dir,
         args.bias_pull_threshold,
@@ -2717,6 +2903,7 @@ def main() -> int:
         truth_pdf_metadata,
         all_results,
         scatter_plot,
+        scatter_plot_variations,
     )
 
     failed = [result for result in all_results if not result_successful(result)]
