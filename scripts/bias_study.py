@@ -32,17 +32,20 @@ if str(REPO_ROOT) not in sys.path:
 DEFAULT_DATACARD = REPO_ROOT / "datacards" / "datacard.txt"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "bias_study"
 DEFAULT_MASS = "125"
-DEFAULT_INJECTIONS = (0.0, 1.0, 10.0, 100.0)
+DEFAULT_INJECTIONS = (0.0, 10.0, 100.0, 1000.0)
 DEFAULT_TOYS = 1000
+DEFAULT_DATASET_STRATEGY = "toys"
+DATASET_STRATEGIES = ("toys", "asimov")
 DEFAULT_POI_INITIAL = 1.0
-DEFAULT_POI_MIN = -1000.0
-DEFAULT_POI_MAX = 1000.0
+DEFAULT_POI_MIN = -10000.0
+DEFAULT_POI_MAX = 10000.0
 DEFAULT_PULL_RANGE = (-5.0, 5.0)
 DEFAULT_PULL_BINS = 40
 DEFAULT_MIN_FIT_ENTRIES = 3
 DEFAULT_BIAS_PULL_THRESHOLD = 0.2
 DEFAULT_PULL_WIDTH_THRESHOLD = 0.2
 DEFAULT_SEED_BASE = 123450
+FIT_ALGO = "singles"
 WORKSPACE_OUTPUT_NAME = "multisignal_workspace.root"
 LOCAL_WORKSPACE_NAME = "workspace.root"
 LOCAL_DATACARD_NAME = "datacard.txt"
@@ -197,6 +200,20 @@ def safe_name(value: str) -> str:
 
 def injection_tag(value: float) -> str:
     return "r" + format_number(value).replace("-", "m").replace(".", "p")
+
+
+def selected_dataset_strategies(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.dataset_strategy == "both":
+        return DATASET_STRATEGIES
+    return (str(args.dataset_strategy),)
+
+
+def strategy_toys_argument(dataset_strategy: str, args: argparse.Namespace) -> int:
+    return int(args.toys) if dataset_strategy == "toys" else -1
+
+
+def strategy_dataset_count(dataset_strategy: str, args: argparse.Namespace) -> int:
+    return int(args.toys) if dataset_strategy == "toys" else 1
 
 
 def is_int_token(value: str) -> bool:
@@ -494,7 +511,7 @@ def build_workspace_job(run_dir: Path, datacard_path: Path, mass: str, scheme: P
     )
 
 
-def build_toy_generation_job(
+def build_dataset_generation_job(
     run_dir: Path,
     scheme: PoiScheme,
     target: PoiTarget,
@@ -504,18 +521,21 @@ def build_toy_generation_job(
     workspace_path: Path,
     datacard_path: Path,
     args: argparse.Namespace,
+    dataset_strategy: str,
     experiment_index: int,
 ) -> CommandJob:
+    generation_dir_name = "toys" if dataset_strategy == "toys" else "asimov"
     cwd = (
         run_dir
         / scheme.name
         / safe_name(target.label)
         / safe_name(truth_pdf.label)
         / injection_tag(injected_r)
-        / "toys"
+        / generation_dir_name
     )
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
+    toys_argument = strategy_toys_argument(dataset_strategy, args)
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -523,40 +543,45 @@ def build_toy_generation_job(
         args.injection_mode,
     )
     set_parameters = append_set_parameter(set_parameters, args.pdf_index_name, truth_pdf.index)
+    freeze_parameters = [args.pdf_index_name]
+    if args.injection_mode == "target-only":
+        freeze_parameters.extend(poi for poi in scheme.all_pois if poi != target.poi)
     command = [
         "combine",
         "-M",
         "GenerateOnly",
         LOCAL_WORKSPACE_NAME,
         "-t",
-        str(args.toys),
+        str(toys_argument),
         "--saveToys",
         "--toysFrequentist",
         "--bypassFrequentistFit",
         "--setParameters",
         set_parameters,
         "--freezeParameters",
-        args.pdf_index_name,
+        ",".join(freeze_parameters),
         "--setParameterRanges",
         parameter_ranges_argument(scheme.all_pois, args.poi_min, args.poi_max),
         "-m",
         mass,
         "-n",
-        f".toys.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
+        f".{generation_dir_name}.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
     ]
     seed = None
-    if args.random_seeds:
-        seed = -1
-        command.extend(["-s", str(seed)])
-    elif args.seed_base is not None:
-        seed = int(args.seed_base) + experiment_index
-        command.extend(["-s", str(seed)])
+    if dataset_strategy == "toys":
+        if args.random_seeds:
+            seed = -1
+            command.extend(["-s", str(seed)])
+        elif args.seed_base is not None:
+            seed = int(args.seed_base) + experiment_index
+            command.extend(["-s", str(seed)])
+    job_prefix = "toys" if dataset_strategy == "toys" else "asimov"
     return CommandJob(
         job_id=(
-            f"toys_{scheme.name}_{safe_name(target.label)}_"
+            f"{job_prefix}_{scheme.name}_{safe_name(target.label)}_"
             f"{safe_name(truth_pdf.label)}_{injection_tag(injected_r)}"
         ),
-        kind="toy_generation",
+        kind="toy_generation" if dataset_strategy == "toys" else "asimov_generation",
         method="GenerateOnly",
         cwd=cwd,
         command=tuple(command),
@@ -573,7 +598,10 @@ def build_toy_generation_job(
             "truth_pdf_family": truth_pdf.family,
             "injected_r": injected_r,
             "injection_mode": args.injection_mode,
-            "toys": args.toys,
+            "dataset_strategy": dataset_strategy,
+            "frozen_parameters": freeze_parameters,
+            "toys": toys_argument,
+            "pseudo_datasets": strategy_dataset_count(dataset_strategy, args),
             "seed": seed,
             "poi_min": args.poi_min,
             "poi_max": args.poi_max,
@@ -594,18 +622,21 @@ def build_fit_job(
     datacard_path: Path,
     toys_path: Path,
     args: argparse.Namespace,
+    dataset_strategy: str,
 ) -> CommandJob:
+    fit_dir_name = "fit" if dataset_strategy == "toys" else "asimov_fit"
     cwd = (
         run_dir
         / scheme.name
         / safe_name(target.label)
         / safe_name(truth_pdf.label)
         / injection_tag(injected_r)
-        / "fit"
+        / fit_dir_name
     )
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     inputs.append(copy_file(toys_path, cwd / LOCAL_TOYS_NAME))
+    toys_argument = strategy_toys_argument(dataset_strategy, args)
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -618,11 +649,11 @@ def build_fit_job(
         "MultiDimFit",
         LOCAL_WORKSPACE_NAME,
         "--algo",
-        "singles",
+        FIT_ALGO,
         "--toysFile",
         LOCAL_TOYS_NAME,
         "-t",
-        str(args.toys),
+        str(toys_argument),
         "--toysFrequentist",
         "--bypassFrequentistFit",
         "--redefineSignalPOIs",
@@ -642,17 +673,18 @@ def build_fit_job(
         "-m",
         mass,
         "-n",
-        f".fit.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
+        f".{fit_dir_name}.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
     ]
     if args.profile_freeze_disassociated_params:
         command.extend(["--X-rtd", "MINIMIZER_freezeDisassociatedParams"])
 
+    job_prefix = "fit" if dataset_strategy == "toys" else "asimov_fit"
     return CommandJob(
         job_id=(
-            f"fit_{scheme.name}_{safe_name(target.label)}_"
+            f"{job_prefix}_{scheme.name}_{safe_name(target.label)}_"
             f"{safe_name(truth_pdf.label)}_{injection_tag(injected_r)}"
         ),
-        kind="toy_fit",
+        kind="toy_fit" if dataset_strategy == "toys" else "asimov_fit",
         method="MultiDimFit",
         cwd=cwd,
         command=tuple(command),
@@ -669,14 +701,16 @@ def build_fit_job(
             "truth_pdf_label": truth_pdf.label,
             "truth_pdf_family": truth_pdf.family,
             "fit_method": "MultiDimFit",
-            "fit_algo": "singles",
+            "fit_algo": FIT_ALGO,
             "fit_pdf_mode": "free",
             "fit_pdf_index": None,
             "free_floating_pois": list(scheme.all_pois),
             "free_floating_pdf_indexes": [args.pdf_index_name],
             "injected_r": injected_r,
             "injection_mode": args.injection_mode,
-            "toys": args.toys,
+            "dataset_strategy": dataset_strategy,
+            "toys": toys_argument,
+            "pseudo_datasets": strategy_dataset_count(dataset_strategy, args),
             "poi_min": args.poi_min,
             "poi_max": args.poi_max,
             "pdf_index_name": args.pdf_index_name,
@@ -810,7 +844,7 @@ def executor_exception_result(job: CommandJob, exc: Exception) -> dict[str, Any]
 def job_manifest_label(job: CommandJob) -> str:
     metadata = job.metadata
     details: list[str] = []
-    for key in ("scheme", "target_poi", "truth_pdf_label", "injected_r"):
+    for key in ("dataset_strategy", "scheme", "target_poi", "truth_pdf_label", "injected_r"):
         if metadata.get(key) is not None:
             details.append(f"{key}={metadata[key]}")
     return "; ".join(details) if details else "preparation"
@@ -991,6 +1025,7 @@ def extract_pull_values(
     all_pois: list[str],
     injected_r: float,
     pdf_index_name: str,
+    fit_algo: str,
 ) -> dict[str, Any]:
     from statistical_test_fit.root_runtime import configure_root
 
@@ -1023,8 +1058,8 @@ def extract_pull_values(
 
         if poi not in all_pois:
             all_pois = [poi]
-        poi_index = all_pois.index(poi)
 
+        use_profile_endpoints = fit_algo != "none"
         row_entries: list[dict[str, Any]] = []
         for entry_index in range(int(tree.GetEntries())):
             tree.GetEntry(entry_index)
@@ -1061,6 +1096,9 @@ def extract_pull_values(
         pulls: list[float] = []
         entries: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
+        per_poi_pulls: dict[str, list[float]] = {poi_name: [] for poi_name in all_pois}
+        per_poi_skipped: dict[str, int] = {poi_name: 0 for poi_name in all_pois}
+        per_poi_sigma_sources: dict[str, dict[str, int]] = {poi_name: {} for poi_name in all_pois}
         for (i_seed, i_toy), rows in sorted(grouped_rows.items()):
             rows = sorted(rows, key=lambda item: int(item["entry"]))
             best_rows = [
@@ -1070,6 +1108,8 @@ def extract_pull_values(
                 and math.isclose(float(row["quantileExpected"]), -1.0, rel_tol=0.0, abs_tol=1e-5)
             ]
             if not best_rows:
+                for poi_name in all_pois:
+                    per_poi_skipped[poi_name] += 1
                 skipped.append(
                     {
                         "iSeed": i_seed,
@@ -1080,59 +1120,98 @@ def extract_pull_values(
                 continue
             best = best_rows[0]
             best_position = rows.index(best)
-            r_hat = best.get(poi)
-            tracked_error = best.get(f"trackedError_{poi}")
-            lower_row_index = best_position + 1 + 2 * poi_index
-            upper_row_index = best_position + 2 + 2 * poi_index
-            lower_value = None
-            upper_value = None
-            if upper_row_index < len(rows):
-                lower_value = rows[lower_row_index].get(poi)
-                upper_value = rows[upper_row_index].get(poi)
-            record = {
-                "entry": best.get("entry"),
-                "iSeed": i_seed,
-                "iToy": i_toy,
-                "r_hat": r_hat,
-                "tracked_error": tracked_error,
-                "lower_endpoint": lower_value,
-                "upper_endpoint": upper_value,
-                "pdfindex_fit": best.get(pdf_index_name),
-                "deltaNLL": best.get("deltaNLL"),
-            }
-            if r_hat is None:
-                record["skip_reason"] = "missing_value"
-                skipped.append(record)
-                continue
+            for current_poi_index, current_poi in enumerate(all_pois):
+                r_hat = best.get(current_poi)
+                tracked_error = best.get(f"trackedError_{current_poi}")
+                lower_row_index = best_position + 1 + 2 * current_poi_index
+                upper_row_index = best_position + 2 + 2 * current_poi_index
+                lower_value = None
+                upper_value = None
+                if use_profile_endpoints and upper_row_index < len(rows):
+                    lower_value = rows[lower_row_index].get(current_poi)
+                    upper_value = rows[upper_row_index].get(current_poi)
+                record = {
+                    "entry": best.get("entry"),
+                    "iSeed": i_seed,
+                    "iToy": i_toy,
+                    "poi": current_poi,
+                    "injected_r_reference": injected_r if current_poi == poi else 0.0,
+                    "r_hat": r_hat,
+                    "tracked_error": tracked_error,
+                    "lower_endpoint": lower_value,
+                    "upper_endpoint": upper_value,
+                    "pdfindex_fit": best.get(pdf_index_name),
+                    "deltaNLL": best.get("deltaNLL"),
+                }
+                if r_hat is None:
+                    record["skip_reason"] = "missing_value"
+                    per_poi_skipped[current_poi] += 1
+                    if current_poi == poi:
+                        skipped.append(record)
+                    continue
 
-            sigma_source = "profile_endpoints"
-            sigma = None
-            if lower_value is not None and upper_value is not None:
-                lo_err = abs(float(r_hat) - float(lower_value))
-                hi_err = abs(float(upper_value) - float(r_hat))
-                sigma = 0.5 * (lo_err + hi_err)
-                record["lo_err"] = lo_err
-                record["hi_err"] = hi_err
-            if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
-                if tracked_error is not None:
-                    sigma = abs(float(tracked_error))
-                    sigma_source = "tracked_error"
-            if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
-                record["skip_reason"] = "invalid_error"
+                sigma_source = "tracked_error" if fit_algo == "none" else "profile_endpoints"
+                sigma = None
+                if use_profile_endpoints and lower_value is not None and upper_value is not None:
+                    lo_err = abs(float(r_hat) - float(lower_value))
+                    hi_err = abs(float(upper_value) - float(r_hat))
+                    sigma = 0.5 * (lo_err + hi_err)
+                    record["lo_err"] = lo_err
+                    record["hi_err"] = hi_err
+                if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
+                    if tracked_error is not None:
+                        sigma = abs(float(tracked_error))
+                        sigma_source = "tracked_error"
+                if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
+                    record["skip_reason"] = "invalid_error"
+                    record["sigma"] = sigma
+                    per_poi_skipped[current_poi] += 1
+                    if current_poi == poi:
+                        skipped.append(record)
+                    continue
+                pull = (float(r_hat) - float(record["injected_r_reference"])) / sigma
+                if not math.isfinite(pull):
+                    record["skip_reason"] = "invalid_pull"
+                    record["sigma"] = sigma
+                    per_poi_skipped[current_poi] += 1
+                    if current_poi == poi:
+                        skipped.append(record)
+                    continue
                 record["sigma"] = sigma
-                skipped.append(record)
-                continue
-            pull = (float(r_hat) - injected_r) / sigma
-            if not math.isfinite(pull):
-                record["skip_reason"] = "invalid_pull"
-                record["sigma"] = sigma
-                skipped.append(record)
-                continue
-            record["sigma"] = sigma
-            record["sigma_source"] = sigma_source
-            record["pull"] = pull
-            pulls.append(pull)
-            entries.append(record)
+                record["sigma_source"] = sigma_source
+                record["pull"] = pull
+                per_poi_pulls[current_poi].append(pull)
+                per_poi_sigma_sources[current_poi][sigma_source] = (
+                    per_poi_sigma_sources[current_poi].get(sigma_source, 0) + 1
+                )
+                if current_poi == poi:
+                    pulls.append(pull)
+                    entries.append(record)
+
+        all_poi_pull_summaries = {
+            poi_name: {
+                "fit_algo": fit_algo,
+                "reference_injected_r": injected_r if poi_name == poi else 0.0,
+                "sample_mean": sample_mean(poi_pulls),
+                "sample_sigma": sample_std(poi_pulls),
+                "entries_used": len(poi_pulls),
+                "entries_skipped": per_poi_skipped.get(poi_name, 0),
+                "sigma_source": (
+                    next(iter(per_poi_sigma_sources[poi_name]))
+                    if len(per_poi_sigma_sources[poi_name]) == 1
+                    else "mixed"
+                    if per_poi_sigma_sources[poi_name]
+                    else None
+                ),
+                "sigma_sources": per_poi_sigma_sources[poi_name],
+            }
+            for poi_name, poi_pulls in per_poi_pulls.items()
+        }
+        other_poi_pull_means = {
+            poi_name: summary["sample_mean"]
+            for poi_name, summary in all_poi_pull_summaries.items()
+            if poi_name != poi
+        }
 
         return {
             "status": "ok",
@@ -1142,10 +1221,13 @@ def extract_pull_values(
             "branches": branches,
             "poi": poi,
             "all_pois": all_pois,
+            "fit_algo": fit_algo,
             "injected_r": injected_r,
             "pulls": pulls,
             "entries": entries,
             "skipped_entries": skipped,
+            "all_poi_pull_summaries": all_poi_pull_summaries,
+            "other_poi_pull_means": other_poi_pull_means,
             "entries_total": len(grouped_rows),
             "tree_entries_total": int(tree.GetEntries()),
             "entries_used": len(entries),
@@ -1198,7 +1280,7 @@ def make_pull_distribution_plot(
     hist.SetLineColor(ROOT.kAzure + 1)
     hist.SetFillColorAlpha(ROOT.kAzure - 9, 0.45)
     hist.GetXaxis().SetTitle("pull")
-    hist.GetYaxis().SetTitle("toys")
+    hist.GetYaxis().SetTitle("pseudo-datasets")
     for pull in pulls:
         hist.Fill(float(pull))
 
@@ -1304,6 +1386,7 @@ def make_pull_distribution_plot(
 
 def analyze_fit_result(result: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     metadata = result.get("metadata", {})
+    dataset_strategy = str(metadata.get("dataset_strategy", "toys"))
     fit_root = first_root_file(result, "higgsCombine")
     if fit_root is None:
         analysis = {
@@ -1318,32 +1401,47 @@ def analyze_fit_result(result: dict[str, Any], args: argparse.Namespace) -> dict
             list(metadata.get("all_pois", [metadata["target_poi"]])),
             float(metadata["injected_r"]),
             str(metadata.get("pdf_index_name", args.pdf_index_name)),
+            str(metadata.get("fit_algo", FIT_ALGO)),
         )
     if analysis.get("status") == "ok":
-        plot = make_pull_distribution_plot(
-            [float(value) for value in analysis.get("pulls", [])],
-            Path(result["cwd"]),
-            (
-                f"{metadata.get('scheme')} {metadata.get('target_poi')} "
-                f"truth={metadata.get('truth_pdf_label')} r={metadata.get('injected_r')}"
-            ),
-            args.pull_range,
-            args.pull_bins,
-            args.min_fit_entries,
-        )
-        analysis["pull_distribution"] = plot
-        mean = plot.get("gaussian_mean")
-        sigma = plot.get("gaussian_sigma")
-        if plot.get("gaussian_status") == "ok":
-            analysis["bias_flag"] = bool(
-                mean is not None and abs(float(mean)) >= args.bias_pull_threshold
+        pulls = [float(value) for value in analysis.get("pulls", [])]
+        if dataset_strategy == "asimov":
+            closure_pull = sample_mean(pulls)
+            analysis["bias_metric"] = "asimov_closure_pull"
+            analysis["asimov_closure_pull"] = closure_pull
+            analysis["asimov_closure_status"] = "ok" if closure_pull is not None else "failed"
+            analysis["bias_flag"] = (
+                bool(abs(float(closure_pull)) >= args.bias_pull_threshold)
+                if closure_pull is not None
+                else None
             )
-            analysis["pull_width_flag"] = bool(
-                sigma is not None and abs(float(sigma) - 1.0) >= args.pull_width_threshold
-            )
-        else:
-            analysis["bias_flag"] = None
             analysis["pull_width_flag"] = None
+        else:
+            plot = make_pull_distribution_plot(
+                pulls,
+                Path(result["cwd"]),
+                (
+                    f"{metadata.get('scheme')} {metadata.get('target_poi')} "
+                    f"truth={metadata.get('truth_pdf_label')} r={metadata.get('injected_r')}"
+                ),
+                args.pull_range,
+                args.pull_bins,
+                args.min_fit_entries,
+            )
+            analysis["bias_metric"] = "toy_pull_distribution_mean"
+            analysis["pull_distribution"] = plot
+            mean = plot.get("gaussian_mean")
+            sigma = plot.get("gaussian_sigma")
+            if plot.get("gaussian_status") == "ok":
+                analysis["bias_flag"] = bool(
+                    mean is not None and abs(float(mean)) >= args.bias_pull_threshold
+                )
+                analysis["pull_width_flag"] = bool(
+                    sigma is not None and abs(float(sigma) - 1.0) >= args.pull_width_threshold
+                )
+            else:
+                analysis["bias_flag"] = None
+                analysis["pull_width_flag"] = None
     else:
         analysis["bias_flag"] = None
         analysis["pull_width_flag"] = None
@@ -1386,7 +1484,7 @@ def html_document(title: str, body: str) -> str:
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       line-height: 1.5;
     }}
-    main {{ max-width: 1400px; margin: 0 auto; padding: 2.2rem; }}
+    main {{ width: 90vw; max-width: none; margin: 0 auto; padding: 2.2rem; }}
     h1 {{ margin: 0 0 0.5rem; font-size: clamp(1.9rem, 4vw, 3.1rem); letter-spacing: -0.04em; }}
     h2 {{ margin: 0 0 1rem; color: var(--accent); font-size: 1.05rem; text-transform: uppercase; letter-spacing: 0.12em; }}
     .subtitle {{ color: var(--muted); margin: 0 0 2rem; }}
@@ -1471,6 +1569,16 @@ def flag_pill(flag: Any) -> str:
     return '<span class="pill muted">n/a</span>'
 
 
+def html_fixed_number_or_dash(value: Any, digits: int = 3) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if not math.isfinite(numeric):
+        return "-"
+    return html_escape(f"{numeric:.{digits}f}")
+
+
 def make_job_html_summary(result: dict[str, Any]) -> str:
     metadata = result.get("metadata", {})
     input_rows = [
@@ -1499,8 +1607,10 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
         plot = (analysis.get("pull_distribution") or {}).get("plot_png_repo_relative")
         analysis_rows = [
             ["Analysis status", analysis.get("status", "-")],
+            ["Bias metric", analysis.get("bias_metric", "-")],
             ["Entries used", analysis.get("entries_used", "-")],
             ["Entries skipped", analysis.get("entries_skipped", "-")],
+            ["Asimov closure pull", analysis.get("asimov_closure_pull", "-")],
             ["Gaussian mean", (analysis.get("pull_distribution") or {}).get("gaussian_mean", "-")],
             ["Gaussian sigma", (analysis.get("pull_distribution") or {}).get("gaussian_sigma", "-")],
             ["Bias flag", "yes" if analysis.get("bias_flag") else "no" if analysis.get("bias_flag") is False else "n/a"],
@@ -1556,9 +1666,12 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "truth_pdf_index": metadata.get("truth_pdf_index"),
         "truth_pdf_label": metadata.get("truth_pdf_label"),
         "truth_pdf_family": metadata.get("truth_pdf_family"),
+        "fit_algo": metadata.get("fit_algo"),
         "fit_pdf_mode": metadata.get("fit_pdf_mode"),
         "fit_pdf_index": metadata.get("fit_pdf_index"),
         "injected_r": metadata.get("injected_r"),
+        "dataset_strategy": metadata.get("dataset_strategy"),
+        "pseudo_datasets": metadata.get("pseudo_datasets"),
         "bias_analysis": result.get("bias_analysis"),
     }
 
@@ -1578,14 +1691,19 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "truth_pdf": metadata.get("truth_pdf"),
         "truth_pdf_label": metadata.get("truth_pdf_label"),
         "truth_pdf_family": metadata.get("truth_pdf_family"),
+        "fit_algo": metadata.get("fit_algo"),
         "fit_pdf_mode": metadata.get("fit_pdf_mode"),
         "fit_pdf_index": metadata.get("fit_pdf_index"),
         "injected_r": metadata.get("injected_r"),
         "injection_mode": metadata.get("injection_mode"),
+        "dataset_strategy": metadata.get("dataset_strategy", "toys"),
         "toys_requested": metadata.get("toys"),
+        "pseudo_datasets_requested": metadata.get("pseudo_datasets"),
         "entries_total": analysis.get("entries_total"),
         "entries_used": analysis.get("entries_used"),
         "entries_skipped": analysis.get("entries_skipped"),
+        "asimov_closure_pull": analysis.get("asimov_closure_pull"),
+        "bias_metric": analysis.get("bias_metric"),
         "gaussian_mean": distribution.get("gaussian_mean"),
         "gaussian_mean_error": distribution.get("gaussian_mean_error"),
         "gaussian_sigma": distribution.get("gaussian_sigma"),
@@ -1593,6 +1711,8 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "gaussian_status": distribution.get("gaussian_status"),
         "sample_mean": distribution.get("sample_mean"),
         "sample_sigma": distribution.get("sample_sigma"),
+        "other_poi_pull_means": analysis.get("other_poi_pull_means", {}),
+        "all_poi_pull_summaries": analysis.get("all_poi_pull_summaries", {}),
         "bias_flag": analysis.get("bias_flag"),
         "pull_width_flag": analysis.get("pull_width_flag"),
         "fit_summary_html": result.get("summary_html_path_repo_relative"),
@@ -1624,6 +1744,12 @@ def finite_float_or_none(value: Any) -> float | None:
 
 
 def scatter_point_values(experiment: dict[str, Any]) -> tuple[float, float, str] | None:
+    if str(experiment.get("dataset_strategy", "toys")) == "asimov":
+        closure_pull = finite_float_or_none(experiment.get("asimov_closure_pull"))
+        if closure_pull is None:
+            return None
+        return closure_pull, 1.0, "asimov_closure"
+
     status = str(experiment.get("gaussian_status", ""))
     if status not in {"ok", "failed"}:
         return None
@@ -1638,6 +1764,7 @@ def scatter_point_values(experiment: dict[str, Any]) -> tuple[float, float, str]
 def experiment_full_label(experiment: dict[str, Any]) -> str:
     return (
         f"{experiment.get('target_poi', '-')}\n"
+        f"strategy = {experiment.get('dataset_strategy', 'toys')}\n"
         f"r = {format_number(float(experiment.get('injected_r', 0.0)))}\n"
         f"truth pdf index {experiment.get('truth_pdf_index', '?')}"
     )
@@ -1647,6 +1774,7 @@ def make_global_scatter_plot(
     experiments: list[dict[str, Any]],
     run_dir: Path,
     bias_threshold: float,
+    annotate_outliers: bool,
 ) -> dict[str, Any]:
     plot_dir = run_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -1715,12 +1843,20 @@ def make_global_scatter_plot(
         key=lambda item: (
             str(item.get("scheme", "")),
             str(item.get("target_poi", "")),
+            str(item.get("dataset_strategy", "toys")),
             float(item.get("injected_r", 0.0)),
             str(item.get("truth_pdf_label", "")),
         )
     )
     for index, experiment in enumerate(point_records, start=1):
         experiment["scatter_x"] = index
+
+    marker_cycle = ("o", "s", "^", "D", "P", "X", "v", "<", ">", "*", "h", "8")
+    injection_values = sorted({float(experiment.get("injected_r", 0.0)) for experiment in point_records})
+    injection_markers = {
+        injected_r: marker_cycle[index % len(marker_cycle)]
+        for index, injected_r in enumerate(injection_values)
+    }
 
     side = min(max(15.0, 0.50 * max(1, n_points) + 8.0), 38.0)
     fig, ax = plt.subplots(figsize=(side, side), constrained_layout=False)
@@ -1738,41 +1874,59 @@ def make_global_scatter_plot(
             for experiment in point_records
         ]
         statuses = [str(experiment.get("scatter_source", "normal_fit_failed")) for experiment in point_records]
+        injected_rs = [float(experiment.get("injected_r", 0.0)) for experiment in point_records]
         sizes = [max(180.0, min(3400.0, 220.0 + 420.0 * min(sigma, 7.0))) for sigma in sigmas]
 
-        for status in ("normal_fit_ok", "normal_fit_failed"):
-            indices = [index for index, value in enumerate(statuses) if value == status]
-            if not indices:
-                continue
-            ax.scatter(
-                [x_values[index] for index in indices],
-                [means[index] for index in indices],
-                s=[sizes[index] for index in indices],
-                c=[colors[index] for index in indices],
-                marker="o",
-                alpha=0.55 if status == "normal_fit_ok" else 0.30,
-                edgecolors="#0f172a" if status == "normal_fit_ok" else "#dc2626",
-                linewidths=0.85 if status == "normal_fit_ok" else 3.0,
-                zorder=3,
-            )
+        for status in ("normal_fit_ok", "normal_fit_failed", "asimov_closure"):
+            for injected_r in injection_values:
+                indices = [
+                    index
+                    for index, value in enumerate(statuses)
+                    if value == status and injected_rs[index] == injected_r
+                ]
+                if not indices:
+                    continue
+                edge_color = "#0f172a"
+                alpha = 0.55
+                line_width = 0.85
+                if status == "normal_fit_failed":
+                    edge_color = "#dc2626"
+                    alpha = 0.30
+                    line_width = 3.0
+                elif status == "asimov_closure":
+                    edge_color = "#7c3aed"
+                    alpha = 0.72
+                    line_width = 2.4
+                ax.scatter(
+                    [x_values[index] for index in indices],
+                    [means[index] for index in indices],
+                    s=[sizes[index] for index in indices],
+                    c=[colors[index] for index in indices],
+                    marker=injection_markers[injected_r],
+                    alpha=alpha,
+                    edgecolors=edge_color,
+                    linewidths=line_width,
+                    zorder=3,
+                )
 
-        for experiment in point_records:
-            mean = float(experiment["scatter_mean"])
-            if abs(mean) < bias_threshold:
-                continue
-            ax.annotate(
-                experiment_full_label(experiment),
-                xy=(float(experiment["scatter_x"]), mean),
-                xytext=(14, 14 if mean >= 0.0 else -28),
-                textcoords="offset points",
-                fontsize=20,
-                color="#111827",
-                ha="left",
-                va="bottom" if mean >= 0.0 else "top",
-                arrowprops={"arrowstyle": "-", "color": "#64748b", "linewidth": 1.2},
-                bbox={"boxstyle": "round,pad=0.25", "fc": "white", "ec": "#cbd5e1", "alpha": 0.78},
-                zorder=5,
-            )
+        if annotate_outliers:
+            for experiment in point_records:
+                mean = float(experiment["scatter_mean"])
+                if abs(mean) < bias_threshold:
+                    continue
+                ax.annotate(
+                    experiment_full_label(experiment),
+                    xy=(float(experiment["scatter_x"]), mean),
+                    xytext=(14, 14 if mean >= 0.0 else -28),
+                    textcoords="offset points",
+                    fontsize=20,
+                    color="#111827",
+                    ha="left",
+                    va="bottom" if mean >= 0.0 else "top",
+                    arrowprops={"arrowstyle": "-", "color": "#64748b", "linewidth": 1.2},
+                    bbox={"boxstyle": "round,pad=0.25", "fc": "white", "ec": "#cbd5e1", "alpha": 0.78},
+                    zorder=5,
+                )
 
     ax.axhline(0.0, color="#0f172a", linewidth=1.6, zorder=2)
     ax.axhline(bias_threshold, color="#dc2626", linestyle="--", linewidth=1.4, zorder=2)
@@ -1780,7 +1934,7 @@ def make_global_scatter_plot(
     ax.set_xlim(0.5, max(1, n_points) + 0.5)
     ax.set_yscale("symlog", linthresh=max(1e-3, bias_threshold), linscale=1.0)
     ax.set_ylim(y_min, y_max)
-    ax.set_ylabel("Fitted normal mean of pull distribution", fontsize=34)
+    ax.set_ylabel("Toy pull mean / Asimov closure pull", fontsize=34)
     ax.set_xlabel("", fontsize=34)
     ax.tick_params(axis="y", labelsize=28)
     ax.tick_params(axis="x", labelsize=24)
@@ -1845,6 +1999,19 @@ def make_global_scatter_plot(
         )
         for pdf_index in sorted(pdf_labels)
     ]
+    injection_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker=injection_markers[injected_r],
+            color="w",
+            label=f"Injected r = {format_number(injected_r)}",
+            markerfacecolor="#64748b",
+            markeredgecolor="#0f172a",
+            markersize=20,
+        )
+        for injected_r in injection_values
+    ]
     status_handles = []
     if any(experiment.get("scatter_source") == "normal_fit_ok" for experiment in point_records):
         status_handles.append(
@@ -1853,7 +2020,7 @@ def make_global_scatter_plot(
                 [0],
                 marker="o",
                 color="w",
-                label="Filled circle: normal fit converged; y is fitted mean, area is fitted sigma",
+                label="Filled marker: normal fit converged; y is fitted mean, area is fitted sigma",
                 markerfacecolor="#64748b",
                 markeredgecolor="#0f172a",
                 markersize=20,
@@ -1873,7 +2040,21 @@ def make_global_scatter_plot(
                 markersize=20,
             )
         )
-    handles = pdf_handles + status_handles
+    if any(experiment.get("scatter_source") == "asimov_closure" for experiment in point_records):
+        status_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Purple outline: Asimov closure pull; area is fixed",
+                markerfacecolor="#64748b",
+                markeredgecolor="#7c3aed",
+                markeredgewidth=2.4,
+                markersize=20,
+            )
+        )
+    handles = pdf_handles + injection_handles + status_handles
     if handles:
         ax.legend(
             handles=handles,
@@ -1889,7 +2070,7 @@ def make_global_scatter_plot(
         )
 
     if not point_records:
-        ax.text(0.5, 0.5, "No valid fitted-normal summaries available", transform=ax.transAxes, ha="center", va="center", fontsize=28)
+        ax.text(0.5, 0.5, "No valid pull summaries available", transform=ax.transAxes, ha="center", va="center", fontsize=28)
 
     bottom_margin = 0.14 if n_points <= 40 else 0.18
     fig.subplots_adjust(left=0.14, right=0.62, top=0.86, bottom=bottom_margin)
@@ -1898,6 +2079,11 @@ def make_global_scatter_plot(
     plt.close(fig)
 
     map_path.write_text(json.dumps(map_records, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    annotation_note = (
+        " Points above the bias threshold are annotated with the full name."
+        if annotate_outliers
+        else " Outlier annotations are disabled."
+    )
     return {
         "status": "ok",
         "points": n_points,
@@ -1907,7 +2093,8 @@ def make_global_scatter_plot(
         "plot_pdf_repo_relative": repo_relative(pdf_path),
         "experiment_map": str(map_path.resolve()),
         "experiment_map_repo_relative": repo_relative(map_path),
-        "note": "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Points above the bias threshold are annotated with the full name.",
+        "annotate_outliers": annotate_outliers,
+        "note": "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Point color shows truth PDF, marker shape shows injected signal strength, and point area shows fitted sigma for toy fits. Asimov closure points use fixed area." + annotation_note,
     }
 
 
@@ -1945,6 +2132,8 @@ def write_run_summary(
         "datacard": str(Path(args.datacard).resolve()),
         "datacard_repo_relative": repo_relative(Path(args.datacard).resolve()),
         "mass": args.mass,
+        "dataset_strategy": args.dataset_strategy,
+        "dataset_strategies": list(args.dataset_strategies),
         "toys": args.toys,
         "nproc": nproc(),
         "workers_requested": args.workers,
@@ -1953,7 +2142,7 @@ def write_run_summary(
         "injections": list(args.injections),
         "injection_mode": args.injection_mode,
         "fit_method": "MultiDimFit",
-        "fit_algo": "singles",
+        "fit_algo": FIT_ALGO,
         "fit_pdf_mode": "free",
         "fit_pdf_index": None,
         "pdf_index_name": args.pdf_index_name,
@@ -1961,6 +2150,7 @@ def write_run_summary(
         "poi_max": args.poi_max,
         "bias_pull_threshold": args.bias_pull_threshold,
         "pull_width_threshold": args.pull_width_threshold,
+        "annotate_scatter_outliers": args.annotate_scatter_outliers,
         "signals": processes.signals,
         "backgrounds": processes.backgrounds,
         "schemes": [
@@ -1990,7 +2180,7 @@ def write_run_summary(
         "answer": {
             "question": "Did the choice of non-resonant background introduce a non-negligible bias?",
             "non_negligible_bias_found": bool(bias_flags),
-            "criterion": f"abs(fitted normal pull mean) >= {format_number(args.bias_pull_threshold)}",
+            "criterion": f"toys: abs(fitted normal pull mean) >= {format_number(args.bias_pull_threshold)}; asimov: abs(closure pull) >= {format_number(args.bias_pull_threshold)}",
             "flagged_experiments": len(bias_flags),
             "pull_width_issue_found": bool(width_flags),
             "pull_width_criterion": f"abs(fitted normal pull sigma - 1) >= {format_number(args.pull_width_threshold)}",
@@ -2005,17 +2195,20 @@ def write_run_summary(
         ["Run directory", repo_relative(run_dir)],
         ["Datacard", repo_relative(Path(args.datacard).resolve())],
         ["Mass", args.mass],
-        ["Toys per experiment", args.toys],
+        ["Dataset strategy", ", ".join(args.dataset_strategies)],
+        ["Toys per toy experiment", args.toys],
         ["Worker request", "auto" if args.workers <= 0 else args.workers],
         ["System nproc", nproc()],
         ["Worker cap", nproc() if args.workers <= 0 else min(args.workers, nproc())],
         ["POI schemes", ", ".join(scheme.name for scheme in schemes)],
         ["Injections", ", ".join(format_number(value) for value in args.injections)],
         ["Injection mode", args.injection_mode],
-        ["Fit method", "MultiDimFit --algo singles"],
+        ["Effective POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
+        ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
         ["Fit PDF mode", "free-floating pdfindex"],
         ["Bias threshold", args.bias_pull_threshold],
         ["Pull-width threshold", args.pull_width_threshold],
+        ["Scatter outlier annotations", "enabled" if args.annotate_scatter_outliers else "disabled"],
         ["Aggregate JSON", html_link("summary.json", "summary.json")],
     ]
     answer_rows = [
@@ -2040,14 +2233,16 @@ def write_run_summary(
         experiment_rows.append(
             [
                 html_escape(experiment.get("experiment_index", "-")),
+                html_escape(experiment.get("dataset_strategy", "toys")),
                 html_escape(experiment.get("scheme", "-")),
                 html_escape(experiment.get("target_poi", "-")),
                 html_escape(experiment.get("injected_r", "-")),
                 html_escape(experiment.get("truth_pdf_label", "-")),
                 html_escape(experiment.get("truth_pdf_family", "-")),
                 html_escape(experiment.get("entries_used", "-")),
-                html_escape(experiment.get("gaussian_mean", "-")),
-                html_escape(experiment.get("gaussian_sigma", "-")),
+                html_fixed_number_or_dash(experiment.get("asimov_closure_pull")),
+                html_fixed_number_or_dash(experiment.get("gaussian_mean")),
+                html_fixed_number_or_dash(experiment.get("gaussian_sigma")),
                 flag_pill(experiment.get("bias_flag")),
                 flag_pill(experiment.get("pull_width_flag")),
                 html_link("pull", href_relative_to(run_dir, REPO_ROOT / pull_plot)) if pull_plot else "-",
@@ -2059,6 +2254,7 @@ def write_run_summary(
             html_escape(result.get("job_id", "-")),
             html_escape(result.get("method", "-")),
             status_pill(result.get("status", "-")),
+            html_escape(result.get("metadata", {}).get("dataset_strategy", "-")),
             html_escape(result.get("metadata", {}).get("scheme", "-")),
             html_escape(result.get("metadata", {}).get("target_poi", "-")),
             html_escape(result.get("metadata", {}).get("truth_pdf_label", "-")),
@@ -2071,18 +2267,35 @@ def write_run_summary(
         for result in results
     ]
     policy_note = """
-      <p>Toy generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so the generated toys are based on pre-fit model values and do not use observed data to determine nuisance values.</p>
-      <p>Toy fitting uses <code>MultiDimFit --algo singles</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so both the POIs and the non-resonant discrete PDF choice float/profile against each toy.</p>
+      <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so both the POIs and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Toy pull denominators use the profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check.</p>
     """
+    experiment_headers = [
+        "Index",
+        "Strategy",
+        "Scheme",
+        "Target POI",
+        "Injected r",
+        "Truth PDF",
+        "Family",
+        "Entries Used",
+        "Closure Pull",
+        "Pull Mean",
+        "Pull Sigma",
+        "Bias",
+        "Width",
+        "Pull Plot",
+        "Fit Job",
+    ]
     body = f"""
     <h1>Bias Study Run</h1>
-    <p class="subtitle">Toy-generation and MultiDimFit pull study for non-resonant-background model bias.</p>
+    <p class="subtitle">Pseudo-dataset generation and MultiDimFit pull study for non-resonant-background model bias.</p>
     <section class="card"><h2>Summary</h2>{html_table_raw(['Field', 'Value'], [[html_escape(k), v if str(v).startswith('<a ') else html_escape(v)] for k, v in summary_rows])}</section>
     <section class="card"><h2>Answer</h2>{html_table(['Field', 'Value'], answer_rows)}</section>
     <section class="card"><h2>Combine Prescription</h2>{policy_note}</section>
     {scatter_section}
-    <section class="card"><h2>Experiments</h2>{html_table_raw(['Index', 'Scheme', 'Target POI', 'Injected r', 'Truth PDF', 'Family', 'Used Toys', 'Pull Mean', 'Pull Sigma', 'Bias', 'Width', 'Pull Plot', 'Fit Job'], experiment_rows)}</section>
-    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Truth PDF', 'Injected r', 'Duration', 'Summary'], job_rows)}</section>
+    <section class="card"><h2>Experiments</h2>{html_table_raw(experiment_headers, experiment_rows)}</section>
+    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Strategy', 'Scheme', 'Target POI', 'Truth PDF', 'Injected r', 'Duration', 'Summary'], job_rows)}</section>
     """
     (run_dir / "summary.html").write_text(html_document("Bias Study Run", body), encoding="utf-8")
     write_global_summary(output_dir)
@@ -2101,6 +2314,7 @@ def write_global_summary(output_dir: Path) -> None:
         rows.append(
             [
                 html_escape(summary.get("run_dir_repo_relative", run_dir.name)),
+                html_escape(", ".join(summary.get("dataset_strategies", [summary.get("dataset_strategy", "toys")]))),
                 html_escape(summary.get("toys", "-")),
                 html_escape(", ".join(str(value) for value in summary.get("injections", []))),
                 html_escape(summary.get("fit_pdf_mode", "-")),
@@ -2113,7 +2327,7 @@ def write_global_summary(output_dir: Path) -> None:
     body = f"""
     <h1>Bias Study</h1>
     <p class="subtitle">Global index of bias-study runs.</p>
-    <section class="card"><h2>Runs</h2>{html_table_raw(['Run', 'Toys', 'Injections', 'Fit PDF Mode', 'Flagged Bias Experiments', 'Bias Found', 'HTML', 'JSON'], rows)}</section>
+    <section class="card"><h2>Runs</h2>{html_table_raw(['Run', 'Strategy', 'Toys/Exp', 'Injections', 'Fit PDF Mode', 'Flagged Bias Experiments', 'Bias Found', 'HTML', 'JSON'], rows)}</section>
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "bias_study.html").write_text(html_document("Bias Study", body), encoding="utf-8")
@@ -2122,8 +2336,8 @@ def write_global_summary(output_dir: Path) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run a Combine toy bias study for non-resonant-background PDF choices using "
-            "GenerateOnly and MultiDimFit."
+            "Run a Combine pseudo-dataset bias study for non-resonant-background PDF choices "
+            "using GenerateOnly and MultiDimFit."
         )
     )
     parser.add_argument(
@@ -2161,7 +2375,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--toys",
         type=int,
         default=DEFAULT_TOYS,
-        help="Number of toys per truth-PDF/injection/target experiment.",
+        help="Number of random toys per truth-PDF/injection/target experiment. Ignored for Asimov-only jobs.",
+    )
+    parser.add_argument(
+        "--dataset-strategy",
+        choices=("toys", "asimov", "both"),
+        default=DEFAULT_DATASET_STRATEGY,
+        help="Pseudo-dataset strategy: random toys, an Asimov dataset, or both.",
     )
     parser.add_argument(
         "--workers",
@@ -2179,13 +2399,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--poi-min",
         type=float,
         default=DEFAULT_POI_MIN,
-        help="Lower bound for fitted POI ranges. Bias studies default negative to avoid r=0 boundary pulls.",
+        help="Requested lower bound for POI ranges. The effective range is symmetrized and enlarged to cover 10x the largest injection.",
     )
     parser.add_argument(
         "--poi-max",
         type=float,
         default=DEFAULT_POI_MAX,
-        help="Upper bound for fitted POI ranges.",
+        help="Requested upper bound for POI ranges. The effective range is symmetrized and enlarged to cover 10x the largest injection.",
     )
     parser.add_argument(
         "--injection-mode",
@@ -2219,12 +2439,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed-base",
         type=int,
         default=DEFAULT_SEED_BASE,
-        help="Base seed for GenerateOnly jobs. Use --random-seeds to pass -s -1 instead of deterministic seeds.",
+        help="Base seed for toy GenerateOnly jobs. Use --random-seeds to pass -s -1 instead of deterministic seeds. Ignored for Asimov jobs.",
     )
     parser.add_argument(
         "--random-seeds",
         action="store_true",
-        help="Use random Combine seeds (-s -1) for toy generation instead of deterministic seeds.",
+        help="Use random Combine seeds (-s -1) for toy generation instead of deterministic seeds. Ignored for Asimov jobs.",
     )
     parser.add_argument(
         "--pull-range",
@@ -2243,7 +2463,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--bias-pull-threshold",
         type=float,
         default=DEFAULT_BIAS_PULL_THRESHOLD,
-        help="Flag experiments with abs(fitted normal pull mean) at or above this value.",
+        help="Flag toy experiments with abs(fitted normal pull mean), or Asimov experiments with abs(closure pull), at or above this value.",
     )
     parser.add_argument(
         "--pull-width-threshold",
@@ -2252,20 +2472,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Flag experiments with abs(fitted normal pull sigma - 1) at or above this value.",
     )
     parser.add_argument(
+        "--annotate-scatter-outliers",
+        action="store_true",
+        help="Annotate points in pull_mean_sigma_scatter above the bias threshold. Disabled by default.",
+    )
+    parser.add_argument(
         "--skip-fits",
         action="store_true",
-        help="Only build workspaces and generate toys; do not run MultiDimFit.",
+        help="Only build workspaces and generate pseudo-datasets; do not run MultiDimFit.",
     )
     return parser
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    if args.toys <= 0:
-        raise ValueError("--toys must be positive")
+    args.dataset_strategies = selected_dataset_strategies(args)
+    if "toys" in args.dataset_strategies and args.toys <= 0:
+        raise ValueError("--toys must be positive when --dataset-strategy includes toys")
     if args.workers < 0:
         raise ValueError("--workers must be non-negative")
-    if args.poi_max <= args.poi_min:
-        raise ValueError("--poi-max must be greater than --poi-min")
+    if not args.injections:
+        raise ValueError("--injections must contain at least one value")
+    if any(not math.isfinite(float(value)) for value in args.injections):
+        raise ValueError("--injections must contain only finite values")
+    if not math.isfinite(float(args.poi_min)) or not math.isfinite(float(args.poi_max)):
+        raise ValueError("--poi-min and --poi-max must be finite")
+    requested_limit = max(abs(float(args.poi_min)), abs(float(args.poi_max)))
+    required_limit = 10.0 * max(abs(float(value)) for value in args.injections)
+    symmetric_limit = max(1.0, requested_limit, required_limit)
+    args.poi_min = -symmetric_limit
+    args.poi_max = symmetric_limit
     if len(args.pull_range) != 2 or args.pull_range[1] <= args.pull_range[0]:
         raise ValueError("--pull-range must contain two increasing values")
     if args.pull_bins <= 0:
@@ -2293,9 +2528,14 @@ def main() -> int:
     log(f"Backgrounds: {', '.join(processes.backgrounds)}")
     log(f"POI schemes: {', '.join(scheme.name for scheme in schemes)}")
     log(f"Injections: {', '.join(format_number(value) for value in args.injections)}")
-    log(f"Toys per experiment: {args.toys}")
+    log(f"Effective POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
+    log(f"Dataset strategies: {', '.join(args.dataset_strategies)}")
+    if "toys" in args.dataset_strategies:
+        log(f"Toys per toy experiment: {args.toys}")
+    if "asimov" in args.dataset_strategies:
+        log("Asimov experiments use Combine -t -1")
     log(f"Worker policy: {worker_policy_text(args.workers, max(1, len(schemes)))}")
-    log("Fit method: MultiDimFit --algo singles with all POIs and pdfindex free")
+    log(f"Fit method: MultiDimFit --algo {FIT_ALGO} with all POIs and pdfindex free")
 
     all_results: list[dict[str, Any]] = []
     workspace_jobs = [build_workspace_job(run_dir, datacard_path, args.mass, scheme) for scheme in schemes]
@@ -2325,75 +2565,80 @@ def main() -> int:
         + ", ".join(f"{truth.index}:{truth.label}({truth.name})" for truth in truth_pdfs)
     )
 
-    toy_jobs: list[CommandJob] = []
+    dataset_jobs: list[CommandJob] = []
     experiment_index = 0
-    for scheme in schemes:
-        for target in scheme.targets:
-            for truth_pdf in truth_pdfs:
-                for injected_r in args.injections:
-                    experiment_index += 1
-                    toy_jobs.append(
-                        build_toy_generation_job(
-                            run_dir,
-                            scheme,
-                            target,
-                            truth_pdf,
-                            injected_r,
-                            args.mass,
-                            workspace_paths[scheme.name],
-                            staged_datacards[scheme.name],
-                            args,
-                            experiment_index,
+    for dataset_strategy in args.dataset_strategies:
+        for scheme in schemes:
+            for target in scheme.targets:
+                for truth_pdf in truth_pdfs:
+                    for injected_r in args.injections:
+                        experiment_index += 1
+                        dataset_jobs.append(
+                            build_dataset_generation_job(
+                                run_dir,
+                                scheme,
+                                target,
+                                truth_pdf,
+                                injected_r,
+                                args.mass,
+                                workspace_paths[scheme.name],
+                                staged_datacards[scheme.name],
+                                args,
+                                dataset_strategy,
+                                experiment_index,
+                            )
                         )
-                    )
 
-    toy_results = run_jobs_parallel(toy_jobs, args.workers, "toy generation jobs")
-    all_results.extend(toy_results)
-    if not all(result_successful(result) for result in toy_results):
+    dataset_results = run_jobs_parallel(dataset_jobs, args.workers, "pseudo-dataset generation jobs")
+    all_results.extend(dataset_results)
+    if not all(result_successful(result) for result in dataset_results):
         write_run_summary(run_dir, output_dir, args, processes, schemes, truth_pdf_metadata, all_results, None)
         return 1
 
     if args.skip_fits:
         write_run_summary(run_dir, output_dir, args, processes, schemes, truth_pdf_metadata, all_results, None)
-        log(f"Completed toy generation only. Summary: {repo_relative(run_dir / 'summary.json')}")
+        log(f"Completed pseudo-dataset generation only. Summary: {repo_relative(run_dir / 'summary.json')}")
         return 0
 
-    toy_result_by_key: dict[tuple[str, str, int, float], dict[str, Any]] = {}
-    for result in toy_results:
+    dataset_result_by_key: dict[tuple[str, str, int, float, str], dict[str, Any]] = {}
+    for result in dataset_results:
         metadata = result.get("metadata", {})
         key = (
             str(metadata["scheme"]),
             str(metadata["target_poi"]),
             int(metadata["truth_pdf_index"]),
             float(metadata["injected_r"]),
+            str(metadata.get("dataset_strategy", "toys")),
         )
-        toy_result_by_key[key] = result
+        dataset_result_by_key[key] = result
 
     fit_jobs: list[CommandJob] = []
-    for scheme in schemes:
-        for target in scheme.targets:
-            for truth_pdf in truth_pdfs:
-                for injected_r in args.injections:
-                    toy_result = toy_result_by_key[
-                        (scheme.name, target.poi, truth_pdf.index, float(injected_r))
-                    ]
-                    toys_path = first_root_file(toy_result, "higgsCombine")
-                    if toys_path is None:
-                        raise RuntimeError(f"No GenerateOnly ROOT file found for {toy_result['job_id']}")
-                    fit_jobs.append(
-                        build_fit_job(
-                            run_dir,
-                            scheme,
-                            target,
-                            truth_pdf,
-                            injected_r,
-                            args.mass,
-                            workspace_paths[scheme.name],
-                            staged_datacards[scheme.name],
-                            toys_path,
-                            args,
+    for dataset_strategy in args.dataset_strategies:
+        for scheme in schemes:
+            for target in scheme.targets:
+                for truth_pdf in truth_pdfs:
+                    for injected_r in args.injections:
+                        dataset_result = dataset_result_by_key[
+                            (scheme.name, target.poi, truth_pdf.index, float(injected_r), dataset_strategy)
+                        ]
+                        toys_path = first_root_file(dataset_result, "higgsCombine")
+                        if toys_path is None:
+                            raise RuntimeError(f"No GenerateOnly ROOT file found for {dataset_result['job_id']}")
+                        fit_jobs.append(
+                            build_fit_job(
+                                run_dir,
+                                scheme,
+                                target,
+                                truth_pdf,
+                                injected_r,
+                                args.mass,
+                                workspace_paths[scheme.name],
+                                staged_datacards[scheme.name],
+                                toys_path,
+                                args,
+                                dataset_strategy,
+                            )
                         )
-                    )
 
     fit_results = run_jobs_parallel(fit_jobs, args.workers, "MultiDimFit jobs")
     analyzed_fit_results = [analyze_fit_result(result, args) for result in fit_results]
@@ -2406,6 +2651,7 @@ def main() -> int:
         experiments,
         run_dir,
         args.bias_pull_threshold,
+        args.annotate_scatter_outliers,
     )
     write_run_summary(
         run_dir,
