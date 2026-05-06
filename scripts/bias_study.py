@@ -203,8 +203,6 @@ def injection_tag(value: float) -> str:
 
 
 def selected_dataset_strategies(args: argparse.Namespace) -> tuple[str, ...]:
-    if args.dataset_strategy == "both":
-        return DATASET_STRATEGIES
     return (str(args.dataset_strategy),)
 
 
@@ -214,6 +212,13 @@ def strategy_toys_argument(dataset_strategy: str, args: argparse.Namespace) -> i
 
 def strategy_dataset_count(dataset_strategy: str, args: argparse.Namespace) -> int:
     return int(args.toys) if dataset_strategy == "toys" else 1
+
+
+def effective_poi_range(args: argparse.Namespace, injected_r: float) -> tuple[float, float]:
+    requested_limit = max(abs(float(args.poi_min)), abs(float(args.poi_max)))
+    injection_limit = 10.0 * abs(float(injected_r))
+    symmetric_limit = max(1.0, requested_limit, injection_limit)
+    return -symmetric_limit, symmetric_limit
 
 
 def is_int_token(value: str) -> bool:
@@ -536,6 +541,7 @@ def build_dataset_generation_job(
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     toys_argument = strategy_toys_argument(dataset_strategy, args)
+    poi_min, poi_max = effective_poi_range(args, injected_r)
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -561,7 +567,7 @@ def build_dataset_generation_job(
         "--freezeParameters",
         ",".join(freeze_parameters),
         "--setParameterRanges",
-        parameter_ranges_argument(scheme.all_pois, args.poi_min, args.poi_max),
+        parameter_ranges_argument(scheme.all_pois, poi_min, poi_max),
         "-m",
         mass,
         "-n",
@@ -603,8 +609,11 @@ def build_dataset_generation_job(
             "toys": toys_argument,
             "pseudo_datasets": strategy_dataset_count(dataset_strategy, args),
             "seed": seed,
-            "poi_min": args.poi_min,
-            "poi_max": args.poi_max,
+            "requested_poi_min": args.poi_min,
+            "requested_poi_max": args.poi_max,
+            "poi_range_policy": "per-injection symmetric max(requested_limit, 10 * abs(injected_r), 1)",
+            "poi_min": poi_min,
+            "poi_max": poi_max,
             "pdf_index_name": args.pdf_index_name,
             "mass": mass,
         },
@@ -637,6 +646,7 @@ def build_fit_job(
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     inputs.append(copy_file(toys_path, cwd / LOCAL_TOYS_NAME))
     toys_argument = strategy_toys_argument(dataset_strategy, args)
+    poi_min, poi_max = effective_poi_range(args, injected_r)
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -661,7 +671,7 @@ def build_fit_job(
         "--setParameters",
         set_parameters,
         "--setParameterRanges",
-        parameter_ranges_argument(scheme.all_pois, args.poi_min, args.poi_max),
+        parameter_ranges_argument(scheme.all_pois, poi_min, poi_max),
         "--cminDefaultMinimizerStrategy",
         str(args.cmin_default_minimizer_strategy),
         "--trackParameters",
@@ -677,6 +687,8 @@ def build_fit_job(
     ]
     if args.profile_freeze_disassociated_params:
         command.extend(["--X-rtd", "MINIMIZER_freezeDisassociatedParams"])
+    if args.robust_fit:
+        command.extend(["--robustFit", "1"])
 
     job_prefix = "fit" if dataset_strategy == "toys" else "asimov_fit"
     return CommandJob(
@@ -711,8 +723,12 @@ def build_fit_job(
             "dataset_strategy": dataset_strategy,
             "toys": toys_argument,
             "pseudo_datasets": strategy_dataset_count(dataset_strategy, args),
-            "poi_min": args.poi_min,
-            "poi_max": args.poi_max,
+            "requested_poi_min": args.poi_min,
+            "requested_poi_max": args.poi_max,
+            "poi_range_policy": "per-injection symmetric max(requested_limit, 10 * abs(injected_r), 1)",
+            "poi_min": poi_min,
+            "poi_max": poi_max,
+            "robust_fit": bool(args.robust_fit),
             "pdf_index_name": args.pdf_index_name,
             "mass": mass,
         },
@@ -1672,6 +1688,11 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "injected_r": metadata.get("injected_r"),
         "dataset_strategy": metadata.get("dataset_strategy"),
         "pseudo_datasets": metadata.get("pseudo_datasets"),
+        "requested_poi_min": metadata.get("requested_poi_min"),
+        "requested_poi_max": metadata.get("requested_poi_max"),
+        "poi_min": metadata.get("poi_min"),
+        "poi_max": metadata.get("poi_max"),
+        "robust_fit": metadata.get("robust_fit"),
         "bias_analysis": result.get("bias_analysis"),
     }
 
@@ -1699,6 +1720,11 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "dataset_strategy": metadata.get("dataset_strategy", "toys"),
         "toys_requested": metadata.get("toys"),
         "pseudo_datasets_requested": metadata.get("pseudo_datasets"),
+        "requested_poi_min": metadata.get("requested_poi_min"),
+        "requested_poi_max": metadata.get("requested_poi_max"),
+        "poi_min": metadata.get("poi_min"),
+        "poi_max": metadata.get("poi_max"),
+        "robust_fit": metadata.get("robust_fit"),
         "entries_total": analysis.get("entries_total"),
         "entries_used": analysis.get("entries_used"),
         "entries_skipped": analysis.get("entries_skipped"),
@@ -2146,8 +2172,12 @@ def write_run_summary(
         "fit_pdf_mode": "free",
         "fit_pdf_index": None,
         "pdf_index_name": args.pdf_index_name,
+        "poi_range_policy": "per-injection symmetric max(requested_limit, 10 * abs(injected_r), 1)",
+        "requested_poi_min": args.poi_min,
+        "requested_poi_max": args.poi_max,
         "poi_min": args.poi_min,
         "poi_max": args.poi_max,
+        "robust_fit": bool(args.robust_fit),
         "bias_pull_threshold": args.bias_pull_threshold,
         "pull_width_threshold": args.pull_width_threshold,
         "annotate_scatter_outliers": args.annotate_scatter_outliers,
@@ -2195,28 +2225,36 @@ def write_run_summary(
         ["Run directory", repo_relative(run_dir)],
         ["Datacard", repo_relative(Path(args.datacard).resolve())],
         ["Mass", args.mass],
-        ["Dataset strategy", ", ".join(args.dataset_strategies)],
-        ["Toys per toy experiment", args.toys],
+        ["Dataset strategy", args.dataset_strategy],
         ["Worker request", "auto" if args.workers <= 0 else args.workers],
         ["System nproc", nproc()],
         ["Worker cap", nproc() if args.workers <= 0 else min(args.workers, nproc())],
         ["POI schemes", ", ".join(scheme.name for scheme in schemes)],
         ["Injections", ", ".join(format_number(value) for value in args.injections)],
         ["Injection mode", args.injection_mode],
-        ["Effective POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
+        ["Requested POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
+        ["Job POI range policy", "per-injection symmetric max(requested limit, 10 x abs(injected r), 1)"],
         ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
         ["Fit PDF mode", "free-floating pdfindex"],
+        ["Robust fit", "enabled" if args.robust_fit else "disabled"],
         ["Bias threshold", args.bias_pull_threshold],
-        ["Pull-width threshold", args.pull_width_threshold],
         ["Scatter outlier annotations", "enabled" if args.annotate_scatter_outliers else "disabled"],
         ["Aggregate JSON", html_link("summary.json", "summary.json")],
     ]
+    if args.dataset_strategy == "toys":
+        summary_rows.insert(4, ["Toys per experiment", args.toys])
+        summary_rows.insert(-2, ["Pull-width threshold", args.pull_width_threshold])
     answer_rows = [
         ["Non-negligible bias found", "yes" if bias_flags else "no"],
         ["Flagged bias experiments", len(bias_flags)],
-        ["Pull-width issue found", "yes" if width_flags else "no"],
-        ["Flagged pull-width experiments", len(width_flags)],
     ]
+    if args.dataset_strategy == "toys":
+        answer_rows.extend(
+            [
+                ["Pull-width issue found", "yes" if width_flags else "no"],
+                ["Flagged pull-width experiments", len(width_flags)],
+            ]
+        )
     scatter_section = ""
     if scatter_plot and scatter_plot.get("status") == "ok":
         scatter_href = href_relative_to(run_dir, Path(scatter_plot["plot_png"]))
@@ -2226,29 +2264,58 @@ def write_run_summary(
       <p><img src="{html_escape(scatter_href)}" alt="pull mean and sigma scatter"></p>
     </section>
         """
+    experiment_headers = [
+        "Index",
+        "Scheme",
+        "Target POI",
+        "Injected r",
+        "Truth PDF",
+        "POI Range",
+        "Entries Used",
+    ]
+    if args.dataset_strategy == "asimov":
+        experiment_headers.extend(["Closure Pull", "Bias", "Fit Job"])
+    else:
+        experiment_headers.extend(["Pull Mean", "Pull Sigma", "Bias", "Width", "Pull Plot", "Fit Job"])
+
     experiment_rows = []
     for experiment in experiments:
         pull_plot = experiment.get("pull_plot")
         fit_html = experiment.get("fit_summary_html")
-        experiment_rows.append(
-            [
-                html_escape(experiment.get("experiment_index", "-")),
-                html_escape(experiment.get("dataset_strategy", "toys")),
-                html_escape(experiment.get("scheme", "-")),
-                html_escape(experiment.get("target_poi", "-")),
-                html_escape(experiment.get("injected_r", "-")),
-                html_escape(experiment.get("truth_pdf_label", "-")),
-                html_escape(experiment.get("truth_pdf_family", "-")),
-                html_escape(experiment.get("entries_used", "-")),
-                html_fixed_number_or_dash(experiment.get("asimov_closure_pull")),
-                html_fixed_number_or_dash(experiment.get("gaussian_mean")),
-                html_fixed_number_or_dash(experiment.get("gaussian_sigma")),
-                flag_pill(experiment.get("bias_flag")),
-                flag_pill(experiment.get("pull_width_flag")),
-                html_link("pull", href_relative_to(run_dir, REPO_ROOT / pull_plot)) if pull_plot else "-",
-                html_link("fit", href_relative_to(run_dir, REPO_ROOT / fit_html)) if fit_html else "-",
-            ]
+        poi_range = html_escape(
+            f"[{format_number(float(experiment['poi_min']))}, {format_number(float(experiment['poi_max']))}]"
+            if experiment.get("poi_min") is not None and experiment.get("poi_max") is not None
+            else "-"
         )
+        row = [
+            html_escape(experiment.get("experiment_index", "-")),
+            html_escape(experiment.get("scheme", "-")),
+            html_escape(experiment.get("target_poi", "-")),
+            html_escape(experiment.get("injected_r", "-")),
+            html_escape(experiment.get("truth_pdf_label", "-")),
+            poi_range,
+            html_escape(experiment.get("entries_used", "-")),
+        ]
+        if args.dataset_strategy == "asimov":
+            row.extend(
+                [
+                    html_fixed_number_or_dash(experiment.get("asimov_closure_pull")),
+                    flag_pill(experiment.get("bias_flag")),
+                    html_link("fit", href_relative_to(run_dir, REPO_ROOT / fit_html)) if fit_html else "-",
+                ]
+            )
+        else:
+            row.extend(
+                [
+                    html_fixed_number_or_dash(experiment.get("gaussian_mean")),
+                    html_fixed_number_or_dash(experiment.get("gaussian_sigma")),
+                    flag_pill(experiment.get("bias_flag")),
+                    flag_pill(experiment.get("pull_width_flag")),
+                    html_link("pull", href_relative_to(run_dir, REPO_ROOT / pull_plot)) if pull_plot else "-",
+                    html_link("fit", href_relative_to(run_dir, REPO_ROOT / fit_html)) if fit_html else "-",
+                ]
+            )
+        experiment_rows.append(row)
     job_rows = [
         [
             html_escape(result.get("job_id", "-")),
@@ -2268,25 +2335,8 @@ def write_run_summary(
     ]
     policy_note = """
       <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
-      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so both the POIs and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Toy pull denominators use the profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so both the POIs and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges are widened per injection only when needed. Toy pull denominators use the profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. If enabled, robust fitting adds <code>--robustFit 1</code> to the fit commands.</p>
     """
-    experiment_headers = [
-        "Index",
-        "Strategy",
-        "Scheme",
-        "Target POI",
-        "Injected r",
-        "Truth PDF",
-        "Family",
-        "Entries Used",
-        "Closure Pull",
-        "Pull Mean",
-        "Pull Sigma",
-        "Bias",
-        "Width",
-        "Pull Plot",
-        "Fit Job",
-    ]
     body = f"""
     <h1>Bias Study Run</h1>
     <p class="subtitle">Pseudo-dataset generation and MultiDimFit pull study for non-resonant-background model bias.</p>
@@ -2379,9 +2429,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dataset-strategy",
-        choices=("toys", "asimov", "both"),
+        choices=DATASET_STRATEGIES,
         default=DEFAULT_DATASET_STRATEGY,
-        help="Pseudo-dataset strategy: random toys, an Asimov dataset, or both.",
+        help="Pseudo-dataset strategy: random toys or an Asimov dataset.",
     )
     parser.add_argument(
         "--workers",
@@ -2399,13 +2449,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--poi-min",
         type=float,
         default=DEFAULT_POI_MIN,
-        help="Requested lower bound for POI ranges. The effective range is symmetrized and enlarged to cover 10x the largest injection.",
+        help="Requested lower bound for POI ranges. Each job uses a symmetric range enlarged only as needed for that job's injection.",
     )
     parser.add_argument(
         "--poi-max",
         type=float,
         default=DEFAULT_POI_MAX,
-        help="Requested upper bound for POI ranges. The effective range is symmetrized and enlarged to cover 10x the largest injection.",
+        help="Requested upper bound for POI ranges. Each job uses a symmetric range enlarged only as needed for that job's injection.",
     )
     parser.add_argument(
         "--injection-mode",
@@ -2434,6 +2484,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Value passed as --cminDefaultMinimizerStrategy to MultiDimFit.",
+    )
+    parser.add_argument(
+        "--robust-fit",
+        action="store_true",
+        help="Pass --robustFit 1 to MultiDimFit. Disabled by default.",
     )
     parser.add_argument(
         "--seed-base",
@@ -2496,11 +2551,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--injections must contain only finite values")
     if not math.isfinite(float(args.poi_min)) or not math.isfinite(float(args.poi_max)):
         raise ValueError("--poi-min and --poi-max must be finite")
-    requested_limit = max(abs(float(args.poi_min)), abs(float(args.poi_max)))
-    required_limit = 10.0 * max(abs(float(value)) for value in args.injections)
-    symmetric_limit = max(1.0, requested_limit, required_limit)
-    args.poi_min = -symmetric_limit
-    args.poi_max = symmetric_limit
+    if args.poi_max <= args.poi_min:
+        raise ValueError("--poi-max must be greater than --poi-min")
     if len(args.pull_range) != 2 or args.pull_range[1] <= args.pull_range[0]:
         raise ValueError("--pull-range must contain two increasing values")
     if args.pull_bins <= 0:
@@ -2528,7 +2580,8 @@ def main() -> int:
     log(f"Backgrounds: {', '.join(processes.backgrounds)}")
     log(f"POI schemes: {', '.join(scheme.name for scheme in schemes)}")
     log(f"Injections: {', '.join(format_number(value) for value in args.injections)}")
-    log(f"Effective POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
+    log(f"Requested POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
+    log("Job POI ranges are widened per injection only when needed.")
     log(f"Dataset strategies: {', '.join(args.dataset_strategies)}")
     if "toys" in args.dataset_strategies:
         log(f"Toys per toy experiment: {args.toys}")
@@ -2536,6 +2589,8 @@ def main() -> int:
         log("Asimov experiments use Combine -t -1")
     log(f"Worker policy: {worker_policy_text(args.workers, max(1, len(schemes)))}")
     log(f"Fit method: MultiDimFit --algo {FIT_ALGO} with all POIs and pdfindex free")
+    if args.robust_fit:
+        log("Robust fit enabled: MultiDimFit commands include --robustFit 1")
 
     all_results: list[dict[str, Any]] = []
     workspace_jobs = [build_workspace_job(run_dir, datacard_path, args.mass, scheme) for scheme in schemes]
