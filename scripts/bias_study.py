@@ -3151,7 +3151,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--scheme-injections",
         action="append",
         type=parse_scheme_injection_spec,
-        default=(),
+        default=[],
         metavar="SCHEME=R0,R1,...",
         help=(
             "Override injected signal strengths for one selected scheme. "
