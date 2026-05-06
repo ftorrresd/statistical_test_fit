@@ -646,6 +646,8 @@ def build_fit_job(
     inputs.append(copy_file(toys_path, cwd / LOCAL_TOYS_NAME))
     toys_argument = strategy_toys_argument(dataset_strategy, args)
     poi_min, poi_max = effective_poi_range(injected_r)
+    scanned_pois = (target.poi,)
+    profiled_pois = tuple(poi for poi in scheme.all_pois if poi not in scanned_pois)
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -659,6 +661,10 @@ def build_fit_job(
         LOCAL_WORKSPACE_NAME,
         "--algo",
         FIT_ALGO,
+        "-P",
+        target.poi,
+        "--floatOtherPOIs",
+        "1",
         "--toysFile",
         LOCAL_TOYS_NAME,
         "-t",
@@ -716,6 +722,10 @@ def build_fit_job(
             "fit_pdf_mode": "free",
             "fit_pdf_index": None,
             "free_floating_pois": list(scheme.all_pois),
+            "scanned_pois": list(scanned_pois),
+            "profiled_pois": list(profiled_pois),
+            "poi_scan_mode": "target-only",
+            "float_other_pois": True,
             "free_floating_pdf_indexes": [args.pdf_index_name],
             "injected_r": injected_r,
             "injection_mode": args.injection_mode,
@@ -1029,9 +1039,12 @@ def discover_truth_pdfs(workspace_path: Path, requested_families: tuple[str, ...
 
 def leaf_value(tree: Any, name: str) -> float | None:
     leaf = tree.GetLeaf(name)
-    if leaf is None:
+    try:
+        if leaf is None or not leaf:
+            return None
+        return float(leaf.GetValue())
+    except ReferenceError:
         return None
-    return float(leaf.GetValue())
 
 
 def extract_pull_values(
@@ -1041,6 +1054,7 @@ def extract_pull_values(
     injected_r: float,
     pdf_index_name: str,
     fit_algo: str,
+    scanned_pois: list[str] | None = None,
 ) -> dict[str, Any]:
     from statistical_test_fit.root_runtime import configure_root
 
@@ -1071,8 +1085,16 @@ def extract_pull_values(
                 "pulls": [],
             }
 
+        all_pois = list(dict.fromkeys(str(poi_name) for poi_name in all_pois))
         if poi not in all_pois:
             all_pois = [poi]
+        if scanned_pois is None:
+            scanned_pois = list(all_pois)
+        else:
+            scanned_pois = list(dict.fromkeys(str(poi_name) for poi_name in scanned_pois))
+        if poi not in scanned_pois:
+            scanned_pois.insert(0, poi)
+        tracked_pois = list(dict.fromkeys([*all_pois, *scanned_pois]))
 
         use_profile_endpoints = fit_algo != "none"
         row_entries: list[dict[str, Any]] = []
@@ -1086,8 +1108,9 @@ def extract_pull_values(
                 "deltaNLL": leaf_value(tree, "deltaNLL"),
                 pdf_index_name: leaf_value(tree, pdf_index_name),
             }
-            for poi_name in all_pois:
+            for poi_name in scanned_pois:
                 row[poi_name] = leaf_value(tree, poi_name)
+            for poi_name in tracked_pois:
                 row[f"trackedParam_{poi_name}"] = leaf_value(tree, f"trackedParam_{poi_name}")
                 row[f"trackedError_{poi_name}"] = leaf_value(tree, f"trackedError_{poi_name}")
             row_entries.append(row)
@@ -1111,9 +1134,9 @@ def extract_pull_values(
         pulls: list[float] = []
         entries: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-        per_poi_pulls: dict[str, list[float]] = {poi_name: [] for poi_name in all_pois}
-        per_poi_skipped: dict[str, int] = {poi_name: 0 for poi_name in all_pois}
-        per_poi_sigma_sources: dict[str, dict[str, int]] = {poi_name: {} for poi_name in all_pois}
+        per_poi_pulls: dict[str, list[float]] = {poi_name: [] for poi_name in scanned_pois}
+        per_poi_skipped: dict[str, int] = {poi_name: 0 for poi_name in scanned_pois}
+        per_poi_sigma_sources: dict[str, dict[str, int]] = {poi_name: {} for poi_name in scanned_pois}
         for (i_seed, i_toy), rows in sorted(grouped_rows.items()):
             rows = sorted(rows, key=lambda item: int(item["entry"]))
             best_rows = [
@@ -1123,7 +1146,7 @@ def extract_pull_values(
                 and math.isclose(float(row["quantileExpected"]), -1.0, rel_tol=0.0, abs_tol=1e-5)
             ]
             if not best_rows:
-                for poi_name in all_pois:
+                for poi_name in scanned_pois:
                     per_poi_skipped[poi_name] += 1
                 skipped.append(
                     {
@@ -1135,7 +1158,7 @@ def extract_pull_values(
                 continue
             best = best_rows[0]
             best_position = rows.index(best)
-            for current_poi_index, current_poi in enumerate(all_pois):
+            for current_poi_index, current_poi in enumerate(scanned_pois):
                 r_hat = best.get(current_poi)
                 tracked_error = best.get(f"trackedError_{current_poi}")
                 lower_row_index = best_position + 1 + 2 * current_poi_index
@@ -1236,6 +1259,7 @@ def extract_pull_values(
             "branches": branches,
             "poi": poi,
             "all_pois": all_pois,
+            "scanned_pois": scanned_pois,
             "fit_algo": fit_algo,
             "injected_r": injected_r,
             "pulls": pulls,
@@ -1414,6 +1438,10 @@ def analyze_fit_result(result: dict[str, Any], args: argparse.Namespace) -> dict
             float(metadata["injected_r"]),
             str(metadata.get("pdf_index_name", args.pdf_index_name)),
             str(metadata.get("fit_algo", FIT_ALGO)),
+            list(
+                metadata.get("scanned_pois")
+                or metadata.get("all_pois", [metadata["target_poi"]])
+            ),
         )
     if analysis.get("status") == "ok":
         pulls = [float(value) for value in analysis.get("pulls", [])]
@@ -1719,6 +1747,10 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "scheme": metadata.get("scheme"),
         "target_poi": metadata.get("target_poi"),
         "target_label": metadata.get("target_label"),
+        "scanned_pois": metadata.get("scanned_pois"),
+        "profiled_pois": metadata.get("profiled_pois"),
+        "poi_scan_mode": metadata.get("poi_scan_mode"),
+        "float_other_pois": metadata.get("float_other_pois"),
         "truth_pdf_index": metadata.get("truth_pdf_index"),
         "truth_pdf_label": metadata.get("truth_pdf_label"),
         "truth_pdf_family": metadata.get("truth_pdf_family"),
@@ -1748,6 +1780,10 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "scheme": metadata.get("scheme"),
         "target_label": metadata.get("target_label"),
         "target_poi": metadata.get("target_poi"),
+        "scanned_pois": metadata.get("scanned_pois"),
+        "profiled_pois": metadata.get("profiled_pois"),
+        "poi_scan_mode": metadata.get("poi_scan_mode"),
+        "float_other_pois": metadata.get("float_other_pois"),
         "truth_pdf_index": metadata.get("truth_pdf_index"),
         "truth_pdf": metadata.get("truth_pdf"),
         "truth_pdf_label": metadata.get("truth_pdf_label"),
@@ -2640,7 +2676,11 @@ def run_plot_only(args: argparse.Namespace, output_dir: Path) -> int:
     processes = infer_processes_for_plot_only(args, results, existing_summary)
     schemes = infer_schemes_for_plot_only(results, existing_summary)
     truth_pdf_metadata = infer_truth_pdf_metadata_for_plot_only(results, existing_summary)
-    experiments = [experiment_summary_from_fit(result, index) for index, result in enumerate(fit_results, start=1)]
+    analyzed_fit_results = [analyze_fit_result(result, args) for result in fit_results]
+    experiments = [
+        experiment_summary_from_fit(result, index)
+        for index, result in enumerate(analyzed_fit_results, start=1)
+    ]
     scatter_plot, scatter_plot_variations = make_summary_scatter_plots_isolated(
         experiments,
         run_dir,
@@ -2709,6 +2749,8 @@ def write_run_summary(
         "injection_mode": args.injection_mode,
         "fit_method": "MultiDimFit",
         "fit_algo": FIT_ALGO,
+        "fit_poi_scan_mode": "target-only",
+        "float_other_pois": True,
         "fit_pdf_mode": "free",
         "fit_pdf_index": None,
         "pdf_index_name": args.pdf_index_name,
@@ -2776,6 +2818,7 @@ def write_run_summary(
         ["Requested POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
         ["Job POI range policy", "per-injection symmetric +/- max(1, abs(injected r)) * 100"],
         ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
+        ["Fit POI scan", "target POI only (-P target) with other signal POIs floating"],
         ["Fit PDF mode", "free-floating pdfindex"],
         ["Robust fit", "enabled" if args.robust_fit else "disabled"],
         ["Bias threshold", args.bias_pull_threshold],
@@ -2902,7 +2945,7 @@ def write_run_summary(
     ]
     policy_note = """
       <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
-      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so both the POIs and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges use symmetric <code>+/- max(1, abs(injected r)) * 100</code>. Toy pull denominators use the profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. If enabled, robust fitting adds <code>--robustFit 1</code> to the fit commands.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so the target POI, the other signal POIs, and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges use symmetric <code>+/- max(1, abs(injected r)) * 100</code>. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. If enabled, robust fitting adds <code>--robustFit 1</code> to the fit commands.</p>
     """
     body = f"""
     <h1>Bias Study Run</h1>
@@ -3170,7 +3213,10 @@ def main() -> int:
     if "asimov" in args.dataset_strategies:
         log("Asimov experiments use Combine -t -1")
     log(f"Worker policy: {worker_policy_text(args.workers, max(1, len(schemes)))}")
-    log(f"Fit method: MultiDimFit --algo {FIT_ALGO} with all POIs and pdfindex free")
+    log(
+        f"Fit method: MultiDimFit --algo {FIT_ALGO} -P target --floatOtherPOIs 1 "
+        "with other POIs and pdfindex free"
+    )
     if args.robust_fit:
         log("Robust fit enabled: MultiDimFit commands include --robustFit 1")
 
