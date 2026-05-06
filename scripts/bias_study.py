@@ -45,6 +45,8 @@ DEFAULT_MIN_FIT_ENTRIES = 3
 DEFAULT_BIAS_PULL_THRESHOLD = 0.2
 DEFAULT_PULL_WIDTH_THRESHOLD = 0.2
 DEFAULT_SEED_BASE = 123450
+DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY = 2
+QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY = 0
 SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS = 1800
 FIT_ALGO = "singles"
 WORKSPACE_OUTPUT_NAME = "multisignal_workspace.root"
@@ -792,6 +794,8 @@ def build_fit_job(
             "poi_range_policy": "per-injection symmetric +/- max(1, abs(injected_r)) * 100",
             "poi_min": poi_min,
             "poi_max": poi_max,
+            "quick": bool(args.quick),
+            "cmin_default_minimizer_strategy": int(args.cmin_default_minimizer_strategy),
             "robust_fit": bool(args.robust_fit),
             "pdf_index_name": args.pdf_index_name,
             "mass": mass,
@@ -1819,6 +1823,8 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "requested_poi_max": metadata.get("requested_poi_max"),
         "poi_min": metadata.get("poi_min"),
         "poi_max": metadata.get("poi_max"),
+        "quick": metadata.get("quick"),
+        "cmin_default_minimizer_strategy": metadata.get("cmin_default_minimizer_strategy"),
         "robust_fit": metadata.get("robust_fit"),
         "bias_analysis": result.get("bias_analysis"),
     }
@@ -1855,6 +1861,8 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "requested_poi_max": metadata.get("requested_poi_max"),
         "poi_min": metadata.get("poi_min"),
         "poi_max": metadata.get("poi_max"),
+        "quick": metadata.get("quick"),
+        "cmin_default_minimizer_strategy": metadata.get("cmin_default_minimizer_strategy"),
         "robust_fit": metadata.get("robust_fit"),
         "entries_total": analysis.get("entries_total"),
         "entries_used": analysis.get("entries_used"),
@@ -2589,6 +2597,14 @@ def infer_plot_only_args(
     args.poi_max = float(
         first_metadata_value(fit_results, "requested_poi_max", existing_summary.get("requested_poi_max", args.poi_max))
     )
+    args.quick = bool(first_metadata_value(fit_results, "quick", existing_summary.get("quick", args.quick)))
+    args.cmin_default_minimizer_strategy = int(
+        first_metadata_value(
+            fit_results,
+            "cmin_default_minimizer_strategy",
+            existing_summary.get("cmin_default_minimizer_strategy", args.cmin_default_minimizer_strategy),
+        )
+    )
     args.robust_fit = bool(
         first_metadata_value(fit_results, "robust_fit", existing_summary.get("robust_fit", args.robust_fit))
     )
@@ -2854,6 +2870,8 @@ def write_run_summary(
         "requested_poi_max": args.poi_max,
         "poi_min": args.poi_min,
         "poi_max": args.poi_max,
+        "quick": bool(args.quick),
+        "cmin_default_minimizer_strategy": int(args.cmin_default_minimizer_strategy),
         "robust_fit": bool(args.robust_fit),
         "bias_pull_threshold": args.bias_pull_threshold,
         "pull_width_threshold": args.pull_width_threshold,
@@ -2916,6 +2934,8 @@ def write_run_summary(
         ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
         ["Fit POI scan", "target POI only (-P target) with other signal POIs floating"],
         ["Fit PDF mode", "free-floating pdfindex"],
+        ["Quick mode", "enabled" if args.quick else "disabled"],
+        ["Minimizer strategy", args.cmin_default_minimizer_strategy],
         ["Robust fit", "enabled" if args.robust_fit else "disabled"],
         ["Bias threshold", args.bias_pull_threshold],
         ["Scatter outlier annotations", "enabled" if args.annotate_scatter_outliers else "disabled"],
@@ -3041,7 +3061,7 @@ def write_run_summary(
     ]
     policy_note = """
       <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
-      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so the target POI, the other signal POIs, and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges use symmetric <code>+/- max(1, abs(injected r)) * 100</code>. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. If enabled, robust fitting adds <code>--robustFit 1</code> to the fit commands.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so the target POI, the other signal POIs, and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges use symmetric <code>+/- max(1, abs(injected r)) * 100</code>. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0.</p>
     """
     body = f"""
     <h1>Bias Study Run</h1>
@@ -3151,7 +3171,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--scheme-injections",
         action="append",
         type=parse_scheme_injection_spec,
-        default=[],
+        default=None,
         metavar="SCHEME=R0,R1,...",
         help=(
             "Override injected signal strengths for one selected scheme. "
@@ -3218,15 +3238,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pass --X-rtd MINIMIZER_freezeDisassociatedParams while leaving pdfindex free to float.",
     )
     parser.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Use faster, less robust MultiDimFit settings: disable --robustFit and use "
+            f"--cminDefaultMinimizerStrategy {QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY}."
+        ),
+    )
+    parser.add_argument(
         "--cmin-default-minimizer-strategy",
         type=int,
-        default=0,
-        help="Value passed as --cminDefaultMinimizerStrategy to MultiDimFit.",
+        default=DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+        help=(
+            "Value passed as --cminDefaultMinimizerStrategy to MultiDimFit. "
+            f"Default is {DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY}; --quick overrides this to "
+            f"{QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY}."
+        ),
     )
     parser.add_argument(
         "--robust-fit",
         action="store_true",
-        help="Pass --robustFit 1 to MultiDimFit. Disabled by default.",
+        default=True,
+        help="Pass --robustFit 1 to MultiDimFit. Enabled by default; --quick disables it.",
     )
     parser.add_argument(
         "--seed-base",
@@ -3279,15 +3312,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def validate_args(args: argparse.Namespace) -> None:
     args.dataset_strategies = selected_dataset_strategies(args)
+    if args.quick:
+        args.robust_fit = False
+        args.cmin_default_minimizer_strategy = QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY
     if "toys" in args.dataset_strategies and args.toys <= 0:
         raise ValueError("--toys must be positive when --dataset-strategy includes toys")
     if args.workers < 0:
         raise ValueError("--workers must be non-negative")
+    if args.cmin_default_minimizer_strategy < 0:
+        raise ValueError("--cmin-default-minimizer-strategy must be non-negative")
     if not args.injections:
         raise ValueError("--injections must contain at least one value")
     if any(not math.isfinite(float(value)) for value in args.injections):
         raise ValueError("--injections must contain only finite values")
     seen_scheme_injections: set[str] = set()
+    args.scheme_injections = tuple(args.scheme_injections or ())
     for scheme_name, injected_values in args.scheme_injections:
         if scheme_name in seen_scheme_injections:
             raise ValueError(f"--scheme-injections was provided more than once for {scheme_name}")
@@ -3345,6 +3384,9 @@ def main() -> int:
         f"Fit method: MultiDimFit --algo {FIT_ALGO} -P target --floatOtherPOIs 1 "
         "with other POIs and pdfindex free"
     )
+    log(f"Minimizer strategy: {args.cmin_default_minimizer_strategy}")
+    if args.quick:
+        log("Quick mode enabled: robust fitting disabled and minimizer strategy set to 0")
     if args.robust_fit:
         log("Robust fit enabled: MultiDimFit commands include --robustFit 1")
 
