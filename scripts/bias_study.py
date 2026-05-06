@@ -179,6 +179,16 @@ def parse_float_list(value: str) -> tuple[float, ...]:
     return tuple(values)
 
 
+def parse_scheme_injection_spec(value: str) -> tuple[str, tuple[float, ...]]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("expected SCHEME=R0,R1,...")
+    scheme, injections = value.split("=", 1)
+    scheme = scheme.strip()
+    if not scheme:
+        raise argparse.ArgumentTypeError("scheme name is required before '='")
+    return scheme, parse_float_list(injections)
+
+
 def parse_family_list(value: str) -> tuple[str, ...]:
     aliases = {"checbchev": "chebychev", "cheb": "chebychev"}
     families: list[str] = []
@@ -286,30 +296,38 @@ def process_specific_poi(process_name: str) -> str:
     return f"r_{process_name}"
 
 
-def make_six_poi_scheme(
+def make_three_poi_scheme(
     signals: list[str],
+    target_boson: str,
     poi_initial: float,
     poi_min: float,
     poi_max: float,
 ) -> PoiScheme:
     maps: list[str] = []
     targets: list[PoiTarget] = []
+    target_processes = [
+        process_name for process_name in signals if process_boson(process_name) == target_boson
+    ]
+    if not target_processes:
+        raise RuntimeError(f"No {target_boson} signal processes found for three-POI scheme")
     for process_name in signals:
         poi = process_specific_poi(process_name)
         maps.append(
             f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
         )
-        targets.append(PoiTarget(label=process_name, poi=poi, processes=(process_name,)))
+        if process_name in target_processes:
+            targets.append(PoiTarget(label=process_name, poi=poi, processes=(process_name,)))
+    scheme_name = f"three_poi_{target_boson.lower()}"
     return PoiScheme(
-        name="six_poi",
-        title="Six Independent Signal POIs",
+        name=scheme_name,
+        title=f"Three Independent {target_boson} Signal POIs",
         description=(
-            "Each H/Z x Upsilon signal process has its own signal-strength POI. "
-            "Bias fits are evaluated one target POI at a time while other signal POIs remain in the model."
+            f"Each {target_boson} x Upsilon signal process has its own target signal-strength POI. "
+            "The opposite-boson signal strengths remain in the model as profiled POIs."
         ),
         poi_maps=tuple(maps),
         targets=tuple(targets),
-        all_poi_names=tuple(target.poi for target in targets),
+        all_poi_names=tuple(process_specific_poi(process_name) for process_name in signals),
     )
 
 
@@ -372,7 +390,20 @@ def make_boson_grouped_poi_scheme(
 
 def selected_schemes(args: argparse.Namespace, signals: list[str]) -> tuple[PoiScheme, ...]:
     schemes = {
-        "six": make_six_poi_scheme(signals, args.poi_initial, args.poi_min, args.poi_max),
+        "three_poi_z": make_three_poi_scheme(
+            signals,
+            "Z",
+            args.poi_initial,
+            args.poi_min,
+            args.poi_max,
+        ),
+        "three_poi_h": make_three_poi_scheme(
+            signals,
+            "H",
+            args.poi_initial,
+            args.poi_min,
+            args.poi_max,
+        ),
         "z_grouped": make_boson_grouped_poi_scheme(
             signals,
             "Z",
@@ -388,11 +419,35 @@ def selected_schemes(args: argparse.Namespace, signals: list[str]) -> tuple[PoiS
             args.poi_max,
         ),
     }
+    if args.poi_scheme == "three_poi":
+        return (schemes["three_poi_z"], schemes["three_poi_h"])
     if args.poi_scheme == "grouped":
         return (schemes["z_grouped"], schemes["h_grouped"])
     if args.poi_scheme == "both":
-        return (schemes["six"], schemes["z_grouped"], schemes["h_grouped"])
+        return (schemes["three_poi_z"], schemes["three_poi_h"], schemes["z_grouped"], schemes["h_grouped"])
     return (schemes[args.poi_scheme],)
+
+
+def injections_by_scheme(args: argparse.Namespace, schemes: tuple[PoiScheme, ...]) -> dict[str, tuple[float, ...]]:
+    explicit = dict(getattr(args, "scheme_injections", []) or [])
+    selected_names = {scheme.name for scheme in schemes}
+    unknown = sorted(name for name in explicit if name not in selected_names)
+    if unknown:
+        raise ValueError(
+            "--scheme-injections specified unselected scheme(s): " + ", ".join(unknown)
+        )
+    return {scheme.name: tuple(explicit.get(scheme.name, args.injections)) for scheme in schemes}
+
+
+def format_injection_values(values: tuple[float, ...]) -> str:
+    return ",".join(format_number(float(value)) for value in values)
+
+
+def format_injections_by_scheme(mapping: dict[str, tuple[float, ...]]) -> str:
+    return "; ".join(
+        f"{scheme_name}={format_injection_values(values)}"
+        for scheme_name, values in mapping.items()
+    )
 
 
 def copy_file(src: Path, dst: Path) -> dict[str, str]:
@@ -2659,6 +2714,34 @@ def infer_truth_pdf_metadata_for_plot_only(
     return {"selected_truth_pdfs": [truths[index] for index in sorted(truths)]}
 
 
+def infer_scheme_injection_map_for_plot_only(
+    args: argparse.Namespace,
+    schemes: tuple[PoiScheme, ...],
+    fit_results: list[dict[str, Any]],
+    existing_summary: dict[str, Any] | None,
+) -> dict[str, tuple[float, ...]]:
+    existing_summary = existing_summary or {}
+    existing_map = existing_summary.get("injections_by_scheme")
+    if not isinstance(existing_map, dict):
+        existing_map = {}
+
+    mapping: dict[str, tuple[float, ...]] = {}
+    for scheme in schemes:
+        injected_values = sorted(
+            {
+                float(value)
+                for result in fit_results
+                for metadata in [result.get("metadata") or {}]
+                for value in [metadata.get("injected_r")]
+                if metadata.get("scheme") == scheme.name and value is not None
+            }
+        )
+        if not injected_values and scheme.name in existing_map:
+            injected_values = [float(value) for value in existing_map[scheme.name]]
+        mapping[scheme.name] = tuple(injected_values or args.injections)
+    return mapping
+
+
 def run_plot_only(args: argparse.Namespace, output_dir: Path) -> int:
     run_dir = resolve_plot_only_run_dir(args, output_dir)
     if not run_dir.exists() or not run_dir.is_dir():
@@ -2675,6 +2758,12 @@ def run_plot_only(args: argparse.Namespace, output_dir: Path) -> int:
     infer_plot_only_args(args, run_dir, results, existing_summary)
     processes = infer_processes_for_plot_only(args, results, existing_summary)
     schemes = infer_schemes_for_plot_only(results, existing_summary)
+    args.scheme_injection_map = infer_scheme_injection_map_for_plot_only(
+        args,
+        schemes,
+        fit_results,
+        existing_summary,
+    )
     truth_pdf_metadata = infer_truth_pdf_metadata_for_plot_only(results, existing_summary)
     analyzed_fit_results = [analyze_fit_result(result, args) for result in fit_results]
     experiments = [
@@ -2729,6 +2818,7 @@ def write_run_summary(
     experiments = [experiment_summary_from_fit(result, index) for index, result in enumerate(fit_results, start=1)]
     bias_flags = [experiment for experiment in experiments if experiment.get("bias_flag") is True]
     width_flags = [experiment for experiment in experiments if experiment.get("pull_width_flag") is True]
+    scheme_injection_map = getattr(args, "scheme_injection_map", None) or injections_by_scheme(args, schemes)
     payload = {
         "schema_version": 1,
         "run_dir": str(run_dir.resolve()),
@@ -2746,6 +2836,11 @@ def write_run_summary(
         "workers_effective_cap": nproc() if args.workers <= 0 else min(args.workers, nproc()),
         "worker_policy": "Each dependency wave uses min(ready_jobs, requested_workers_or_nproc, nproc).",
         "injections": list(args.injections),
+        "default_injections": list(args.injections),
+        "injections_by_scheme": {
+            scheme_name: list(injected_values)
+            for scheme_name, injected_values in scheme_injection_map.items()
+        },
         "injection_mode": args.injection_mode,
         "fit_method": "MultiDimFit",
         "fit_algo": FIT_ALGO,
@@ -2813,7 +2908,8 @@ def write_run_summary(
         ["System nproc", nproc()],
         ["Worker cap", nproc() if args.workers <= 0 else min(args.workers, nproc())],
         ["POI schemes", ", ".join(scheme.name for scheme in schemes)],
-        ["Injections", ", ".join(format_number(value) for value in args.injections)],
+        ["Default injections", format_injection_values(args.injections)],
+        ["Injections by scheme", format_injections_by_scheme(scheme_injection_map)],
         ["Injection mode", args.injection_mode],
         ["Requested POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
         ["Job POI range policy", "per-injection symmetric +/- max(1, abs(injected r)) * 100"],
@@ -2972,12 +3068,20 @@ def write_global_summary(output_dir: Path) -> None:
     rows = []
     for summary in summaries:
         run_dir = Path(summary.get("run_dir", ""))
+        summary_injections = summary.get("injections_by_scheme")
+        if isinstance(summary_injections, dict) and summary_injections:
+            injections_text = "; ".join(
+                f"{scheme}={','.join(str(value) for value in values)}"
+                for scheme, values in summary_injections.items()
+            )
+        else:
+            injections_text = ", ".join(str(value) for value in summary.get("injections", []))
         rows.append(
             [
                 html_escape(summary.get("run_dir_repo_relative", run_dir.name)),
                 html_escape(", ".join(summary.get("dataset_strategies", [summary.get("dataset_strategy", "toys")]))),
                 html_escape(summary.get("toys", "-")),
-                html_escape(", ".join(str(value) for value in summary.get("injections", []))),
+                html_escape(injections_text),
                 html_escape(summary.get("fit_pdf_mode", "-")),
                 html_escape(summary.get("answer", {}).get("flagged_experiments", "-")),
                 "yes" if summary.get("answer", {}).get("non_negligible_bias_found") else "no",
@@ -3030,18 +3134,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mass", default=DEFAULT_MASS, help="Mass label passed to Combine.")
     parser.add_argument(
         "--poi-scheme",
-        choices=("six", "z_grouped", "h_grouped", "grouped", "both"),
+        choices=("three_poi_z", "three_poi_h", "three_poi", "z_grouped", "h_grouped", "grouped", "both"),
         default="both",
         help=(
-            "POI scheme to run. `grouped` runs z_grouped and h_grouped; "
-            "the default `both` runs six plus both grouped schemes."
+            "POI scheme to run. `three_poi` runs three_poi_z and three_poi_h; "
+            "`grouped` runs z_grouped and h_grouped; the default `both` runs all four schemes."
         ),
     )
     parser.add_argument(
         "--injections",
         type=parse_float_list,
         default=DEFAULT_INJECTIONS,
-        help="Comma-separated injected signal strengths.",
+        help="Default comma-separated injected signal strengths for schemes without --scheme-injections.",
+    )
+    parser.add_argument(
+        "--scheme-injections",
+        action="append",
+        type=parse_scheme_injection_spec,
+        default=(),
+        metavar="SCHEME=R0,R1,...",
+        help=(
+            "Override injected signal strengths for one selected scheme. "
+            "May be repeated, e.g. --scheme-injections z_grouped=0,1,10 "
+            "--scheme-injections h_grouped=0,10000,50000."
+        ),
     )
     parser.add_argument(
         "--toys",
@@ -3171,6 +3287,15 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--injections must contain at least one value")
     if any(not math.isfinite(float(value)) for value in args.injections):
         raise ValueError("--injections must contain only finite values")
+    seen_scheme_injections: set[str] = set()
+    for scheme_name, injected_values in args.scheme_injections:
+        if scheme_name in seen_scheme_injections:
+            raise ValueError(f"--scheme-injections was provided more than once for {scheme_name}")
+        seen_scheme_injections.add(scheme_name)
+        if not injected_values:
+            raise ValueError(f"--scheme-injections for {scheme_name} must contain at least one value")
+        if any(not math.isfinite(float(value)) for value in injected_values):
+            raise ValueError(f"--scheme-injections for {scheme_name} must contain only finite values")
     if not math.isfinite(float(args.poi_min)) or not math.isfinite(float(args.poi_max)):
         raise ValueError("--poi-min and --poi-max must be finite")
     if args.poi_max <= args.poi_min:
@@ -3199,12 +3324,15 @@ def main() -> int:
     run_dir = prepare_run_dir(output_dir, args.run_name)
     processes = parse_datacard_processes(datacard_path)
     schemes = selected_schemes(args, processes.signals)
+    scheme_injection_map = injections_by_scheme(args, schemes)
+    args.scheme_injection_map = scheme_injection_map
 
     log(f"Run directory: {repo_relative(run_dir)}")
     log(f"Signals: {', '.join(processes.signals)}")
     log(f"Backgrounds: {', '.join(processes.backgrounds)}")
     log(f"POI schemes: {', '.join(scheme.name for scheme in schemes)}")
-    log(f"Injections: {', '.join(format_number(value) for value in args.injections)}")
+    log(f"Default injections: {format_injection_values(args.injections)}")
+    log(f"Injections by scheme: {format_injections_by_scheme(scheme_injection_map)}")
     log(f"Requested POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
     log("Job POI ranges use symmetric +/- max(1, abs(injected r)) * 100.")
     log(f"Dataset strategies: {', '.join(args.dataset_strategies)}")
@@ -3254,7 +3382,7 @@ def main() -> int:
         for scheme in schemes:
             for target in scheme.targets:
                 for truth_pdf in truth_pdfs:
-                    for injected_r in args.injections:
+                    for injected_r in scheme_injection_map[scheme.name]:
                         experiment_index += 1
                         dataset_jobs.append(
                             build_dataset_generation_job(
@@ -3300,7 +3428,7 @@ def main() -> int:
         for scheme in schemes:
             for target in scheme.targets:
                 for truth_pdf in truth_pdfs:
-                    for injected_r in args.injections:
+                    for injected_r in scheme_injection_map[scheme.name]:
                         dataset_result = dataset_result_by_key[
                             (scheme.name, target.poi, truth_pdf.index, float(injected_r), dataset_strategy)
                         ]

@@ -225,7 +225,8 @@ python3 scripts/limits.py
 
 Default behavior:
 
-- Builds the six independent process-POI scheme plus `z_grouped` and `h_grouped` by default
+- Builds `three_poi_z`, `three_poi_h`, `z_grouped`, and `h_grouped` by default
+- In `three_poi_z` and `three_poi_h`, the selected boson's three signal processes are tested individually while the opposite-boson signal strengths remain profiled
 - In `z_grouped`, all Z signal processes share one POI while the H signal strengths are profiled individually; `h_grouped` does the reverse
 - Runs both `AsymptoticLimits --run blind` and `HybridNew --LHCmode LHC-limits`
 - Uses HybridNew expected quantiles `0.16,0.5,0.84` by default
@@ -246,7 +247,8 @@ Useful examples:
 ```bash
 python3 scripts/limits.py --workers 8
 python3 scripts/limits.py --quick --workers 8
-python3 scripts/limits.py --poi-scheme six --methods asymptotic
+python3 scripts/limits.py --poi-scheme three_poi_h --methods asymptotic
+python3 scripts/limits.py --poi-scheme three_poi --methods asymptotic
 python3 scripts/limits.py --poi-scheme z_grouped --methods hybrid --hybrid-toys 1000 --cls-acc 0.005
 python3 scripts/limits.py --methods both --hybrid-range-from-asymptotic
 python3 scripts/limits.py --poi-scheme grouped --methods hybrid
@@ -263,7 +265,7 @@ python3 scripts/branching_fraction_table.py --summary datacards/limits/<run>/bli
 
 Default behavior:
 
-- Writes grouped H, grouped Z, and individual six-POI tables for both `asymptotic` and `hybrid_lhc` methods by default
+- Writes grouped H/Z and individual three-POI H/Z tables for both `asymptotic` and `hybrid_lhc` methods by default
 - Uses one row for each grouped H/Z table, with the theory branching fraction equal to the sum of the three states in that boson group
 - Includes raw observed/expected signal-strength columns plus branching-fraction limit columns
 - Marks upper-limit cells with `<`

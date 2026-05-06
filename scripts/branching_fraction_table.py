@@ -30,7 +30,8 @@ QUANTILE_LABELS = (
 )
 PROCESS_ORDER = ("H_1S", "H_2S", "H_3S", "Z_1S", "Z_2S", "Z_3S")
 SCHEME_PROCESS_ORDER = {
-    "six_poi": PROCESS_ORDER,
+    "three_poi_h": tuple(process for process in PROCESS_ORDER if process.startswith("H_")),
+    "three_poi_z": tuple(process for process in PROCESS_ORDER if process.startswith("Z_")),
     "h_grouped": tuple(process for process in PROCESS_ORDER if process.startswith("H_")),
     "z_grouped": tuple(process for process in PROCESS_ORDER if process.startswith("Z_")),
 }
@@ -87,13 +88,18 @@ SECTION_CONFIG = {
         "caption": "Grouped Z signal-strength limit translated using the summed Z theory branching fraction.",
         "label_base": "tab:bf_limits_z_grouped",
     },
-    "six_poi": {
-        "title": "Individual signal-strength limits",
-        "caption": "Individual signal-strength limits translated to branching fractions.",
-        "label_base": "tab:bf_limits_six_poi",
+    "three_poi_h": {
+        "title": "Individual H signal-strength limits",
+        "caption": "Individual H signal-strength limits translated to branching fractions.",
+        "label_base": "tab:bf_limits_three_poi_h",
+    },
+    "three_poi_z": {
+        "title": "Individual Z signal-strength limits",
+        "caption": "Individual Z signal-strength limits translated to branching fractions.",
+        "label_base": "tab:bf_limits_three_poi_z",
     },
 }
-DEFAULT_TABLE_SCHEMES = ("h_grouped", "z_grouped", "six_poi")
+DEFAULT_TABLE_SCHEMES = ("h_grouped", "z_grouped", "three_poi_h", "three_poi_z")
 
 
 def log(message: str) -> None:
@@ -650,9 +656,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scheme",
-        choices=("all", "six_poi", "z_grouped", "h_grouped"),
+        choices=("all", "three_poi_h", "three_poi_z", "z_grouped", "h_grouped"),
         default="all",
-        help="POI scheme to tabulate. Default writes grouped H, grouped Z, and six-POI tables.",
+        help="POI scheme to tabulate. Default writes grouped H/Z and three-POI H/Z tables.",
     )
     parser.add_argument(
         "--method",

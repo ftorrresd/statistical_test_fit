@@ -226,30 +226,38 @@ def process_specific_poi(process_name: str) -> str:
     return f"r_{process_name}"
 
 
-def make_six_poi_scheme(
+def make_three_poi_scheme(
     signals: list[str],
+    target_boson: str,
     poi_initial: float,
     poi_min: float,
     poi_max: float,
 ) -> PoiScheme:
     maps: list[str] = []
     targets: list[PoiTarget] = []
+    target_processes = [
+        process_name for process_name in signals if process_boson(process_name) == target_boson
+    ]
+    if not target_processes:
+        raise RuntimeError(f"No {target_boson} signal processes found for three-POI scheme")
     for process_name in signals:
         poi = process_specific_poi(process_name)
         maps.append(
             f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
         )
-        targets.append(PoiTarget(label=process_name, poi=poi, processes=(process_name,)))
+        if process_name in target_processes:
+            targets.append(PoiTarget(label=process_name, poi=poi, processes=(process_name,)))
+    scheme_name = f"three_poi_{target_boson.lower()}"
     return PoiScheme(
-        name="six_poi",
-        title="Six Independent Signal POIs",
+        name=scheme_name,
+        title=f"Three Independent {target_boson} Signal POIs",
         description=(
-            "Each H/Z x Upsilon signal process has its own signal-strength POI. "
-            "Limits are computed one POI at a time while the other signal POIs remain in the model."
+            f"Each {target_boson} x Upsilon signal process has its own target signal-strength POI. "
+            "The opposite-boson signal strengths remain in the model as profiled POIs."
         ),
         poi_maps=tuple(maps),
         targets=tuple(targets),
-        all_poi_names=tuple(target.poi for target in targets),
+        all_poi_names=tuple(process_specific_poi(process_name) for process_name in signals),
     )
 
 
@@ -313,7 +321,20 @@ def make_boson_grouped_poi_scheme(
 
 def selected_schemes(args: argparse.Namespace, signals: list[str]) -> tuple[PoiScheme, ...]:
     schemes = {
-        "six": make_six_poi_scheme(signals, args.poi_initial, args.poi_min, args.poi_max),
+        "three_poi_z": make_three_poi_scheme(
+            signals,
+            "Z",
+            args.poi_initial,
+            args.poi_min,
+            args.poi_max,
+        ),
+        "three_poi_h": make_three_poi_scheme(
+            signals,
+            "H",
+            args.poi_initial,
+            args.poi_min,
+            args.poi_max,
+        ),
         "z_grouped": make_boson_grouped_poi_scheme(
             signals,
             "Z",
@@ -329,10 +350,12 @@ def selected_schemes(args: argparse.Namespace, signals: list[str]) -> tuple[PoiS
             args.poi_max,
         ),
     }
+    if args.poi_scheme == "three_poi":
+        return (schemes["three_poi_z"], schemes["three_poi_h"])
     if args.poi_scheme == "grouped":
         return (schemes["z_grouped"], schemes["h_grouped"])
     if args.poi_scheme == "both":
-        return (schemes["six"], schemes["z_grouped"], schemes["h_grouped"])
+        return (schemes["three_poi_z"], schemes["three_poi_h"], schemes["z_grouped"], schemes["h_grouped"])
     return (schemes[args.poi_scheme],)
 
 
@@ -1760,7 +1783,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run expected upper-limit workflows for the bundled simultaneous Combine card. "
-            "Independent six-POI and H/Z grouped-POI schemes are supported."
+            "Independent three-POI H/Z and grouped H/Z schemes are supported."
         )
     )
     parser.add_argument(
@@ -1781,11 +1804,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mass", default=DEFAULT_MASS, help="Mass label passed to Combine.")
     parser.add_argument(
         "--poi-scheme",
-        choices=("six", "z_grouped", "h_grouped", "grouped", "both"),
+        choices=("three_poi_z", "three_poi_h", "three_poi", "z_grouped", "h_grouped", "grouped", "both"),
         default="both",
         help=(
-            "POI scheme to run. `grouped` runs z_grouped and h_grouped; "
-            "the default `both` runs six plus both grouped schemes."
+            "POI scheme to run. `three_poi` runs three_poi_z and three_poi_h; "
+            "`grouped` runs z_grouped and h_grouped; the default `both` runs all four schemes."
         ),
     )
     parser.add_argument(
