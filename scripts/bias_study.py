@@ -45,6 +45,7 @@ DEFAULT_MIN_FIT_ENTRIES = 3
 DEFAULT_BIAS_PULL_THRESHOLD = 0.2
 DEFAULT_PULL_WIDTH_THRESHOLD = 0.2
 DEFAULT_SEED_BASE = 123450
+SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS = 1800
 FIT_ALGO = "singles"
 WORKSPACE_OUTPUT_NAME = "multisignal_workspace.root"
 LOCAL_WORKSPACE_NAME = "workspace.root"
@@ -1354,9 +1355,6 @@ def make_pull_distribution_plot(
             else "Normal fit attempt (orange)"
         )
         legend.AddEntry(fit_curve, fit_label, "l")
-    else:
-        empty_graph = ROOT.TGraph(0)
-        legend.AddEntry(empty_graph, "Fitted normal: not drawn", "")
     legend.Draw()
 
     stats = ROOT.TPaveText(0.70, 0.48, 0.98, 0.70, "NDC")
@@ -2287,6 +2285,384 @@ def make_summary_scatter_plots(
     return global_plot, variations
 
 
+def failed_summary_scatter_plot(
+    run_dir: Path,
+    message: str,
+    returncode: int | None = None,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    plot_dir = run_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "status": "failed",
+        "label": "Global",
+        "split": {},
+        "plot_stem": "pull_mean_sigma_scatter",
+        "points": 0,
+        "message": message,
+        "stdout_path": str((plot_dir / "summary_scatter_stdout.txt").resolve()),
+        "stdout_path_repo_relative": repo_relative(plot_dir / "summary_scatter_stdout.txt"),
+        "stderr_path": str((plot_dir / "summary_scatter_stderr.txt").resolve()),
+        "stderr_path_repo_relative": repo_relative(plot_dir / "summary_scatter_stderr.txt"),
+    }
+    if returncode is not None:
+        payload["returncode"] = returncode
+    return payload, {
+        "by_poi_scheme": [],
+        "by_injected_r": [],
+        "by_poi_scheme_and_injected_r": [],
+    }
+
+
+def make_summary_scatter_plots_isolated(
+    experiments: list[dict[str, Any]],
+    run_dir: Path,
+    bias_threshold: float,
+    annotate_outliers: bool,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    plot_dir = run_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    input_path = plot_dir / "summary_scatter_input.json"
+    output_path = plot_dir / "summary_scatter_output.json"
+    stdout_path = plot_dir / "summary_scatter_stdout.txt"
+    stderr_path = plot_dir / "summary_scatter_stderr.txt"
+    input_payload = {
+        "experiments": experiments,
+        "run_dir": str(run_dir.resolve()),
+        "bias_threshold": bias_threshold,
+        "annotate_outliers": annotate_outliers,
+    }
+    input_path.write_text(json.dumps(input_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    code = r"""
+import json
+import sys
+from pathlib import Path
+import scripts.bias_study as bias_study
+
+input_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+payload = json.loads(input_path.read_text(encoding='utf-8'))
+scatter_plot, scatter_plot_variations = bias_study.make_summary_scatter_plots(
+    payload['experiments'],
+    Path(payload['run_dir']),
+    float(payload['bias_threshold']),
+    bool(payload['annotate_outliers']),
+)
+output_path.write_text(
+    json.dumps(
+        {
+            'scatter_plot': scatter_plot,
+            'scatter_plot_variations': scatter_plot_variations,
+        },
+        indent=2,
+        sort_keys=True,
+    ) + '\n',
+    encoding='utf-8',
+)
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", code, str(input_path), str(output_path)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
+        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+        return failed_summary_scatter_plot(
+            run_dir,
+            f"Summary scatter plotting timed out after {SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS} seconds.",
+        )
+
+    stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+    stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+    if completed.returncode != 0:
+        message = f"Summary scatter plotting subprocess failed with return code {completed.returncode}."
+        if completed.returncode < 0:
+            message += f" Signal {-completed.returncode} terminated the subprocess."
+        return failed_summary_scatter_plot(run_dir, message, completed.returncode)
+    if not output_path.exists():
+        return failed_summary_scatter_plot(
+            run_dir,
+            "Summary scatter plotting subprocess finished without writing its output JSON.",
+            completed.returncode,
+        )
+
+    try:
+        output_payload = json.loads(output_path.read_text(encoding="utf-8"))
+        return output_payload["scatter_plot"], output_payload["scatter_plot_variations"]
+    except Exception as exc:
+        return failed_summary_scatter_plot(
+            run_dir,
+            f"Could not read summary scatter plotting output JSON: {exc}",
+            completed.returncode,
+        )
+
+
+def resolve_plot_only_run_dir(args: argparse.Namespace, output_dir: Path) -> Path:
+    plot_only_value = args.plot_only
+    if plot_only_value:
+        requested = Path(str(plot_only_value))
+        if requested.is_absolute():
+            return requested.resolve()
+        candidates = [output_dir / requested, REPO_ROOT / requested]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate.resolve()
+        return candidates[0].resolve()
+
+    if args.run_name:
+        return (output_dir / str(args.run_name)).resolve()
+
+    run_dirs = [path for path in output_dir.iterdir() if path.is_dir()]
+    if not run_dirs:
+        raise RuntimeError(f"No bias-study run directories found in {output_dir}")
+    return max(run_dirs, key=lambda path: (path.stat().st_mtime, path.name)).resolve()
+
+
+def load_existing_run_results(run_dir: Path) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for summary_path in sorted(run_dir.rglob("summary.json")):
+        if summary_path.parent == run_dir:
+            continue
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("job_id") and payload.get("method"):
+            results.append(payload)
+    return results
+
+
+def first_metadata_value(results: list[dict[str, Any]], key: str, default: Any = None) -> Any:
+    for result in results:
+        value = (result.get("metadata") or {}).get(key)
+        if value is not None:
+            return value
+    return default
+
+
+def ordered_unique(values: list[Any]) -> list[Any]:
+    unique: list[Any] = []
+    seen: set[Any] = set()
+    for value in values:
+        if value in seen:
+            continue
+        unique.append(value)
+        seen.add(value)
+    return unique
+
+
+def infer_plot_only_args(
+    args: argparse.Namespace,
+    run_dir: Path,
+    results: list[dict[str, Any]],
+    existing_summary: dict[str, Any] | None,
+) -> None:
+    existing_summary = existing_summary or {}
+    fit_results = [result for result in results if result.get("method") == "MultiDimFit"]
+    dataset_strategies = ordered_unique(
+        [
+            str((result.get("metadata") or {}).get("dataset_strategy", "toys"))
+            for result in fit_results
+        ]
+    ) or list(existing_summary.get("dataset_strategies", [])) or [str(args.dataset_strategy)]
+    args.dataset_strategies = tuple(dataset_strategies)
+    args.dataset_strategy = dataset_strategies[0]
+
+    injected_values = sorted(
+        {
+            float(value)
+            for result in fit_results
+            for value in [(result.get("metadata") or {}).get("injected_r")]
+            if value is not None
+        }
+    )
+    if injected_values:
+        args.injections = tuple(injected_values)
+    elif existing_summary.get("injections"):
+        args.injections = tuple(float(value) for value in existing_summary["injections"])
+
+    args.mass = str(first_metadata_value(results, "mass", existing_summary.get("mass", args.mass)))
+    args.toys = int(first_metadata_value(fit_results, "toys", existing_summary.get("toys", args.toys)))
+    args.injection_mode = str(
+        first_metadata_value(fit_results, "injection_mode", existing_summary.get("injection_mode", args.injection_mode))
+    )
+    args.pdf_index_name = str(
+        first_metadata_value(fit_results, "pdf_index_name", existing_summary.get("pdf_index_name", args.pdf_index_name))
+    )
+    args.poi_min = float(
+        first_metadata_value(fit_results, "requested_poi_min", existing_summary.get("requested_poi_min", args.poi_min))
+    )
+    args.poi_max = float(
+        first_metadata_value(fit_results, "requested_poi_max", existing_summary.get("requested_poi_max", args.poi_max))
+    )
+    args.robust_fit = bool(
+        first_metadata_value(fit_results, "robust_fit", existing_summary.get("robust_fit", args.robust_fit))
+    )
+    args.bias_pull_threshold = float(existing_summary.get("bias_pull_threshold", args.bias_pull_threshold))
+    args.pull_width_threshold = float(existing_summary.get("pull_width_threshold", args.pull_width_threshold))
+    args.annotate_scatter_outliers = bool(
+        existing_summary.get("annotate_scatter_outliers", args.annotate_scatter_outliers)
+    )
+
+    datacard = existing_summary.get("datacard") or args.datacard
+    args.datacard = str(Path(datacard).resolve())
+    args.run_name = run_dir.name
+
+
+def infer_processes_for_plot_only(
+    args: argparse.Namespace,
+    results: list[dict[str, Any]],
+    existing_summary: dict[str, Any] | None,
+) -> DatacardProcesses:
+    existing_summary = existing_summary or {}
+    datacard_path = Path(args.datacard)
+    if datacard_path.exists():
+        try:
+            return parse_datacard_processes(datacard_path)
+        except Exception:
+            pass
+
+    signals = list(existing_summary.get("signals", []))
+    backgrounds = list(existing_summary.get("backgrounds", []))
+    if not signals:
+        for result in results:
+            metadata = result.get("metadata") or {}
+            for process_name in metadata.get("target_processes", []) or []:
+                signals.append(str(process_name))
+            for poi_name in metadata.get("all_pois", []) or []:
+                poi_text = str(poi_name)
+                if poi_text.startswith("r_") and not poi_text.endswith("_grouped"):
+                    signals.append(poi_text[2:])
+    return DatacardProcesses(signals=ordered_unique(signals), backgrounds=ordered_unique(backgrounds))
+
+
+def infer_schemes_for_plot_only(
+    results: list[dict[str, Any]],
+    existing_summary: dict[str, Any] | None,
+) -> tuple[PoiScheme, ...]:
+    existing_summary = existing_summary or {}
+    workspace_metadata_by_scheme = {
+        str((result.get("metadata") or {}).get("scheme")): result.get("metadata") or {}
+        for result in results
+        if result.get("method") == "text2workspace.py" and (result.get("metadata") or {}).get("scheme")
+    }
+    existing_schemes = {
+        str(scheme.get("name")): scheme
+        for scheme in existing_summary.get("schemes", [])
+        if isinstance(scheme, dict) and scheme.get("name")
+    }
+    scheme_names = ordered_unique(
+        [
+            str((result.get("metadata") or {}).get("scheme"))
+            for result in results
+            if (result.get("metadata") or {}).get("scheme")
+        ]
+    )
+    schemes: list[PoiScheme] = []
+    for scheme_name in scheme_names:
+        workspace_metadata = workspace_metadata_by_scheme.get(scheme_name, {})
+        existing_scheme = existing_schemes.get(scheme_name, {})
+        all_pois = list(workspace_metadata.get("pois") or existing_scheme.get("pois") or [])
+        poi_maps = tuple(workspace_metadata.get("poi_maps") or existing_scheme.get("poi_maps") or [])
+        targets: list[PoiTarget] = []
+        for result in results:
+            metadata = result.get("metadata") or {}
+            if metadata.get("scheme") != scheme_name or not metadata.get("target_poi"):
+                continue
+            target = PoiTarget(
+                label=str(metadata.get("target_label", metadata["target_poi"])),
+                poi=str(metadata["target_poi"]),
+                processes=tuple(str(process) for process in metadata.get("target_processes", []) or []),
+            )
+            if target not in targets:
+                targets.append(target)
+            for poi_name in metadata.get("all_pois", []) or []:
+                all_pois.append(str(poi_name))
+        if not all_pois:
+            all_pois = [target.poi for target in targets]
+        schemes.append(
+            PoiScheme(
+                name=scheme_name,
+                title=str(workspace_metadata.get("scheme_title", existing_scheme.get("title", scheme_name))),
+                description=str(
+                    workspace_metadata.get(
+                        "scheme_description",
+                        existing_scheme.get("description", "Reconstructed from existing fit summaries."),
+                    )
+                ),
+                poi_maps=poi_maps,
+                targets=tuple(targets),
+                all_poi_names=tuple(ordered_unique(all_pois)),
+            )
+        )
+    return tuple(schemes)
+
+
+def infer_truth_pdf_metadata_for_plot_only(
+    results: list[dict[str, Any]],
+    existing_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    existing_summary = existing_summary or {}
+    if existing_summary.get("truth_pdf_metadata"):
+        return dict(existing_summary["truth_pdf_metadata"])
+    truths: dict[int, dict[str, Any]] = {}
+    for result in results:
+        metadata = result.get("metadata") or {}
+        if metadata.get("truth_pdf_index") is None:
+            continue
+        index = int(metadata["truth_pdf_index"])
+        truths[index] = {
+            "index": index,
+            "name": str(metadata.get("truth_pdf", "")),
+            "family": str(metadata.get("truth_pdf_family", "")),
+            "label": str(metadata.get("truth_pdf_label", f"pdf{index}")),
+        }
+    return {"selected_truth_pdfs": [truths[index] for index in sorted(truths)]}
+
+
+def run_plot_only(args: argparse.Namespace, output_dir: Path) -> int:
+    run_dir = resolve_plot_only_run_dir(args, output_dir)
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise FileNotFoundError(f"Plot-only run directory does not exist: {run_dir}")
+    top_summary_path = run_dir / "summary.json"
+    existing_summary = None
+    if top_summary_path.exists():
+        existing_summary = json.loads(top_summary_path.read_text(encoding="utf-8"))
+    results = load_existing_run_results(run_dir)
+    fit_results = [result for result in results if result.get("method") == "MultiDimFit"]
+    if not fit_results:
+        raise RuntimeError(f"No existing MultiDimFit job summaries found under {run_dir}")
+
+    infer_plot_only_args(args, run_dir, results, existing_summary)
+    processes = infer_processes_for_plot_only(args, results, existing_summary)
+    schemes = infer_schemes_for_plot_only(results, existing_summary)
+    truth_pdf_metadata = infer_truth_pdf_metadata_for_plot_only(results, existing_summary)
+    experiments = [experiment_summary_from_fit(result, index) for index, result in enumerate(fit_results, start=1)]
+    scatter_plot, scatter_plot_variations = make_summary_scatter_plots_isolated(
+        experiments,
+        run_dir,
+        args.bias_pull_threshold,
+        args.annotate_scatter_outliers,
+    )
+    write_run_summary(
+        run_dir,
+        output_dir,
+        args,
+        processes,
+        schemes,
+        truth_pdf_metadata,
+        results,
+        scatter_plot,
+        scatter_plot_variations,
+    )
+    log(f"Rebuilt plot-only summary: {repo_relative(run_dir / 'summary.json')}")
+    log(f"Global summary: {repo_relative(output_dir / 'bias_study.html')}")
+    return 0
+
+
 def prepare_run_dir(output_dir: Path, run_name: str | None) -> Path:
     if run_name is None:
         run_name = dt.datetime.now(dt.timezone.utc).strftime("run_%Y%m%d_%H%M%S")
@@ -2427,6 +2803,12 @@ def write_run_summary(
     <section class="card"><h2>Global Pull Scatter</h2>
       <p class="muted">{html_escape(scatter_plot.get('note', ''))}</p>
       <p><img src="{html_escape(scatter_href)}" alt="pull mean and sigma scatter"></p>
+    </section>
+        """
+    elif scatter_plot:
+        scatter_section = f"""
+    <section class="card"><h2>Global Pull Scatter</h2>
+      <p class="muted">Plotting failed: {html_escape(scatter_plot.get('message', '-'))}</p>
     </section>
         """
     variation_plots = scatter_plot_variations or {}
@@ -2591,6 +2973,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Run subdirectory name. Defaults to a UTC timestamp.",
     )
+    parser.add_argument(
+        "--plot-only",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="RUN_DIR",
+        help=(
+            "Rebuild only the top-level summary and scatter plots from existing per-job summaries. "
+            "Optionally pass a run directory; without a value, --run-name is used, or the latest run under --output-dir."
+        ),
+    )
     parser.add_argument("--mass", default=DEFAULT_MASS, help="Mass label passed to Combine.")
     parser.add_argument(
         "--poi-scheme",
@@ -2752,11 +3145,14 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     validate_args(args)
-    datacard_path = Path(args.datacard).resolve()
-    args.datacard = str(datacard_path)
-    ensure_file(datacard_path, "Input datacard not found")
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    args.datacard = str(Path(args.datacard).resolve())
+    if args.plot_only is not None:
+        return run_plot_only(args, output_dir)
+
+    datacard_path = Path(args.datacard).resolve()
+    ensure_file(datacard_path, "Input datacard not found")
     run_dir = prepare_run_dir(output_dir, args.run_name)
     processes = parse_datacard_processes(datacard_path)
     schemes = selected_schemes(args, processes.signals)
@@ -2888,7 +3284,7 @@ def main() -> int:
         experiment_summary_from_fit(result, index)
         for index, result in enumerate(analyzed_fit_results, start=1)
     ]
-    scatter_plot, scatter_plot_variations = make_summary_scatter_plots(
+    scatter_plot, scatter_plot_variations = make_summary_scatter_plots_isolated(
         experiments,
         run_dir,
         args.bias_pull_threshold,
