@@ -37,8 +37,8 @@ DEFAULT_TOYS = 1000
 DEFAULT_DATASET_STRATEGY = "toys"
 DATASET_STRATEGIES = ("toys", "asimov")
 DEFAULT_POI_INITIAL = 1.0
-DEFAULT_POI_MIN = -10000.0
-DEFAULT_POI_MAX = 10000.0
+DEFAULT_POI_MIN = -100.0
+DEFAULT_POI_MAX = 100.0
 DEFAULT_PULL_RANGE = (-5.0, 5.0)
 DEFAULT_PULL_BINS = 40
 DEFAULT_MIN_FIT_ENTRIES = 3
@@ -216,7 +216,7 @@ def strategy_dataset_count(dataset_strategy: str, args: argparse.Namespace) -> i
 
 def effective_poi_range(args: argparse.Namespace, injected_r: float) -> tuple[float, float]:
     requested_limit = max(abs(float(args.poi_min)), abs(float(args.poi_max)))
-    injection_limit = 10.0 * abs(float(injected_r))
+    injection_limit = abs(float(injected_r)) if abs(float(injected_r)) > 100.0 else 0.0
     symmetric_limit = max(1.0, requested_limit, injection_limit)
     return -symmetric_limit, symmetric_limit
 
@@ -611,7 +611,7 @@ def build_dataset_generation_job(
             "seed": seed,
             "requested_poi_min": args.poi_min,
             "requested_poi_max": args.poi_max,
-            "poi_range_policy": "per-injection symmetric max(requested_limit, 10 * abs(injected_r), 1)",
+            "poi_range_policy": "per-injection symmetric max(requested_limit, abs(injected_r) if abs(injected_r) > 100 else 0, 1)",
             "poi_min": poi_min,
             "poi_max": poi_max,
             "pdf_index_name": args.pdf_index_name,
@@ -725,7 +725,7 @@ def build_fit_job(
             "pseudo_datasets": strategy_dataset_count(dataset_strategy, args),
             "requested_poi_min": args.poi_min,
             "requested_poi_max": args.poi_max,
-            "poi_range_policy": "per-injection symmetric max(requested_limit, 10 * abs(injected_r), 1)",
+            "poi_range_policy": "per-injection symmetric max(requested_limit, abs(injected_r) if abs(injected_r) > 100 else 0, 1)",
             "poi_min": poi_min,
             "poi_max": poi_max,
             "robust_fit": bool(args.robust_fit),
@@ -2172,7 +2172,7 @@ def write_run_summary(
         "fit_pdf_mode": "free",
         "fit_pdf_index": None,
         "pdf_index_name": args.pdf_index_name,
-        "poi_range_policy": "per-injection symmetric max(requested_limit, 10 * abs(injected_r), 1)",
+        "poi_range_policy": "per-injection symmetric max(requested_limit, abs(injected_r) if abs(injected_r) > 100 else 0, 1)",
         "requested_poi_min": args.poi_min,
         "requested_poi_max": args.poi_max,
         "poi_min": args.poi_min,
@@ -2233,7 +2233,7 @@ def write_run_summary(
         ["Injections", ", ".join(format_number(value) for value in args.injections)],
         ["Injection mode", args.injection_mode],
         ["Requested POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
-        ["Job POI range policy", "per-injection symmetric max(requested limit, 10 x abs(injected r), 1)"],
+        ["Job POI range policy", "per-injection symmetric max(requested limit, abs(injected r) above 100, 1)"],
         ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
         ["Fit PDF mode", "free-floating pdfindex"],
         ["Robust fit", "enabled" if args.robust_fit else "disabled"],
