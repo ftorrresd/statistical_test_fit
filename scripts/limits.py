@@ -35,9 +35,11 @@ DEFAULT_QUANTILES = (0.16, 0.5, 0.84)
 DEFAULT_POI_MIN = 0.0
 DEFAULT_POI_MAX = 1_000_000.0
 DEFAULT_POI_INITIAL = 1.0
+DEFAULT_HYBRID_FORK = 4
+DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY = 2
+DEFAULT_CMIN_OLD_ROBUST_MINIMIZE = 1
 HYBRID_RANGE_ASYMPTOTIC_SCALE = 10.0
 HYBRID_RETRY_RANGE_SCALE = 10.0
-HYBRID_RETRY_MINIMIZER_STRATEGY = 2
 DEFAULT_HYBRID_RANGE_MAX_RETRIES = 3
 RETRYABLE_HYBRID_WARNING_PATTERNS = (
     "[WARNING] Minimization finished with status",
@@ -158,6 +160,15 @@ def safe_name(value: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
     value = value.strip("._")
     return value or "unnamed"
+
+
+def common_minimizer_options() -> list[str]:
+    return [
+        "--cminDefaultMinimizerStrategy",
+        str(DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY),
+        "--cminOldRobustMinimize",
+        str(DEFAULT_CMIN_OLD_ROBUST_MINIMIZE),
+    ]
 
 
 def is_int_token(value: str) -> bool:
@@ -424,9 +435,12 @@ def parameter_ranges_argument(
     pois: tuple[str, ...],
     lower: float,
     upper: float,
+    upper_by_poi: dict[str, float] | None = None,
 ) -> str:
+    upper_by_poi = upper_by_poi or {}
     return ":".join(
-        f"{poi}={format_number(lower)},{format_number(upper)}" for poi in pois
+        f"{poi}={format_number(lower)},{format_number(upper_by_poi.get(poi, upper))}"
+        for poi in pois
     )
 
 
@@ -513,6 +527,7 @@ def build_asymptotic_job(
         "-n",
         f".asymptotic_blind.{safe_name(target.label)}",
     ]
+    command.extend(common_minimizer_options())
     return CommandJob(
         job_id=f"asymptotic_{scheme.name}_{safe_name(target.label)}",
         kind="combine",
@@ -530,6 +545,8 @@ def build_asymptotic_job(
             "poi_min": poi_min,
             "poi_max": poi_max,
             "range_source": "fixed",
+            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "cmin_old_robust_minimize": DEFAULT_CMIN_OLD_ROBUST_MINIMIZE,
             "blindness": [
                 "AsymptoticLimits is run with --run blind.",
                 "Combine therefore uses the pre-fit model state for the expected Asimov calculation instead of fitting observed data.",
@@ -555,12 +572,13 @@ def build_hybrid_job(
     r_rel_acc: float | None,
     r_abs_acc: float | None,
     save_hybrid_result: bool,
+    fork: int,
+    default_poi_max: float,
     range_source: str = "fixed",
     range_reference: dict[str, Any] | None = None,
     attempt: int = 0,
     retry_of: str | None = None,
     retry_reasons: tuple[str, ...] = (),
-    cmin_default_minimizer_strategy: int | None = None,
 ) -> CommandJob:
     base_cwd = (
         run_dir
@@ -588,12 +606,19 @@ def build_hybrid_job(
         "--setParameters",
         set_parameters_argument(scheme.all_pois, 0.0),
         "--setParameterRanges",
-        parameter_ranges_argument(scheme.all_pois, poi_min, poi_max),
+        parameter_ranges_argument(
+            scheme.all_pois,
+            poi_min,
+            default_poi_max,
+            {target.poi: poi_max},
+        ),
         "-m",
         mass,
         "-n",
         f".hybrid_blind.{safe_name(target.label)}.{quantile_tag(quantile)}{retry_suffix}",
     ]
+    command.extend(common_minimizer_options())
+    command.extend(["--fork", str(fork)])
     if save_hybrid_result:
         command.append("--saveHybridResult")
     if hybrid_toys is not None:
@@ -604,13 +629,6 @@ def build_hybrid_job(
         command.extend(["--rRelAcc", format_number(r_rel_acc)])
     if r_abs_acc is not None:
         command.extend(["--rAbsAcc", format_number(r_abs_acc)])
-    if cmin_default_minimizer_strategy is not None:
-        command.extend(
-            [
-                "--cminDefaultMinimizerStrategy",
-                str(cmin_default_minimizer_strategy),
-            ]
-        )
 
     return CommandJob(
         job_id=f"hybrid_lhc_{scheme.name}_{safe_name(target.label)}_{quantile_tag(quantile)}"
@@ -630,6 +648,8 @@ def build_hybrid_job(
             "quantile": quantile,
             "poi_min": poi_min,
             "poi_max": poi_max,
+            "default_poi_max": default_poi_max,
+            "profiled_poi_max": default_poi_max,
             "range_source": range_source,
             "range_reference": range_reference,
             "attempt": attempt,
@@ -639,7 +659,9 @@ def build_hybrid_job(
             "cls_acc": cls_acc,
             "r_rel_acc": r_rel_acc,
             "r_abs_acc": r_abs_acc,
-            "cmin_default_minimizer_strategy": cmin_default_minimizer_strategy,
+            "fork": fork,
+            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "cmin_old_robust_minimize": DEFAULT_CMIN_OLD_ROBUST_MINIMIZE,
             "blindness": [
                 "HybridNew uses --LHCmode LHC-limits for LHC-style CLs limits.",
                 "HybridNew is run directly with --expectedFromGrid for the requested quantile.",
@@ -738,7 +760,14 @@ def job_manifest_label(job: CommandJob) -> str:
     if metadata.get("quantile") is not None:
         details.append(f"quantile={metadata['quantile']}")
     if metadata.get("poi_max") is not None:
-        details.append(f"range=0,{format_number(float(metadata['poi_max']))}")
+        details.append(f"target_range=0,{format_number(float(metadata['poi_max']))}")
+    if (
+        metadata.get("profiled_poi_max") is not None
+        and metadata.get("profiled_poi_max") != metadata.get("poi_max")
+    ):
+        details.append(
+            f"profiled_range=0,{format_number(float(metadata['profiled_poi_max']))}"
+        )
     if metadata.get("target_processes"):
         details.append("processes=" + ",".join(metadata["target_processes"]))
     return "; ".join(details) if details else "preparation"
@@ -1157,10 +1186,12 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
         ["Working directory", result.get("cwd_repo_relative", result.get("cwd", "-"))],
     ]
     if result.get("method") == "HybridNew":
+        profiled_poi_max = metadata.get("profiled_poi_max", metadata.get("poi_max", DEFAULT_POI_MAX))
         status_rows.extend(
             [
                 ["Retry", retry_summary_text(result)],
-                ["POI range", f"0 to {format_number(float(metadata.get('poi_max', DEFAULT_POI_MAX)))}"],
+                ["Target POI range", f"0 to {format_number(float(metadata.get('poi_max', DEFAULT_POI_MAX)))}"],
+                ["Profiled POI range", f"0 to {format_number(float(profiled_poi_max))}"],
             ]
         )
     logs_rows = [
@@ -1254,7 +1285,8 @@ def hybrid_range_from_asymptotic_result(
         )
 
     return poi_max, {
-        "strategy": "min(DEFAULT_POI_MAX, 10 * asymptotic_expected_limit)",
+        "strategy": "target POI max = min(DEFAULT_POI_MAX, 10 * asymptotic_expected_limit)",
+        "applies_to": "redefined target POI only",
         "asymptotic_job": result.get("job_id"),
         "asymptotic_quantile": quantile_key(quantile),
         "asymptotic_limit": asymptotic_limit,
@@ -1420,7 +1452,7 @@ def make_hybrid_retry_job(
             "previous_poi_max": previous_poi_max,
             "next_poi_max": next_poi_max,
             "scale": HYBRID_RETRY_RANGE_SCALE,
-            "cmin_default_minimizer_strategy": HYBRID_RETRY_MINIMIZER_STRATEGY,
+            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
             "reasons": reasons,
         }
     )
@@ -1440,12 +1472,13 @@ def make_hybrid_retry_job(
         args.r_rel_acc,
         args.r_abs_acc,
         not args.no_save_hybrid_result,
+        args.fork,
+        args.poi_max,
         range_source=str(metadata.get("range_source", "asymptotic")),
         range_reference=range_reference,
         attempt=attempt + 1,
         retry_of=str(result.get("job_id")),
         retry_reasons=tuple(reasons),
-        cmin_default_minimizer_strategy=HYBRID_RETRY_MINIMIZER_STRATEGY,
     )
     update_attached_result_metadata(
         result,
@@ -1455,14 +1488,14 @@ def make_hybrid_retry_job(
             "retry_reasons": reasons,
             "retry_next_poi_max": next_poi_max,
             "retry_range_scale": HYBRID_RETRY_RANGE_SCALE,
-            "retry_cmin_default_minimizer_strategy": HYBRID_RETRY_MINIMIZER_STRATEGY,
+            "retry_cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
         },
     )
     log(
         "Submitting immediate HybridNew retry after retryable warning: "
         f"{result.get('job_id')} -> {retry_job.job_id}; "
         f"range 0,{format_number(previous_poi_max)} -> 0,{format_number(next_poi_max)}; "
-        f"--cminDefaultMinimizerStrategy {HYBRID_RETRY_MINIMIZER_STRATEGY}"
+        f"--cminDefaultMinimizerStrategy {DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY}"
     )
     log(f"     cwd: {repo_relative(retry_job.cwd)}")
     log(f"     command: {shlex.join(retry_job.command)}")
@@ -1586,6 +1619,8 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "quantile": metadata.get("quantile"),
         "poi_min": metadata.get("poi_min"),
         "poi_max": metadata.get("poi_max"),
+        "default_poi_max": metadata.get("default_poi_max"),
+        "profiled_poi_max": metadata.get("profiled_poi_max"),
         "range_source": metadata.get("range_source"),
         "range_reference": metadata.get("range_reference"),
         "attempt": metadata.get("attempt"),
@@ -1654,7 +1689,9 @@ def write_run_summary(
         "hybrid_range_from_asymptotic": args.hybrid_range_from_asymptotic,
         "hybrid_range_asymptotic_scale": HYBRID_RANGE_ASYMPTOTIC_SCALE,
         "hybrid_retry_range_scale": HYBRID_RETRY_RANGE_SCALE,
-        "hybrid_retry_cmin_default_minimizer_strategy": HYBRID_RETRY_MINIMIZER_STRATEGY,
+        "hybrid_fork": args.fork,
+        "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+        "cmin_old_robust_minimize": DEFAULT_CMIN_OLD_ROBUST_MINIMIZE,
         "hybrid_range_max_retries": args.hybrid_range_max_retries,
         "hybrid_retry_alerts": retry_alerts,
         "poi_min": args.poi_min,
@@ -1702,6 +1739,11 @@ def write_run_summary(
                 if result.get("metadata", {}).get("poi_max") is not None
                 else "-"
             ),
+            html_escape(
+                f"0 to {format_number(float(result.get('metadata', {}).get('profiled_poi_max')))}"
+                if result.get("metadata", {}).get("profiled_poi_max") is not None
+                else "-"
+            ),
             html_escape(retry_summary_text(result)),
             html_escape(
                 result.get(
@@ -1726,13 +1768,15 @@ def write_run_summary(
         ["Quick mode", "yes" if args.quick else "no"],
         [
             "Hybrid range strategy",
-            "asymptotic-derived per quantile"
+            "asymptotic-derived target POI per quantile"
             if args.hybrid_range_from_asymptotic
             else "fixed default range",
         ],
         ["Hybrid range max retries", args.hybrid_range_max_retries],
         ["Hybrid retry range scale", HYBRID_RETRY_RANGE_SCALE],
-        ["Hybrid retry minimizer strategy", HYBRID_RETRY_MINIMIZER_STRATEGY],
+        ["Hybrid fork", args.fork],
+        ["Minimizer strategy", DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY],
+        ["Old robust minimizer", DEFAULT_CMIN_OLD_ROBUST_MINIMIZE],
         ["POI scheme request", args.poi_scheme],
         ["Default POI range", f"{format_number(args.poi_min)} to {format_number(args.poi_max)}"],
         ["Quantiles", ", ".join(quantile_key(q) for q in args.quantiles)],
@@ -1742,8 +1786,10 @@ def write_run_summary(
       <ul>
         <li>AsymptoticLimits jobs use <code>--run blind</code>.</li>
         <li>HybridNew jobs use <code>--expectedFromGrid</code> for the requested expected quantiles.</li>
-        <li>When <code>--hybrid-range-from-asymptotic</code> is used, HybridNew ranges are computed independently for each target and quantile as <code>0,min(1000000,10*r_asymp)</code>.</li>
-        <li>Retryable HybridNew minimization warnings scale the r range by 10 and immediately re-enter the job queue with <code>--cminDefaultMinimizerStrategy 2</code> when that job finishes, until the retry cap is reached.</li>
+        <li>HybridNew jobs pass <code>--fork</code> with the configured fork count.</li>
+        <li>All Combine limit jobs pass <code>--cminDefaultMinimizerStrategy 2</code> and <code>--cminOldRobustMinimize 1</code>.</li>
+        <li>When <code>--hybrid-range-from-asymptotic</code> is used, only the <code>--redefineSignalPOIs</code> target gets <code>0,min(1000000,10*r_asymp)</code>; profiled POIs keep the default range.</li>
+        <li>Retryable HybridNew minimization warnings scale the r range by 10 and immediately re-enter the job queue when that job finishes, until the retry cap is reached.</li>
         <li>HybridNew jobs do not pass <code>--dataset</code> or <code>--bypassFrequentistFit</code>.</li>
       </ul>
     """
@@ -1774,7 +1820,7 @@ def write_run_summary(
     <section class="card"><h2>Summary</h2>{html_table_raw(['Field', 'Value'], [[html_escape(k), v if str(v).startswith('<a ') else html_escape(v)] for k, v in summary_rows])}</section>
     <section class="card"><h2>Limit Policy</h2>{policy_html}</section>
     {retry_alert_section}
-    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'POI Range', 'Retry', 'Duration', 'Summary'], job_rows)}</section>
+    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'Target POI Range', 'Profiled POI Range', 'Retry', 'Duration', 'Summary'], job_rows)}</section>
     """
     readme_html.write_text(html_document("Blind Limit Run", body), encoding="utf-8")
 
@@ -1841,7 +1887,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Maximum number of 10x-r-range HybridNew retries after retryable "
             "minimization warnings in --hybrid-range-from-asymptotic mode. "
-            "Each retry also passes --cminDefaultMinimizerStrategy 2."
+            "All limit jobs pass --cminDefaultMinimizerStrategy 2."
         ),
     )
     parser.add_argument(
@@ -1867,6 +1913,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Optional -T value for HybridNew.",
+    )
+    parser.add_argument(
+        "--fork",
+        type=int,
+        default=DEFAULT_HYBRID_FORK,
+        help="HybridNew --fork value. Use 0 to disable Combine-internal forking.",
     )
     parser.add_argument(
         "--cls-acc",
@@ -1911,6 +1963,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.hybrid_range_max_retries < 0:
         raise ValueError("--hybrid-range-max-retries must be non-negative")
+    if args.fork < 0:
+        raise ValueError("--fork must be non-negative")
     apply_quick_mode(args)
     datacard_path = Path(args.datacard).resolve()
     args.datacard = str(datacard_path)
@@ -2003,10 +2057,11 @@ def main() -> int:
                             quantile,
                         )
                         log(
-                            "HybridNew range from asymptotic: "
+                            "HybridNew target range from asymptotic: "
                             f"{scheme.name}/{target.poi}/{quantile_key(quantile)} "
                             f"0 to {format_number(poi_max)} "
-                            f"from r_asymp={format_number(float(range_reference['asymptotic_limit']))}"
+                            f"from r_asymp={format_number(float(range_reference['asymptotic_limit']))}; "
+                            f"profiled POIs keep 0 to {format_number(args.poi_max)}"
                         )
                         hybrid_jobs.append(
                             build_hybrid_job(
@@ -2024,6 +2079,8 @@ def main() -> int:
                                 args.r_rel_acc,
                                 args.r_abs_acc,
                                 not args.no_save_hybrid_result,
+                                args.fork,
+                                args.poi_max,
                                 range_source="asymptotic",
                                 range_reference=range_reference,
                             )
@@ -2063,6 +2120,8 @@ def main() -> int:
                                 args.r_rel_acc,
                                 args.r_abs_acc,
                                 not args.no_save_hybrid_result,
+                                args.fork,
+                                args.poi_max,
                             )
                         )
 
