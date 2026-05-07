@@ -37,8 +37,8 @@ DEFAULT_TOYS = 1000
 DEFAULT_DATASET_STRATEGY = "toys"
 DATASET_STRATEGIES = ("toys", "asimov")
 DEFAULT_POI_INITIAL = 1.0
-DEFAULT_POI_MIN = -100.0
-DEFAULT_POI_MAX = 100.0
+DEFAULT_POI_MIN = -1_000_000.0
+DEFAULT_POI_MAX = 1_000_000.0
 DEFAULT_PULL_RANGE = (-5.0, 5.0)
 DEFAULT_PULL_BINS = 40
 DEFAULT_MIN_FIT_ENTRIES = 3
@@ -227,9 +227,8 @@ def strategy_dataset_count(dataset_strategy: str, args: argparse.Namespace) -> i
     return int(args.toys) if dataset_strategy == "toys" else 1
 
 
-def effective_poi_range(injected_r: float) -> tuple[float, float]:
-    symmetric_limit = max(1.0, abs(float(injected_r))) * 100.0
-    return -symmetric_limit, symmetric_limit
+def effective_poi_range(args: argparse.Namespace) -> tuple[float, float]:
+    return float(args.poi_min), float(args.poi_max)
 
 
 def is_int_token(value: str) -> bool:
@@ -597,7 +596,7 @@ def build_dataset_generation_job(
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     toys_argument = strategy_toys_argument(dataset_strategy, args)
-    poi_min, poi_max = effective_poi_range(injected_r)
+    poi_min, poi_max = effective_poi_range(args)
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -667,7 +666,7 @@ def build_dataset_generation_job(
             "seed": seed,
             "requested_poi_min": args.poi_min,
             "requested_poi_max": args.poi_max,
-            "poi_range_policy": "per-injection symmetric +/- max(1, abs(injected_r)) * 100",
+            "poi_range_policy": "fixed requested range",
             "poi_min": poi_min,
             "poi_max": poi_max,
             "pdf_index_name": args.pdf_index_name,
@@ -702,7 +701,7 @@ def build_fit_job(
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     inputs.append(copy_file(toys_path, cwd / LOCAL_TOYS_NAME))
     toys_argument = strategy_toys_argument(dataset_strategy, args)
-    poi_min, poi_max = effective_poi_range(injected_r)
+    poi_min, poi_max = effective_poi_range(args)
     scanned_pois = (target.poi,)
     profiled_pois = tuple(poi for poi in scheme.all_pois if poi not in scanned_pois)
     set_parameters = set_parameters_argument(
@@ -791,7 +790,7 @@ def build_fit_job(
             "pseudo_datasets": strategy_dataset_count(dataset_strategy, args),
             "requested_poi_min": args.poi_min,
             "requested_poi_max": args.poi_max,
-            "poi_range_policy": "per-injection symmetric +/- max(1, abs(injected_r)) * 100",
+            "poi_range_policy": "fixed requested range",
             "poi_min": poi_min,
             "poi_max": poi_max,
             "quick": bool(args.quick),
@@ -2865,7 +2864,7 @@ def write_run_summary(
         "fit_pdf_mode": "free",
         "fit_pdf_index": None,
         "pdf_index_name": args.pdf_index_name,
-        "poi_range_policy": "per-injection symmetric +/- max(1, abs(injected_r)) * 100",
+        "poi_range_policy": "fixed requested range",
         "requested_poi_min": args.poi_min,
         "requested_poi_max": args.poi_max,
         "poi_min": args.poi_min,
@@ -2930,7 +2929,7 @@ def write_run_summary(
         ["Injections by scheme", format_injections_by_scheme(scheme_injection_map)],
         ["Injection mode", args.injection_mode],
         ["Requested POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
-        ["Job POI range policy", "per-injection symmetric +/- max(1, abs(injected r)) * 100"],
+        ["Job POI range policy", "fixed requested range"],
         ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
         ["Fit POI scan", "target POI only (-P target) with other signal POIs floating"],
         ["Fit PDF mode", "free-floating pdfindex"],
@@ -3061,7 +3060,7 @@ def write_run_summary(
     ]
     policy_note = """
       <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
-      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so the target POI, the other signal POIs, and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges use symmetric <code>+/- max(1, abs(injected r)) * 100</code>. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so the target POI, the other signal POIs, and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges use the fixed requested range. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0.</p>
     """
     body = f"""
     <h1>Bias Study Run</h1>
@@ -3207,13 +3206,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--poi-min",
         type=float,
         default=DEFAULT_POI_MIN,
-        help="Lower bound used when defining POIs in text2workspace.py. GenerateOnly and MultiDimFit jobs override this with +/- max(1, abs(injected r)) * 100.",
+        help="Lower bound used when defining POIs and running GenerateOnly/MultiDimFit jobs.",
     )
     parser.add_argument(
         "--poi-max",
         type=float,
         default=DEFAULT_POI_MAX,
-        help="Upper bound used when defining POIs in text2workspace.py. GenerateOnly and MultiDimFit jobs override this with +/- max(1, abs(injected r)) * 100.",
+        help="Upper bound used when defining POIs and running GenerateOnly/MultiDimFit jobs.",
     )
     parser.add_argument(
         "--injection-mode",
@@ -3373,7 +3372,7 @@ def main() -> int:
     log(f"Default injections: {format_injection_values(args.injections)}")
     log(f"Injections by scheme: {format_injections_by_scheme(scheme_injection_map)}")
     log(f"Requested POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
-    log("Job POI ranges use symmetric +/- max(1, abs(injected r)) * 100.")
+    log("Job POI ranges use the fixed requested range.")
     log(f"Dataset strategies: {', '.join(args.dataset_strategies)}")
     if "toys" in args.dataset_strategies:
         log(f"Toys per toy experiment: {args.toys}")
