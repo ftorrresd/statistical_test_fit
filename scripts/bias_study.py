@@ -37,7 +37,7 @@ DEFAULT_INJECTIONS = (0.0, 10.0, 100.0, 1000.0)
 DEFAULT_TOYS = 1000
 DEFAULT_DATASET_STRATEGY = "toys"
 DATASET_STRATEGIES = ("toys", "asimov")
-DEFAULT_PDF_TARGET_STRATEGY = "both"
+DEFAULT_PDF_TARGET_STRATEGY = "floating"
 PDF_TARGET_STRATEGIES = ("fixed", "floating", "both")
 DEFAULT_POI_INITIAL = 1.0
 DEFAULT_POI_MIN = -1_000_000.0
@@ -2859,7 +2859,7 @@ def make_pdf_target_summary_heatmap(
     cmap = plt.get_cmap("RdBu_r").copy()
     cmap.set_bad("#e5e7eb")
     norm = TwoSlopeNorm(vmin=color_scale_min, vcenter=0.0, vmax=color_scale_max)
-    failed_color = "#22c55e"
+    failed_color = "#000000"
     failed_cmap = ListedColormap([failed_color])
     failed_cmap.set_bad((1.0, 1.0, 1.0, 0.0))
 
@@ -4199,7 +4199,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PDF_TARGET_STRATEGY,
         help=(
             "How to handle the target PDF during MultiDimFit: `floating` keeps pdfindex profiled, "
-            "`fixed` runs one fit per fixed target pdfindex, and `both` runs both strategies."
+            "`fixed` runs one fit per fixed target pdfindex, and `both` runs both strategies. "
+            "Default is `floating`."
         ),
     )
     parser.add_argument(
