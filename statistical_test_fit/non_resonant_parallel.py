@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .bkg_pdf_families import BkgPdfFamily
 from .parallel_utils import ParallelJob
@@ -10,7 +10,7 @@ class NonResonantCandidateSpec:
     pdf_family: BkgPdfFamily
     scan_order: Optional[int]
     upsilon_params: Dict[str, float]
-    nbins: int
+    chi2_nbins: int
     input_file: str
     upsilon_mass_lower: float
     upsilon_mass_upper: float
@@ -56,7 +56,7 @@ class NonResonantCandidateResult:
 def build_non_resonant_candidate_specs(
     *,
     upsilon_params: Dict[str, float],
-    nbins: int,
+    chi2_nbins: int,
     input_file: str,
     upsilon_mass_lower: float,
     upsilon_mass_upper: float,
@@ -68,13 +68,15 @@ def build_non_resonant_candidate_specs(
     middle_upper: float,
     right_lower: float,
     right_upper: float,
+    chebychev_order_range: Tuple[int, int] = (3, 9),
+    bernstein_order_range: Tuple[int, int] = (3, 9),
 ) -> List[NonResonantCandidateSpec]:
     specs = [
         NonResonantCandidateSpec(
             pdf_family=BkgPdfFamily.JOHNSON,
             scan_order=None,
             upsilon_params=upsilon_params,
-            nbins=nbins,
+            chi2_nbins=chi2_nbins,
             input_file=input_file,
             upsilon_mass_lower=upsilon_mass_lower,
             upsilon_mass_upper=upsilon_mass_upper,
@@ -89,14 +91,19 @@ def build_non_resonant_candidate_specs(
         )
     ]
 
+    order_ranges = {
+        BkgPdfFamily.CHEBYCHEV: chebychev_order_range,
+        BkgPdfFamily.BERNSTEIN: bernstein_order_range,
+    }
     for family in (BkgPdfFamily.CHEBYCHEV, BkgPdfFamily.BERNSTEIN):
-        for order in range(3, 10):
+        start, stop = order_ranges[family]
+        for order in range(start, stop + 1):
             specs.append(
                 NonResonantCandidateSpec(
                     pdf_family=family,
                     scan_order=order,
                     upsilon_params=upsilon_params,
-                    nbins=nbins,
+                    chi2_nbins=chi2_nbins,
                     input_file=input_file,
                     upsilon_mass_lower=upsilon_mass_lower,
                     upsilon_mass_upper=upsilon_mass_upper,
@@ -234,7 +241,7 @@ def fit_non_resonant_candidate_job(
         boson_mass,
         outprefix=spec.key,
         pdf_family=spec.pdf_family,
-        nbins=spec.nbins,
+        nbins=spec.chi2_nbins,
         is_data=True,
         nfloatpars=test_bkg_pdf.n_float_params,
     )

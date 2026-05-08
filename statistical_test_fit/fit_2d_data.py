@@ -219,7 +219,8 @@ def _write_non_resonant_summary(
         "workspace_path": NON_RESONANT_WORKSPACE_PATH,
         "plots_dir": "plots/fit_2d_data",
         "input_file": "inputs/mass_Run2.root",
-        "nbins": args.nbins,
+        "plot_nbins": args.nbins,
+        "chi2_nbins": args.chi2_nbins,
         "workers": getattr(args, "workers", None),
         "use_cache": bool(args.use_cache),
         "strict_mode": bool(args.strict_mode),
@@ -404,7 +405,7 @@ def run_fit_2d_data(args: Namespace):
 
     candidate_specs = build_non_resonant_candidate_specs(
         upsilon_params=upsilon_params,
-        nbins=args.nbins,
+        chi2_nbins=args.chi2_nbins,
         input_file="inputs/mass_Run2.root",
         upsilon_mass_lower=upsilon_mass_lower,
         upsilon_mass_upper=upsilon_mass_upper,
@@ -416,6 +417,8 @@ def run_fit_2d_data(args: Namespace):
         middle_upper=middle_upper,
         right_lower=right_lower,
         right_upper=right_upper,
+        chebychev_order_range=tuple(args.chebychev_orders),
+        bernstein_order_range=tuple(args.bernstein_orders),
     )
     candidate_results = run_parallel_jobs(
         "Non-resonant candidate fits",

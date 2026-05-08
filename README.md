@@ -162,14 +162,18 @@ Useful examples:
 python3 scripts/non_resonant_background.py --use-cache
 python3 scripts/non_resonant_background.py --nbins 60
 python3 scripts/non_resonant_background.py --use-cache --strict-mode
+python3 scripts/non_resonant_background.py --chebychev-orders 5 12 --bernstein-orders 3 7
 ```
 
 CLI options:
 
-- `--nbins INT`: binning used in control and summary plots; default is `60`
+- `--nbins INT`: number of bins for diagnostic plots; default is `60`
+- `--chi2-nbins INT`: number of bins for chi-square goodness-of-fit computation; default is `60`
 - `--workers INT`: number of worker processes for the parallel background-candidate scan
 - `--use-cache`: reuse cached dimuon fit parameters (`upsilon_model_params.json`) instead of recomputing them
 - `--strict-mode`: abort if a family fails strict selection; the default is relaxed fallback to the best fit-quality-passing candidate
+- `--chebychev-orders START STOP`: inclusive order range for Chebychev polynomial candidates (default: `3 9`)
+- `--bernstein-orders START STOP`: inclusive order range for Bernstein polynomial candidates (default: `3 9`)
 
 `scripts/non_resonant_background.py` is the renamed `realdata.py` entrypoint and now only runs the real-data pieces:
 

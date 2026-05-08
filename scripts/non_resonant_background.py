@@ -22,7 +22,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Non-resonant background RooFit with a blinded signal region on real data."
     )
-    parser.add_argument("--nbins", type=int, default=60)
+    parser.add_argument("--nbins", type=int, default=60, help="Number of bins for diagnostic plots.")
+    parser.add_argument(
+        "--chi2-nbins", type=int, default=60, help="Number of bins for chi-square goodness-of-fit computation."
+    )
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--use-cache", default=False, action="store_true")
     parser.add_argument(
@@ -30,6 +33,22 @@ def main():
         action="store_true",
         default=False,
         help="Abort when a family fails strict selection instead of using the default relaxed fallback.",
+    )
+    parser.add_argument(
+        "--chebychev-orders",
+        type=int,
+        nargs=2,
+        default=[3, 9],
+        metavar=("START", "STOP"),
+        help="Inclusive order range for Chebychev polynomial candidates (default: 3 9).",
+    )
+    parser.add_argument(
+        "--bernstein-orders",
+        type=int,
+        nargs=2,
+        default=[3, 9],
+        metavar=("START", "STOP"),
+        help="Inclusive order range for Bernstein polynomial candidates (default: 3 9).",
     )
 
     args = parser.parse_args()
