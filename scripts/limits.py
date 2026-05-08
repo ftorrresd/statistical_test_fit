@@ -50,6 +50,8 @@ QUICK_R_ABS_ACC = 10.0
 WORKSPACE_OUTPUT_NAME = "multisignal_workspace.root"
 LOCAL_WORKSPACE_NAME = "workspace.root"
 LOCAL_DATACARD_NAME = "datacard.txt"
+LOCAL_BLIND_ASIMOV_NAME = "blind_asimov.root"
+BLIND_ASIMOV_DATASET = f"{LOCAL_BLIND_ASIMOV_NAME}:toys/toy_asimov"
 
 
 @dataclass(frozen=True)
@@ -484,12 +486,76 @@ def stage_common_combine_inputs(
     job_dir: Path,
     workspace_path: Path,
     datacard_path: Path,
+    blind_asimov_path: Path | None = None,
 ) -> list[dict[str, str]]:
     records = [
         copy_file(workspace_path, job_dir / LOCAL_WORKSPACE_NAME),
         copy_file(datacard_path, job_dir / LOCAL_DATACARD_NAME),
     ]
+    if blind_asimov_path is not None:
+        records.append(copy_file(blind_asimov_path, job_dir / LOCAL_BLIND_ASIMOV_NAME))
     return records
+
+
+def build_blind_asimov_job(
+    run_dir: Path,
+    scheme: PoiScheme,
+    mass: str,
+    workspace_path: Path,
+    datacard_path: Path,
+    poi_min: float,
+    poi_max: float,
+) -> CommandJob:
+    cwd = run_dir / scheme.name / "blind_asimov"
+    reset_directory(cwd)
+    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
+    command = [
+        "combine",
+        "-M",
+        "GenerateOnly",
+        LOCAL_WORKSPACE_NAME,
+        "-t",
+        "-1",
+        "--expectSignal",
+        "0",
+        "--saveToys",
+        "--toysFrequentist",
+        "--bypassFrequentistFit",
+        "--redefineSignalPOIs",
+        ",".join(scheme.all_pois),
+        "--setParameters",
+        set_parameters_argument(scheme.all_pois, 0.0),
+        "--setParameterRanges",
+        parameter_ranges_argument(scheme.all_pois, poi_min, poi_max),
+        "-m",
+        mass,
+        "-n",
+        f".blind_asimov.{scheme.name}",
+    ]
+    command.extend(common_minimizer_options())
+    return CommandJob(
+        job_id=f"blind_asimov_{scheme.name}",
+        kind="blind_asimov_generation",
+        method="GenerateOnly",
+        cwd=cwd,
+        command=tuple(command),
+        output_patterns=("higgsCombine*.root",),
+        inputs=tuple(inputs),
+        metadata={
+            "scheme": scheme.name,
+            "pois": list(scheme.all_pois),
+            "poi_min": poi_min,
+            "poi_max": poi_max,
+            "blind_asimov_dataset": "toys/toy_asimov",
+            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "blindness": [
+                "GenerateOnly uses -t -1 to create a pre-fit Asimov dataset.",
+                "All signal POIs are set to zero before generation.",
+                "--bypassFrequentistFit prevents fitting observed data before generation.",
+            ],
+            "mass": mass,
+        },
+    )
 
 
 def build_asymptotic_job(
@@ -499,12 +565,13 @@ def build_asymptotic_job(
     mass: str,
     workspace_path: Path,
     datacard_path: Path,
+    blind_asimov_path: Path,
     poi_min: float,
     poi_max: float,
 ) -> CommandJob:
     cwd = run_dir / scheme.name / "combine" / "asymptotic" / safe_name(target.label)
     reset_directory(cwd)
-    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
+    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path, blind_asimov_path)
     command = [
         "combine",
         "-M",
@@ -518,6 +585,8 @@ def build_asymptotic_job(
         set_parameters_argument(scheme.all_pois, 0.0),
         "--setParameterRanges",
         parameter_ranges_argument(scheme.all_pois, poi_min, poi_max),
+        "--dataset",
+        BLIND_ASIMOV_DATASET,
         "-m",
         mass,
         "-n",
@@ -541,10 +610,12 @@ def build_asymptotic_job(
             "poi_min": poi_min,
             "poi_max": poi_max,
             "range_source": "fixed",
+            "dataset_override": BLIND_ASIMOV_DATASET,
             "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
             "blindness": [
                 "AsymptoticLimits is run with --run blind.",
                 "Combine therefore uses the pre-fit model state for the expected Asimov calculation instead of fitting observed data.",
+                f"The command also overrides data_obs with {BLIND_ASIMOV_DATASET} as a guardrail.",
                 "Observed limits are not requested or extracted from this run.",
             ],
             "mass": mass,
@@ -560,6 +631,7 @@ def build_hybrid_job(
     mass: str,
     workspace_path: Path,
     datacard_path: Path,
+    blind_asimov_path: Path,
     poi_min: float,
     poi_max: float,
     hybrid_toys: int | None,
@@ -585,7 +657,7 @@ def build_hybrid_job(
     )
     cwd = base_cwd if attempt == 0 else base_cwd / f"retry_{attempt}"
     reset_directory(cwd)
-    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
+    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path, blind_asimov_path)
     retry_suffix = f".retry{attempt}" if attempt else ""
     command = [
         "combine",
@@ -596,6 +668,9 @@ def build_hybrid_job(
         "LHC-limits",
         "--expectedFromGrid",
         quantile_key(quantile),
+        "--dataset",
+        BLIND_ASIMOV_DATASET,
+        "--bypassFrequentistFit",
         "--redefineSignalPOIs",
         target.poi,
         "--setParameters",
@@ -656,11 +731,14 @@ def build_hybrid_job(
             "r_rel_acc": r_rel_acc,
             "r_abs_acc": r_abs_acc,
             "hint_method": hint_method,
+            "dataset_override": BLIND_ASIMOV_DATASET,
+            "bypass_frequentist_fit": True,
             "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
             "blindness": [
                 "HybridNew uses --LHCmode LHC-limits for LHC-style CLs limits.",
                 "HybridNew is run directly with --expectedFromGrid for the requested quantile.",
-                "No --dataset or --bypassFrequentistFit option is passed.",
+                f"data_obs is overridden with the blind pre-fit Asimov dataset {BLIND_ASIMOV_DATASET}.",
+                "--bypassFrequentistFit prevents fitting observed data before toy generation.",
             ],
             "mass": mass,
         },
@@ -1390,6 +1468,7 @@ def make_hybrid_retry_job(
     target_by_key: dict[tuple[str, str], PoiTarget],
     workspace_paths: dict[str, Path],
     staged_datacards: dict[str, Path],
+    blind_asimov_paths: dict[str, Path],
 ) -> CommandJob | None:
     reasons = hybrid_retry_reasons(result)
     if not reasons:
@@ -1463,6 +1542,7 @@ def make_hybrid_retry_job(
         args.mass,
         workspace_paths[scheme_name],
         staged_datacards[scheme_name],
+        blind_asimov_paths[scheme_name],
         args.poi_min,
         next_poi_max,
         args.hybrid_toys,
@@ -1506,6 +1586,7 @@ def run_hybrid_jobs_with_adaptive_retries(
     schemes: tuple[PoiScheme, ...],
     workspace_paths: dict[str, Path],
     staged_datacards: dict[str, Path],
+    blind_asimov_paths: dict[str, Path],
 ) -> list[dict[str, Any]]:
     scheme_by_name = {scheme.name: scheme for scheme in schemes}
     target_by_key = {
@@ -1568,6 +1649,7 @@ def run_hybrid_jobs_with_adaptive_retries(
                     target_by_key,
                     workspace_paths,
                     staged_datacards,
+                    blind_asimov_paths,
                 )
                 if retry_job is not None:
                     submit_job(executor, retry_job)
@@ -1619,6 +1701,8 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "default_poi_max": metadata.get("default_poi_max"),
         "profiled_poi_max": metadata.get("profiled_poi_max"),
         "hint_method": metadata.get("hint_method"),
+        "dataset_override": metadata.get("dataset_override"),
+        "bypass_frequentist_fit": metadata.get("bypass_frequentist_fit"),
         "range_source": metadata.get("range_source"),
         "range_reference": metadata.get("range_reference"),
         "attempt": metadata.get("attempt"),
@@ -1688,6 +1772,7 @@ def write_run_summary(
         "hybrid_range_asymptotic_scale": HYBRID_RANGE_ASYMPTOTIC_SCALE,
         "hybrid_retry_range_scale": HYBRID_RETRY_RANGE_SCALE,
         "fixed_range_hybrid_hint_method": "AsymptoticLimits",
+        "blind_asimov_dataset": BLIND_ASIMOV_DATASET,
         "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
         "hybrid_range_max_retries": args.hybrid_range_max_retries,
         "hybrid_retry_alerts": retry_alerts,
@@ -1771,21 +1856,24 @@ def write_run_summary(
         ],
         ["Hybrid range max retries", args.hybrid_range_max_retries],
         ["Hybrid retry range scale", HYBRID_RETRY_RANGE_SCALE],
+        ["Blind Asimov dataset", BLIND_ASIMOV_DATASET],
         ["Minimizer strategy", DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY],
         ["POI scheme request", args.poi_scheme],
         ["Default POI range", f"{format_number(args.poi_min)} to {format_number(args.poi_max)}"],
         ["Quantiles", ", ".join(quantile_key(q) for q in args.quantiles)],
         ["Aggregate JSON", html_link("blind_limits_summary.json", "blind_limits_summary.json")],
     ]
-    policy_html = """
+    policy_html = f"""
       <ul>
         <li>AsymptoticLimits jobs use <code>--run blind</code>.</li>
+        <li>A pre-fit background-only Asimov dataset is generated per POI scheme with <code>GenerateOnly -t -1 --bypassFrequentistFit</code>.</li>
+        <li>All limit jobs override <code>data_obs</code> with <code>{BLIND_ASIMOV_DATASET}</code>.</li>
         <li>HybridNew jobs use <code>--expectedFromGrid</code> for the requested expected quantiles.</li>
+        <li>HybridNew jobs pass <code>--bypassFrequentistFit</code>.</li>
         <li>Fixed-range HybridNew jobs pass <code>-H AsymptoticLimits</code>; asymptotic-derived-range HybridNew jobs do not.</li>
         <li>All Combine limit jobs pass <code>--cminDefaultMinimizerStrategy 2</code>.</li>
         <li>When <code>--hybrid-range-from-asymptotic</code> is used, only the <code>--redefineSignalPOIs</code> target gets <code>0,min(1000000,10*r_asymp)</code>; profiled POIs keep the default range.</li>
         <li>Retryable HybridNew minimization warnings scale the r range by 10 and immediately re-enter the job queue when that job finishes, until the retry cap is reached.</li>
-        <li>HybridNew jobs do not pass <code>--dataset</code> or <code>--bypassFrequentistFit</code>.</li>
       </ul>
     """
     retry_alert_section = ""
@@ -1973,7 +2061,7 @@ def main() -> int:
         )
     log("Default POI range: 0 to 1000000")
     if args.hybrid_range_from_asymptotic:
-        log("Optional HybridNew range mode enabled: per-quantile ranges come from asymptotic limits")
+        log("Optional HybridNew range mode enabled: target POI ranges come from asymptotic limits")
 
     all_results: list[dict[str, Any]] = []
 
@@ -1996,6 +2084,36 @@ def main() -> int:
         workspace_paths[scheme_name] = workspace_path
         staged_datacards[scheme_name] = Path(result["cwd"]) / LOCAL_DATACARD_NAME
 
+    blind_asimov_jobs = [
+        build_blind_asimov_job(
+            run_dir,
+            scheme,
+            args.mass,
+            workspace_paths[scheme.name],
+            staged_datacards[scheme.name],
+            args.poi_min,
+            args.poi_max,
+        )
+        for scheme in schemes
+    ]
+    blind_asimov_results = run_jobs_parallel(
+        blind_asimov_jobs,
+        args.workers,
+        "blind Asimov generation jobs",
+    )
+    all_results.extend(blind_asimov_results)
+    if not all(result_successful(result) for result in blind_asimov_results):
+        write_run_summary(run_dir, args, processes, schemes, all_results)
+        return 1
+
+    blind_asimov_paths: dict[str, Path] = {}
+    for result in blind_asimov_results:
+        scheme_name = result["metadata"]["scheme"]
+        asimov_path = result_output_path(result)
+        if asimov_path is None:
+            raise RuntimeError(f"No blind Asimov output found for {scheme_name}")
+        blind_asimov_paths[scheme_name] = asimov_path
+
     run_hybrid = args.methods in {"hybrid", "both"}
     run_requested_asymptotic = args.methods in {"asymptotic", "both"}
     use_asymptotic_hybrid_ranges = args.hybrid_range_from_asymptotic and run_hybrid
@@ -2015,6 +2133,7 @@ def main() -> int:
                         args.mass,
                         workspace_paths[scheme.name],
                         staged_datacards[scheme.name],
+                        blind_asimov_paths[scheme.name],
                         args.poi_min,
                         args.poi_max,
                     )
@@ -2059,6 +2178,7 @@ def main() -> int:
                                 args.mass,
                                 workspace_paths[scheme.name],
                                 staged_datacards[scheme.name],
+                                blind_asimov_paths[scheme.name],
                                 args.poi_min,
                                 poi_max,
                                 args.hybrid_toys,
@@ -2082,6 +2202,7 @@ def main() -> int:
             schemes,
             workspace_paths,
             staged_datacards,
+            blind_asimov_paths,
         )
         all_results.extend(hybrid_results)
     else:
@@ -2099,6 +2220,7 @@ def main() -> int:
                                 args.mass,
                                 workspace_paths[scheme.name],
                                 staged_datacards[scheme.name],
+                                blind_asimov_paths[scheme.name],
                                 args.poi_min,
                                 args.poi_max,
                                 args.hybrid_toys,
