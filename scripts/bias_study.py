@@ -2340,7 +2340,8 @@ def make_scatter_plot(
     }
 
     side = min(max(15.0, 0.50 * max(1, n_points) + 8.0), 38.0)
-    fig, ax = plt.subplots(figsize=(side, side), constrained_layout=False)
+    fig_width = side * 1.45
+    fig, ax = plt.subplots(figsize=(fig_width, side), constrained_layout=False)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#f8fafc")
     ax.grid(True, axis="y", color="#cbd5e1", alpha=0.75, linewidth=0.8)
@@ -2501,7 +2502,7 @@ def make_scatter_plot(
                 [0],
                 marker="o",
                 color="w",
-                label="Filled marker: normal fit converged; y is fitted mean, area is fitted sigma",
+                label="Filled: normal fit converged; y = fitted mean, area = fitted sigma",
                 markerfacecolor="#64748b",
                 markeredgecolor="#0f172a",
                 markersize=20,
@@ -2514,7 +2515,7 @@ def make_scatter_plot(
                 [0],
                 marker="o",
                 color="w",
-                label="Red outline: normal fit failed; y/area use attempted fit parameters",
+                label="Red outline: normal fit failed; y/area from attempted fit",
                 markerfacecolor="#64748b",
                 markeredgecolor="#dc2626",
                 markeredgewidth=3.0,
@@ -2545,16 +2546,16 @@ def make_scatter_plot(
             borderaxespad=0.0,
             title="",
             title_fontsize=30,
-            fontsize=24,
-            labelspacing=1.0,
-            handlelength=1.8,
+            fontsize=20,
+            labelspacing=0.9,
+            handlelength=1.6,
         )
 
     if not point_records:
         ax.text(0.5, 0.5, "No valid pull summaries available", transform=ax.transAxes, ha="center", va="center", fontsize=28)
 
-    bottom_margin = 0.14 if n_points <= 40 else 0.18
-    fig.subplots_adjust(left=0.14, right=0.62, top=0.86, bottom=bottom_margin)
+    bottom_margin = 0.20 if n_points <= 40 else 0.24
+    fig.subplots_adjust(left=0.14, right=0.68, top=0.86, bottom=bottom_margin)
     fig.savefig(png_path, dpi=180)
     fig.savefig(pdf_path)
     plt.close(fig)
@@ -3052,8 +3053,8 @@ def make_pdf_target_summary_heatmap(
 
     x_fontsize = 8 if len(row_axis) <= 40 else 6 if len(row_axis) <= 120 else 4
     y_fontsize = 10 if len(target_axis) <= 10 else 8
-    fig_width = max(12.0, min(180.0, 0.48 * len(row_axis) + 6.5))
-    fig_height = max(5.5, 0.72 * len(target_axis) + 3.8)
+    fig_width = max(14.0, min(200.0, 0.52 * len(row_axis) + 8.0))
+    fig_height = max(6.0, 0.80 * len(target_axis) + 4.5)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#f8fafc")
@@ -3291,8 +3292,8 @@ def make_pdf_target_heatmap(
     cmap.set_bad("#e5e7eb")
     norm = TwoSlopeNorm(vmin=color_scale_min, vcenter=0.0, vmax=color_scale_max)
 
-    fig_width = max(7.5, 1.25 * len(target_axis) + 3.5)
-    fig_height = max(5.0, 0.72 * len(truth_axis) + 2.8)
+    fig_width = max(8.5, 1.6 * len(target_axis) + 5.0)
+    fig_height = max(5.5, 0.80 * len(truth_axis) + 3.5)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#f8fafc")
