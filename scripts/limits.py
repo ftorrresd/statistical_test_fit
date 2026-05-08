@@ -568,6 +568,7 @@ def build_hybrid_job(
     r_abs_acc: float | None,
     save_hybrid_result: bool,
     default_poi_max: float,
+    hint_method: str | None = None,
     range_source: str = "fixed",
     range_reference: dict[str, Any] | None = None,
     attempt: int = 0,
@@ -612,6 +613,8 @@ def build_hybrid_job(
         f".hybrid_blind.{safe_name(target.label)}.{quantile_tag(quantile)}{retry_suffix}",
     ]
     command.extend(common_minimizer_options())
+    if hint_method is not None:
+        command.extend(["-H", hint_method])
     if save_hybrid_result:
         command.append("--saveHybridResult")
     if hybrid_toys is not None:
@@ -652,6 +655,7 @@ def build_hybrid_job(
             "cls_acc": cls_acc,
             "r_rel_acc": r_rel_acc,
             "r_abs_acc": r_abs_acc,
+            "hint_method": hint_method,
             "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
             "blindness": [
                 "HybridNew uses --LHCmode LHC-limits for LHC-style CLs limits.",
@@ -675,8 +679,14 @@ def format_duration(total_seconds: float) -> str:
 def run_command_job(job: CommandJob) -> dict[str, Any]:
     job.cwd.mkdir(parents=True, exist_ok=True)
     command_string = shlex.join(job.command)
+    stdout_path = job.cwd / "stdout.txt"
+    stderr_path = job.cwd / "stderr.txt"
+    shell_command = (
+        f"{command_string} > {shlex.quote(stdout_path.name)} "
+        f"2> {shlex.quote(stderr_path.name)}"
+    )
     command_path = job.cwd / "command.txt"
-    command_path.write_text(command_string + "\n", encoding="utf-8")
+    command_path.write_text(shell_command + "\n", encoding="utf-8")
     started_at = dt.datetime.now(dt.timezone.utc)
     start_time = time.monotonic()
     stdout = ""
@@ -684,28 +694,23 @@ def run_command_job(job: CommandJob) -> dict[str, Any]:
     returncode = 0
 
     try:
-        completed = subprocess.run(
-            list(job.command),
-            cwd=job.cwd,
-            capture_output=True,
-            text=True,
-        )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        returncode = int(completed.returncode)
+        process = subprocess.Popen(shell_command, cwd=job.cwd, shell=True)
+        returncode = int(process.wait())
     except FileNotFoundError as exc:
         returncode = 127
         stderr = str(exc)
+        stderr_path.write_text(stderr, encoding="utf-8")
     except Exception as exc:  # pragma: no cover - defensive runtime guard
         returncode = 1
         stderr = f"Unhandled exception while running command: {exc}"
+        stderr_path.write_text(stderr, encoding="utf-8")
 
     ended_at = dt.datetime.now(dt.timezone.utc)
     duration = time.monotonic() - start_time
-    stdout_path = job.cwd / "stdout.txt"
-    stderr_path = job.cwd / "stderr.txt"
-    stdout_path.write_text(stdout, encoding="utf-8")
-    stderr_path.write_text(stderr, encoding="utf-8")
+    if stdout_path.exists():
+        stdout = stdout_path.read_text(encoding="utf-8")
+    if stderr_path.exists():
+        stderr = stderr_path.read_text(encoding="utf-8")
 
     produced_files: list[str] = []
     for pattern in job.output_patterns:
@@ -721,6 +726,7 @@ def run_command_job(job: CommandJob) -> dict[str, Any]:
         "cwd_repo_relative": repo_relative(job.cwd),
         "command": list(job.command),
         "command_string": command_string,
+        "shell_command": shell_command,
         "command_path": str(command_path.resolve()),
         "command_path_repo_relative": repo_relative(command_path),
         "returncode": returncode,
@@ -1183,6 +1189,7 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
                 ["Retry", retry_summary_text(result)],
                 ["Target POI range", f"0 to {format_number(float(metadata.get('poi_max', DEFAULT_POI_MAX)))}"],
                 ["Profiled POI range", f"0 to {format_number(float(profiled_poi_max))}"],
+                ["Hint method", metadata.get("hint_method") or "-"],
             ]
         )
     logs_rows = [
@@ -1611,6 +1618,7 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "poi_max": metadata.get("poi_max"),
         "default_poi_max": metadata.get("default_poi_max"),
         "profiled_poi_max": metadata.get("profiled_poi_max"),
+        "hint_method": metadata.get("hint_method"),
         "range_source": metadata.get("range_source"),
         "range_reference": metadata.get("range_reference"),
         "attempt": metadata.get("attempt"),
@@ -1679,6 +1687,7 @@ def write_run_summary(
         "hybrid_range_from_asymptotic": args.hybrid_range_from_asymptotic,
         "hybrid_range_asymptotic_scale": HYBRID_RANGE_ASYMPTOTIC_SCALE,
         "hybrid_retry_range_scale": HYBRID_RETRY_RANGE_SCALE,
+        "fixed_range_hybrid_hint_method": "AsymptoticLimits",
         "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
         "hybrid_range_max_retries": args.hybrid_range_max_retries,
         "hybrid_retry_alerts": retry_alerts,
@@ -1772,6 +1781,7 @@ def write_run_summary(
       <ul>
         <li>AsymptoticLimits jobs use <code>--run blind</code>.</li>
         <li>HybridNew jobs use <code>--expectedFromGrid</code> for the requested expected quantiles.</li>
+        <li>Fixed-range HybridNew jobs pass <code>-H AsymptoticLimits</code>; asymptotic-derived-range HybridNew jobs do not.</li>
         <li>All Combine limit jobs pass <code>--cminDefaultMinimizerStrategy 2</code>.</li>
         <li>When <code>--hybrid-range-from-asymptotic</code> is used, only the <code>--redefineSignalPOIs</code> target gets <code>0,min(1000000,10*r_asymp)</code>; profiled POIs keep the default range.</li>
         <li>Retryable HybridNew minimization warnings scale the r range by 10 and immediately re-enter the job queue when that job finishes, until the retry cap is reached.</li>
@@ -2097,6 +2107,7 @@ def main() -> int:
                                 args.r_abs_acc,
                                 not args.no_save_hybrid_result,
                                 args.poi_max,
+                                hint_method="AsymptoticLimits",
                             )
                         )
 
