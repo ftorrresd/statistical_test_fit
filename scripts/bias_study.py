@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1953,6 +1954,7 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "quick": metadata.get("quick"),
         "cmin_default_minimizer_strategy": metadata.get("cmin_default_minimizer_strategy"),
         "robust_fit": metadata.get("robust_fit"),
+        "analysis_status": analysis.get("status"),
         "entries_total": analysis.get("entries_total"),
         "entries_used": analysis.get("entries_used"),
         "entries_skipped": analysis.get("entries_skipped"),
@@ -2424,22 +2426,6 @@ def make_summary_scatter_plots(
     annotate_outliers: bool,
 ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
     y_limits = scatter_y_limits(experiments, bias_threshold)
-    global_plot = make_scatter_plot(
-        experiments,
-        run_dir,
-        bias_threshold,
-        annotate_outliers,
-        "pull_mean_sigma_scatter",
-        "Global",
-        {},
-        y_limits,
-    )
-
-    variations: dict[str, list[dict[str, Any]]] = {
-        "by_poi_scheme": [],
-        "by_injected_r": [],
-        "by_poi_scheme_and_injected_r": [],
-    }
     schemes = sorted(
         {str(experiment.get("scheme")) for experiment in experiments if experiment.get("scheme") is not None}
     )
@@ -2451,9 +2437,36 @@ def make_summary_scatter_plots(
             if value is not None
         }
     )
+    total_plots = 1 + len(schemes) + len(injected_rs) + len(schemes) * len(injected_rs)
+    completed_plots = 0
+
+    log(
+        f"Building {total_plots} summary scatter plot(s) from "
+        f"{len(experiments)} fit summaries"
+    )
+    log(f"Summary scatter plot {completed_plots + 1}/{total_plots}: Global")
+    global_plot = make_scatter_plot(
+        experiments,
+        run_dir,
+        bias_threshold,
+        annotate_outliers,
+        "pull_mean_sigma_scatter",
+        "Global",
+        {},
+        y_limits,
+    )
+    completed_plots += 1
+    log(f"Finished summary scatter plot {completed_plots}/{total_plots}: Global")
+
+    variations: dict[str, list[dict[str, Any]]] = {
+        "by_poi_scheme": [],
+        "by_injected_r": [],
+        "by_poi_scheme_and_injected_r": [],
+    }
 
     for scheme in schemes:
         label = f"POI scheme {scheme}"
+        log(f"Summary scatter plot {completed_plots + 1}/{total_plots}: {label}")
         variations["by_poi_scheme"].append(
             make_scatter_plot(
                 [experiment for experiment in experiments if str(experiment.get("scheme")) == scheme],
@@ -2466,9 +2479,12 @@ def make_summary_scatter_plots(
                 y_limits,
             )
         )
+        completed_plots += 1
+        log(f"Finished summary scatter plot {completed_plots}/{total_plots}: {label}")
 
     for injected_r in injected_rs:
         label = f"Injected r {format_number(injected_r)}"
+        log(f"Summary scatter plot {completed_plots + 1}/{total_plots}: {label}")
         variations["by_injected_r"].append(
             make_scatter_plot(
                 [experiment for experiment in experiments if same_injected_r(experiment, injected_r)],
@@ -2481,10 +2497,13 @@ def make_summary_scatter_plots(
                 y_limits,
             )
         )
+        completed_plots += 1
+        log(f"Finished summary scatter plot {completed_plots}/{total_plots}: {label}")
 
     for scheme in schemes:
         for injected_r in injected_rs:
             label = f"POI scheme {scheme}; injected r {format_number(injected_r)}"
+            log(f"Summary scatter plot {completed_plots + 1}/{total_plots}: {label}")
             variations["by_poi_scheme_and_injected_r"].append(
                 make_scatter_plot(
                     [
@@ -2502,6 +2521,8 @@ def make_summary_scatter_plots(
                     y_limits,
                 )
             )
+            completed_plots += 1
+            log(f"Finished summary scatter plot {completed_plots}/{total_plots}: {label}")
 
     return global_plot, variations
 
@@ -2531,6 +2552,79 @@ def failed_summary_scatter_plot(
         "by_poi_scheme": [],
         "by_injected_r": [],
         "by_poi_scheme_and_injected_r": [],
+    }
+
+
+def run_streamed_plot_subprocess(
+    command: list[str],
+    cwd: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: int,
+    label: str,
+) -> dict[str, Any]:
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    def read_stream(stream: Any, chunks: list[str], stream_label: str) -> None:
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                chunks.append(line)
+                text = line.rstrip()
+                if not text:
+                    continue
+                if stream_label == "stdout":
+                    CONSOLE.print(Text(text))
+                else:
+                    CONSOLE.print(Text(f"[bias_study] {label} stderr:", style="yellow"), Text(text))
+        finally:
+            stream.close()
+
+    log(f"{label}: starting plotting subprocess")
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_thread = threading.Thread(
+        target=read_stream,
+        args=(process.stdout, stdout_chunks, "stdout"),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=read_stream,
+        args=(process.stderr, stderr_chunks, "stderr"),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    timed_out = False
+    try:
+        returncode = int(process.wait(timeout=timeout_seconds))
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        log(f"{label}: timed out after {timeout_seconds} seconds; terminating subprocess")
+        process.kill()
+        returncode = int(process.wait())
+
+    stdout_thread.join(timeout=5.0)
+    stderr_thread.join(timeout=5.0)
+    if timed_out:
+        stderr_chunks.append(f"Timed out after {timeout_seconds} seconds.\n")
+    stdout_path.write_text("".join(stdout_chunks), encoding="utf-8")
+    stderr_path.write_text("".join(stderr_chunks), encoding="utf-8")
+    log(f"{label}: subprocess finished with return code {returncode}")
+    return {
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "stdout": "".join(stdout_chunks),
+        "stderr": "".join(stderr_chunks),
     }
 
 
@@ -2580,34 +2674,30 @@ output_path.write_text(
     encoding='utf-8',
 )
 """
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-c", code, str(input_path), str(output_path)],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
-        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+    completed = run_streamed_plot_subprocess(
+        [sys.executable, "-u", "-c", code, str(input_path), str(output_path)],
+        REPO_ROOT,
+        stdout_path,
+        stderr_path,
+        SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS,
+        "summary scatter plots",
+    )
+    if completed["timed_out"]:
         return failed_summary_scatter_plot(
             run_dir,
             f"Summary scatter plotting timed out after {SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS} seconds.",
         )
 
-    stdout_path.write_text(completed.stdout or "", encoding="utf-8")
-    stderr_path.write_text(completed.stderr or "", encoding="utf-8")
-    if completed.returncode != 0:
-        message = f"Summary scatter plotting subprocess failed with return code {completed.returncode}."
-        if completed.returncode < 0:
-            message += f" Signal {-completed.returncode} terminated the subprocess."
-        return failed_summary_scatter_plot(run_dir, message, completed.returncode)
+    if int(completed["returncode"]) != 0:
+        message = f"Summary scatter plotting subprocess failed with return code {completed['returncode']}."
+        if int(completed["returncode"]) < 0:
+            message += f" Signal {-int(completed['returncode'])} terminated the subprocess."
+        return failed_summary_scatter_plot(run_dir, message, int(completed["returncode"]))
     if not output_path.exists():
         return failed_summary_scatter_plot(
             run_dir,
             "Summary scatter plotting subprocess finished without writing its output JSON.",
-            completed.returncode,
+            int(completed["returncode"]),
         )
 
     try:
@@ -2617,7 +2707,7 @@ output_path.write_text(
         return failed_summary_scatter_plot(
             run_dir,
             f"Could not read summary scatter plotting output JSON: {exc}",
-            completed.returncode,
+            int(completed["returncode"]),
         )
 
 
@@ -2635,6 +2725,10 @@ def heatmap_metric_values(experiment: dict[str, Any]) -> tuple[float | None, flo
     metric = finite_float_or_none(experiment.get("gaussian_mean"))
     sigma = finite_float_or_none(experiment.get("gaussian_sigma"))
     return metric, sigma, "pull_mean"
+
+
+def experiment_fit_failed(experiment: dict[str, Any]) -> bool:
+    return str(experiment.get("status", "ok")) != "ok" or str(experiment.get("analysis_status", "ok")) == "failed"
 
 
 def truth_pdf_axis_key(experiment: dict[str, Any]) -> tuple[int, str]:
@@ -2656,6 +2750,224 @@ def target_pdf_axis_key(experiment: dict[str, Any]) -> tuple[int, int, str]:
             pdf_index = 1_000_000
         return 0, pdf_index, fit_target_pdf_label(experiment)
     return 1, 1_000_000, "floating"
+
+
+def summary_heatmap_row_key(experiment: dict[str, Any]) -> tuple[str, str, str, str, float, int, str]:
+    truth_index, truth_label = truth_pdf_axis_key(experiment)
+    injected_r = finite_float_or_none(experiment.get("injected_r"))
+    return (
+        str(experiment.get("dataset_strategy", "toys")),
+        str(experiment.get("scheme", "-")),
+        str(experiment.get("target_poi", "-")),
+        str(experiment.get("target_label") or experiment.get("target_poi", "-")),
+        float(injected_r) if injected_r is not None else 0.0,
+        truth_index,
+        truth_label,
+    )
+
+
+def summary_heatmap_group_label(row_key: tuple[str, str, str, str, float, int, str]) -> str:
+    dataset_strategy, scheme, _target_poi, target_label, injected_r, _truth_index, _truth_label = row_key
+    return f"{dataset_strategy} | {scheme} | {target_label} | r={format_number(injected_r)}"
+
+
+def make_pdf_target_summary_heatmap(
+    experiments: list[dict[str, Any]],
+    run_dir: Path,
+    plt: Any,
+    np: Any,
+    TwoSlopeNorm: Any,
+) -> dict[str, Any]:
+    plot_dir = run_dir / "plots" / "pdf_target_heatmaps"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plot_stem = "pdf_target_heatmap__all_tested_combinations"
+    label = "All Tested Combinations"
+    png_path = plot_dir / f"{plot_stem}.png"
+    pdf_path = plot_dir / f"{plot_stem}.pdf"
+    values_path = plot_dir / f"{plot_stem}_values.json"
+
+    row_axis = sorted({summary_heatmap_row_key(experiment) for experiment in experiments})
+    target_axis = sorted({target_pdf_axis_key(experiment) for experiment in experiments})
+    if not row_axis or not target_axis:
+        payload = {
+            "status": "failed",
+            "message": "No tested truth/target PDF combinations available.",
+            "label": label,
+            "split": {"summary": "all_tested_combinations"},
+            "plot_stem": plot_stem,
+            "points": 0,
+        }
+        values_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return payload
+
+    row_positions = {axis_key: index for index, axis_key in enumerate(row_axis)}
+    target_positions = {axis_key: index for index, axis_key in enumerate(target_axis)}
+    matrix = np.full((len(row_axis), len(target_axis)), np.nan, dtype=float)
+    sigma_matrix = np.full((len(row_axis), len(target_axis)), np.nan, dtype=float)
+    failed_matrix = np.full((len(row_axis), len(target_axis)), False, dtype=bool)
+    cell_records: list[dict[str, Any]] = []
+
+    for experiment in sorted(
+        experiments,
+        key=lambda item: (
+            summary_heatmap_row_key(item),
+            target_pdf_axis_key(item),
+            str(item.get("job_id", "")),
+        ),
+    ):
+        row_key = summary_heatmap_row_key(experiment)
+        target_key = target_pdf_axis_key(experiment)
+        row = row_positions[row_key]
+        column = target_positions[target_key]
+        metric, sigma, metric_name = heatmap_metric_values(experiment)
+        fit_failed = experiment_fit_failed(experiment)
+        failed_matrix[row, column] = failed_matrix[row, column] or fit_failed
+        if not fit_failed and metric is not None:
+            matrix[row, column] = float(metric)
+        if not fit_failed and sigma is not None:
+            sigma_matrix[row, column] = abs(float(sigma))
+        dataset_strategy, scheme, target_poi, target_label, injected_r, truth_index, truth_label = row_key
+        cell_records.append(
+            {
+                "dataset_strategy": dataset_strategy,
+                "scheme": scheme,
+                "target_poi": target_poi,
+                "target_label": target_label,
+                "injected_r": injected_r,
+                "truth_pdf_index": truth_index,
+                "truth_pdf_label": truth_label,
+                "target_pdf_index": None if target_key[0] == 1 else target_key[1],
+                "target_pdf_label": target_key[2],
+                "fit_pdf_mode": "floating" if target_key[0] == 1 else "fixed",
+                "metric": metric,
+                "metric_name": metric_name,
+                "sigma": sigma,
+                "fit_failed": fit_failed,
+                "experiment_index": experiment.get("experiment_index"),
+                "job_id": experiment.get("job_id"),
+                "status": experiment.get("status"),
+                "fit_summary_html": experiment.get("fit_summary_html"),
+            }
+        )
+
+    color_scale_min = -1.0
+    color_scale_max = 1.0
+    masked_matrix = np.ma.masked_invalid(matrix)
+    cmap = plt.get_cmap("RdBu_r").copy()
+    cmap.set_bad("#e5e7eb")
+    norm = TwoSlopeNorm(vmin=color_scale_min, vcenter=0.0, vmax=color_scale_max)
+
+    y_fontsize = 9 if len(row_axis) <= 40 else 7 if len(row_axis) <= 120 else 5
+    x_fontsize = 10 if len(target_axis) <= 10 else 8
+    fig_width = max(10.0, 1.15 * len(target_axis) + 6.5)
+    fig_height = max(7.0, min(120.0, 0.36 * len(row_axis) + 4.5))
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#f8fafc")
+    image = ax.imshow(masked_matrix, cmap=cmap, norm=norm, aspect="auto")
+
+    ax.set_xticks(range(len(target_axis)))
+    ax.set_xticklabels([axis_key[2] for axis_key in target_axis], rotation=35, ha="right", fontsize=x_fontsize)
+    row_labels: list[str] = []
+    group_boundaries: list[int] = []
+    previous_group = None
+    for row_index, row_key in enumerate(row_axis):
+        group_key = row_key[:5]
+        group_label = summary_heatmap_group_label(row_key)
+        truth_label = row_key[6]
+        if previous_group is None or group_key != previous_group:
+            if previous_group is not None:
+                group_boundaries.append(row_index)
+            row_labels.append(f"{group_label} | {truth_label}")
+            previous_group = group_key
+        else:
+            row_labels.append(f"  {truth_label}")
+    ax.set_yticks(range(len(row_axis)))
+    ax.set_yticklabels(row_labels, fontsize=y_fontsize)
+    ax.set_xlabel("Target PDF", fontsize=12)
+    ax.set_ylabel("Grouped tested combination | truth PDF", fontsize=12)
+    ax.set_title(label, fontsize=13, pad=14)
+    ax.set_xticks(np.arange(-0.5, len(target_axis), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(row_axis), 1), minor=True)
+    ax.grid(which="minor", color="white", linestyle="-", linewidth=1.2)
+    ax.tick_params(which="minor", bottom=False, left=False)
+    for boundary in group_boundaries:
+        ax.axhline(boundary - 0.5, color="#0f172a", linewidth=1.1, alpha=0.85)
+
+    annotation_fontsize = 8 if len(row_axis) <= 80 else 6 if len(row_axis) <= 180 else 4
+    annotate_cells = len(row_axis) * len(target_axis) <= 4500
+    if annotate_cells:
+        for row in range(len(row_axis)):
+            for column in range(len(target_axis)):
+                metric_value = matrix[row, column]
+                sigma_value = sigma_matrix[row, column]
+                fit_failed = bool(failed_matrix[row, column])
+                if fit_failed:
+                    text = "FAILED"
+                elif np.isfinite(sigma_value):
+                    text = f"{float(sigma_value):.2f}"
+                else:
+                    text = "-"
+                text_color = "#991b1b" if fit_failed else "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * color_scale_max else "#111827"
+                ax.text(column, row, text, ha="center", va="center", color=text_color, fontsize=annotation_fontsize, fontweight="bold")
+    else:
+        for row in range(len(row_axis)):
+            for column in range(len(target_axis)):
+                if not bool(failed_matrix[row, column]):
+                    continue
+                ax.text(column, row, "FAILED", ha="center", va="center", color="#991b1b", fontsize=annotation_fontsize, fontweight="bold")
+
+    colorbar_label = "toy fitted pull mean / Asimov r closure"
+    colorbar = fig.colorbar(image, ax=ax, shrink=0.92, extend="both")
+    colorbar.set_label(colorbar_label, fontsize=11)
+    colorbar.set_ticks([color_scale_min, -0.5, 0.0, 0.5, color_scale_max])
+    cell_text_note = "Cell text: fitted sigma" if annotate_cells else "Cell text omitted because the summary heatmap is dense; see values JSON for fitted sigma."
+    fig.text(0.01, 0.01, cell_text_note, ha="left", va="bottom", fontsize=9, color="#475569")
+    fig.savefig(png_path, dpi=180)
+    fig.savefig(pdf_path)
+    plt.close(fig)
+
+    payload = {
+        "status": "ok",
+        "label": label,
+        "split": {"summary": "all_tested_combinations"},
+        "plot_stem": plot_stem,
+        "points": len([record for record in cell_records if record.get("metric") is not None]),
+        "cells": len(cell_records),
+        "metric": colorbar_label,
+        "annotation": "fitted sigma" if annotate_cells else "see values_json",
+        "color_scale": {"min": color_scale_min, "max": color_scale_max},
+        "row_axis": [
+            {
+                "dataset_strategy": row_key[0],
+                "scheme": row_key[1],
+                "target_poi": row_key[2],
+                "target_label": row_key[3],
+                "injected_r": row_key[4],
+                "truth_pdf_index": row_key[5],
+                "truth_pdf_label": row_key[6],
+            }
+            for row_key in row_axis
+        ],
+        "target_axis": [
+            {
+                "mode": "floating" if mode_rank == 1 else "fixed",
+                "index": None if mode_rank == 1 else pdf_index,
+                "label": axis_label,
+            }
+            for mode_rank, pdf_index, axis_label in target_axis
+        ],
+        "values": cell_records,
+        "plot_png": str(png_path.resolve()),
+        "plot_png_repo_relative": repo_relative(png_path),
+        "plot_pdf": str(pdf_path.resolve()),
+        "plot_pdf_repo_relative": repo_relative(pdf_path),
+        "values_json": str(values_path.resolve()),
+        "values_json_repo_relative": repo_relative(values_path),
+        "note": "Single summary heatmap over all tested combinations. Rows are grouped by dataset strategy, POI scheme, target POI, injected r, and truth PDF; columns show target PDFs. Cell color uses a fixed -1 to 1 scale, and failed fits are marked FAILED.",
+    }
+    values_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
 
 
 def make_pdf_target_heatmap(
@@ -2692,6 +3004,7 @@ def make_pdf_target_heatmap(
     target_positions = {axis_key: index for index, axis_key in enumerate(target_axis)}
     matrix = np.full((len(truth_axis), len(target_axis)), np.nan, dtype=float)
     sigma_matrix = np.full((len(truth_axis), len(target_axis)), np.nan, dtype=float)
+    failed_matrix = np.full((len(truth_axis), len(target_axis)), False, dtype=bool)
     cell_records: list[dict[str, Any]] = []
 
     for experiment in sorted(
@@ -2707,9 +3020,11 @@ def make_pdf_target_heatmap(
         row = truth_positions[truth_key]
         column = target_positions[target_key]
         metric, sigma, metric_name = heatmap_metric_values(experiment)
-        if metric is not None:
+        fit_failed = experiment_fit_failed(experiment)
+        failed_matrix[row, column] = failed_matrix[row, column] or fit_failed
+        if not fit_failed and metric is not None:
             matrix[row, column] = float(metric)
-        if sigma is not None:
+        if not fit_failed and sigma is not None:
             sigma_matrix[row, column] = abs(float(sigma))
         cell_records.append(
             {
@@ -2721,6 +3036,7 @@ def make_pdf_target_heatmap(
                 "metric": metric,
                 "metric_name": metric_name,
                 "sigma": sigma,
+                "fit_failed": fit_failed,
                 "experiment_index": experiment.get("experiment_index"),
                 "job_id": experiment.get("job_id"),
                 "status": experiment.get("status"),
@@ -2728,14 +3044,12 @@ def make_pdf_target_heatmap(
             }
         )
 
-    finite_values = [float(value) for value in matrix[np.isfinite(matrix)]]
-    max_abs = max([abs(value) for value in finite_values] + [1.0e-9])
-    if max_abs < 1.0e-9:
-        max_abs = 1.0
+    color_scale_min = -1.0
+    color_scale_max = 1.0
     masked_matrix = np.ma.masked_invalid(matrix)
     cmap = plt.get_cmap("RdBu_r").copy()
     cmap.set_bad("#e5e7eb")
-    norm = TwoSlopeNorm(vmin=-max_abs, vcenter=0.0, vmax=max_abs)
+    norm = TwoSlopeNorm(vmin=color_scale_min, vcenter=0.0, vmax=color_scale_max)
 
     fig_width = max(7.5, 1.25 * len(target_axis) + 3.5)
     fig_height = max(5.0, 0.72 * len(truth_axis) + 2.8)
@@ -2760,17 +3074,21 @@ def make_pdf_target_heatmap(
         for column in range(len(target_axis)):
             metric_value = matrix[row, column]
             sigma_value = sigma_matrix[row, column]
-            if np.isfinite(sigma_value):
+            fit_failed = bool(failed_matrix[row, column])
+            if fit_failed:
+                text = "FAILED"
+            elif np.isfinite(sigma_value):
                 text = f"{float(sigma_value):.2f}"
             else:
                 text = "-"
-            text_color = "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * max_abs else "#111827"
+            text_color = "#991b1b" if fit_failed else "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * color_scale_max else "#111827"
             ax.text(column, row, text, ha="center", va="center", color=text_color, fontsize=10, fontweight="bold")
 
     dataset_strategy = str(split.get("dataset_strategy", "toys"))
     colorbar_label = "r closure (r_hat - injected r)" if dataset_strategy == "asimov" else "fitted pull mean"
-    colorbar = fig.colorbar(image, ax=ax, shrink=0.92)
+    colorbar = fig.colorbar(image, ax=ax, shrink=0.92, extend="both")
     colorbar.set_label(colorbar_label, fontsize=11)
+    colorbar.set_ticks([color_scale_min, -0.5, 0.0, 0.5, color_scale_max])
     fig.text(0.01, 0.01, "Cell text: fitted sigma", ha="left", va="bottom", fontsize=9, color="#475569")
     fig.savefig(png_path, dpi=180)
     fig.savefig(pdf_path)
@@ -2785,6 +3103,7 @@ def make_pdf_target_heatmap(
         "cells": len(cell_records),
         "metric": colorbar_label,
         "annotation": "fitted sigma",
+        "color_scale": {"min": color_scale_min, "max": color_scale_max},
         "truth_axis": [{"index": index, "label": axis_label} for index, axis_label in truth_axis],
         "target_axis": [
             {
@@ -2801,7 +3120,7 @@ def make_pdf_target_heatmap(
         "plot_pdf_repo_relative": repo_relative(pdf_path),
         "values_json": str(values_path.resolve()),
         "values_json_repo_relative": repo_relative(values_path),
-        "note": "Rows show truth PDFs, columns show target PDFs. Cell color is the fitted pull mean for toys or r closure for Asimov. Cell text is the fitted sigma rounded to two decimals.",
+        "note": "Rows show truth PDFs, columns show target PDFs. Cell color is the fitted pull mean for toys or r closure for Asimov on a fixed -1 to 1 scale. Cell text is the fitted sigma rounded to two decimals; failed fits are marked FAILED.",
     }
     values_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
@@ -2832,7 +3151,7 @@ def make_summary_heatmaps(
             }
         ]
 
-    heatmaps: list[dict[str, Any]] = []
+    heatmap_tasks: list[tuple[list[dict[str, Any]], str, str, dict[str, Any]]] = []
     dataset_strategies = sorted(
         {str(experiment.get("dataset_strategy", "toys")) for experiment in experiments}
     )
@@ -2893,10 +3212,9 @@ def make_summary_heatmaps(
                         f"__target_{safe_name(target_poi)}"
                         f"__r_{injection_tag(injected_r)}"
                     )
-                    heatmaps.append(
-                        make_pdf_target_heatmap(
+                    heatmap_tasks.append(
+                        (
                             selected,
-                            run_dir,
                             plot_stem,
                             label,
                             {
@@ -2906,11 +3224,51 @@ def make_summary_heatmaps(
                                 "target_label": target_label,
                                 "injected_r": injected_r,
                             },
-                            plt,
-                            np,
-                            TwoSlopeNorm,
                         )
                     )
+
+    total_heatmaps = len(heatmap_tasks) + 1
+    log(
+        f"Building {total_heatmaps} PDF target heatmap(s) from "
+        f"{len(experiments)} fit summaries"
+    )
+    heatmaps: list[dict[str, Any]] = []
+    log(
+        f"PDF target heatmap 1/{total_heatmaps}: All Tested Combinations "
+        f"({len(experiments)} fit summaries)"
+    )
+    summary_heatmap = make_pdf_target_summary_heatmap(
+        experiments,
+        run_dir,
+        plt,
+        np,
+        TwoSlopeNorm,
+    )
+    heatmaps.append(summary_heatmap)
+    log(
+        f"Finished PDF target heatmap 1/{total_heatmaps}: All Tested Combinations "
+        f"status={summary_heatmap.get('status', '-')}"
+    )
+    for index, (selected, plot_stem, label, split) in enumerate(heatmap_tasks, start=2):
+        log(
+            f"PDF target heatmap {index}/{total_heatmaps}: {label} "
+            f"({len(selected)} fit summaries)"
+        )
+        heatmap = make_pdf_target_heatmap(
+            selected,
+            run_dir,
+            plot_stem,
+            label,
+            split,
+            plt,
+            np,
+            TwoSlopeNorm,
+        )
+        heatmaps.append(heatmap)
+        log(
+            f"Finished PDF target heatmap {index}/{total_heatmaps}: {label} "
+            f"status={heatmap.get('status', '-')}"
+        )
     return heatmaps
 
 
@@ -2971,34 +3329,30 @@ output_path.write_text(
     encoding='utf-8',
 )
 """
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-c", code, str(input_path), str(output_path)],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=HEATMAP_PLOT_SUBPROCESS_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
-        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+    completed = run_streamed_plot_subprocess(
+        [sys.executable, "-u", "-c", code, str(input_path), str(output_path)],
+        REPO_ROOT,
+        stdout_path,
+        stderr_path,
+        HEATMAP_PLOT_SUBPROCESS_TIMEOUT_SECONDS,
+        "PDF target heatmaps",
+    )
+    if completed["timed_out"]:
         return failed_summary_heatmaps(
             run_dir,
             f"Summary heatmap plotting timed out after {HEATMAP_PLOT_SUBPROCESS_TIMEOUT_SECONDS} seconds.",
         )
 
-    stdout_path.write_text(completed.stdout or "", encoding="utf-8")
-    stderr_path.write_text(completed.stderr or "", encoding="utf-8")
-    if completed.returncode != 0:
-        message = f"Summary heatmap plotting subprocess failed with return code {completed.returncode}."
-        if completed.returncode < 0:
-            message += f" Signal {-completed.returncode} terminated the subprocess."
-        return failed_summary_heatmaps(run_dir, message, completed.returncode)
+    if int(completed["returncode"]) != 0:
+        message = f"Summary heatmap plotting subprocess failed with return code {completed['returncode']}."
+        if int(completed["returncode"]) < 0:
+            message += f" Signal {-int(completed['returncode'])} terminated the subprocess."
+        return failed_summary_heatmaps(run_dir, message, int(completed["returncode"]))
     if not output_path.exists():
         return failed_summary_heatmaps(
             run_dir,
             "Summary heatmap plotting subprocess finished without writing its output JSON.",
-            completed.returncode,
+            int(completed["returncode"]),
         )
 
     try:
@@ -3008,7 +3362,7 @@ output_path.write_text(
         return failed_summary_heatmaps(
             run_dir,
             f"Could not read summary heatmap plotting output JSON: {exc}",
-            completed.returncode,
+            int(completed["returncode"]),
         )
 
 
