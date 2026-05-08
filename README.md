@@ -336,8 +336,8 @@ Minimal syntax check:
 python3 -m compileall scripts/pseudodata.py scripts/non_resonant_background.py scripts/signal.py scripts/resonant_background.py scripts/build_bundled_workspace.py statistical_test_fit
 ```
 
-Focused smoke commands:
 
+Focused smoke commands:
 ```bash
 python3 scripts/pseudodata.py --fits-to-run 1d --events 1000 --seed 1
 python3 scripts/pseudodata.py --fits-to-run 2d --events 1000 --seed 1
@@ -355,7 +355,7 @@ python3 scripts/resonant_background.py && \
 python3 scripts/non_resonant_background.py && \
 python3 scripts/build_bundled_workspace.py && \
 python3 scripts/limits.py --methods asymptotic && \
-python3 scripts/branching_fraction_table.py && \
+python3 scripts/branching_fraction_table.py --compile-pdf && \
 python3 scripts/bias_study.py \
     --dataset-strategy toys --toys 10 --random-seeds \
     --injections 0,1,10,100,1000 \
