@@ -36,6 +36,8 @@ DEFAULT_INJECTIONS = (0.0, 10.0, 100.0, 1000.0)
 DEFAULT_TOYS = 1000
 DEFAULT_DATASET_STRATEGY = "toys"
 DATASET_STRATEGIES = ("toys", "asimov")
+DEFAULT_PDF_TARGET_STRATEGY = "both"
+PDF_TARGET_STRATEGIES = ("fixed", "floating", "both")
 DEFAULT_POI_INITIAL = 1.0
 DEFAULT_POI_MIN = -1_000_000.0
 DEFAULT_POI_MAX = 1_000_000.0
@@ -48,6 +50,7 @@ DEFAULT_SEED_BASE = 123450
 DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY = 2
 QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY = 0
 SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS = 1800
+HEATMAP_PLOT_SUBPROCESS_TIMEOUT_SECONDS = 1800
 FIT_ALGO = "singles"
 WORKSPACE_OUTPUT_NAME = "multisignal_workspace.root"
 LOCAL_WORKSPACE_NAME = "workspace.root"
@@ -217,6 +220,20 @@ def injection_tag(value: float) -> str:
 
 def selected_dataset_strategies(args: argparse.Namespace) -> tuple[str, ...]:
     return (str(args.dataset_strategy),)
+
+
+def normalize_pdf_target_strategy(value: Any) -> str:
+    strategy = str(value or "floating").strip().lower()
+    if strategy in {"free", "loose"}:
+        return "floating"
+    return strategy
+
+
+def selected_pdf_target_strategies(args: argparse.Namespace) -> tuple[str, ...]:
+    strategy = normalize_pdf_target_strategy(args.pdf_target_strategy)
+    if strategy == "both":
+        return ("floating", "fixed")
+    return (strategy,)
 
 
 def strategy_toys_argument(dataset_strategy: str, args: argparse.Namespace) -> int:
@@ -680,6 +697,7 @@ def build_fit_job(
     scheme: PoiScheme,
     target: PoiTarget,
     truth_pdf: TruthPdf,
+    target_pdf: TruthPdf | None,
     injected_r: float,
     mass: str,
     workspace_path: Path,
@@ -689,6 +707,8 @@ def build_fit_job(
     dataset_strategy: str,
 ) -> CommandJob:
     fit_dir_name = "fit" if dataset_strategy == "toys" else "asimov_fit"
+    fit_pdf_mode = "floating" if target_pdf is None else "fixed"
+    fit_pdf_tag = "floating" if target_pdf is None else f"fixed_{safe_name(target_pdf.label)}"
     cwd = (
         run_dir
         / scheme.name
@@ -696,6 +716,7 @@ def build_fit_job(
         / safe_name(truth_pdf.label)
         / injection_tag(injected_r)
         / fit_dir_name
+        / fit_pdf_tag
     )
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
@@ -710,6 +731,10 @@ def build_fit_job(
         injected_r,
         args.injection_mode,
     )
+    freeze_parameters: list[str] = []
+    if target_pdf is not None:
+        set_parameters = append_set_parameter(set_parameters, args.pdf_index_name, target_pdf.index)
+        freeze_parameters.append(args.pdf_index_name)
     command = [
         "combine",
         "-M",
@@ -744,8 +769,10 @@ def build_fit_job(
         "-m",
         mass,
         "-n",
-        f".{fit_dir_name}.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
+        f".{fit_dir_name}.{fit_pdf_tag}.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
     ]
+    if freeze_parameters:
+        command.extend(["--freezeParameters", ",".join(freeze_parameters)])
     if args.profile_freeze_disassociated_params:
         command.extend(["--X-rtd", "MINIMIZER_freezeDisassociatedParams"])
     if args.robust_fit:
@@ -754,7 +781,7 @@ def build_fit_job(
     job_prefix = "fit" if dataset_strategy == "toys" else "asimov_fit"
     return CommandJob(
         job_id=(
-            f"{job_prefix}_{scheme.name}_{safe_name(target.label)}_"
+            f"{job_prefix}_{fit_pdf_tag}_{scheme.name}_{safe_name(target.label)}_"
             f"{safe_name(truth_pdf.label)}_{injection_tag(injected_r)}"
         ),
         kind="toy_fit" if dataset_strategy == "toys" else "asimov_fit",
@@ -775,14 +802,22 @@ def build_fit_job(
             "truth_pdf_family": truth_pdf.family,
             "fit_method": "MultiDimFit",
             "fit_algo": FIT_ALGO,
-            "fit_pdf_mode": "free",
-            "fit_pdf_index": None,
+            "fit_pdf_mode": fit_pdf_mode,
+            "fit_pdf_index": None if target_pdf is None else target_pdf.index,
+            "fit_pdf": None if target_pdf is None else target_pdf.name,
+            "fit_pdf_label": "floating" if target_pdf is None else target_pdf.label,
+            "fit_pdf_family": None if target_pdf is None else target_pdf.family,
+            "target_pdf_index": None if target_pdf is None else target_pdf.index,
+            "target_pdf": None if target_pdf is None else target_pdf.name,
+            "target_pdf_label": "floating" if target_pdf is None else target_pdf.label,
+            "target_pdf_family": None if target_pdf is None else target_pdf.family,
             "free_floating_pois": list(scheme.all_pois),
             "scanned_pois": list(scanned_pois),
             "profiled_pois": list(profiled_pois),
             "poi_scan_mode": "target-only",
             "float_other_pois": True,
-            "free_floating_pdf_indexes": [args.pdf_index_name],
+            "free_floating_pdf_indexes": [args.pdf_index_name] if target_pdf is None else [],
+            "frozen_parameters": freeze_parameters,
             "injected_r": injected_r,
             "injection_mode": args.injection_mode,
             "dataset_strategy": dataset_strategy,
@@ -927,7 +962,15 @@ def executor_exception_result(job: CommandJob, exc: Exception) -> dict[str, Any]
 def job_manifest_label(job: CommandJob) -> str:
     metadata = job.metadata
     details: list[str] = []
-    for key in ("dataset_strategy", "scheme", "target_poi", "truth_pdf_label", "injected_r"):
+    for key in (
+        "dataset_strategy",
+        "scheme",
+        "target_poi",
+        "truth_pdf_label",
+        "fit_pdf_mode",
+        "fit_pdf_label",
+        "injected_r",
+    ):
         if metadata.get(key) is not None:
             details.append(f"{key}={metadata[key]}")
     return "; ".join(details) if details else "preparation"
@@ -1064,17 +1107,19 @@ def discover_truth_pdfs(workspace_path: Path, requested_families: tuple[str, ...
             )
         multipdf_candidates.sort(key=lambda item: (-item[0], item[1]))
         score, multipdf_name, multipdf, n_pdfs = multipdf_candidates[0]
+        available_pdfs: list[TruthPdf] = []
         truths: list[TruthPdf] = []
         for index in range(n_pdfs):
             pdf = multipdf.getPdf(index)
             pdf_name = str(pdf.GetName()) if pdf is not None else f"pdf_{index}"
             family = infer_pdf_family(pdf_name)
-            if requested_families != ("all",) and family not in requested_families:
-                continue
             label = f"pdf{index}_{family}"
             if family == "other":
                 label = f"pdf{index}_{safe_name(pdf_name)}"
-            truths.append(TruthPdf(index=index, name=pdf_name, family=family, label=label))
+            candidate = TruthPdf(index=index, name=pdf_name, family=family, label=label)
+            available_pdfs.append(candidate)
+            if requested_families == ("all",) or family in requested_families:
+                truths.append(candidate)
 
         category_names = [cat.GetName() for cat in list(workspace.allCats())]
         metadata = {
@@ -1083,6 +1128,7 @@ def discover_truth_pdfs(workspace_path: Path, requested_families: tuple[str, ...
             "multipdf_score": score,
             "multipdf_states_total": n_pdfs,
             "categories": category_names,
+            "available_target_pdfs": [target.__dict__ for target in available_pdfs],
             "selected_truth_pdfs": [truth.__dict__ for truth in truths],
         }
         if not truths:
@@ -1503,10 +1549,34 @@ def analyze_fit_result(result: dict[str, Any], args: argparse.Namespace) -> dict
         )
     if analysis.get("status") == "ok":
         pulls = [float(value) for value in analysis.get("pulls", [])]
+        entries = [entry for entry in analysis.get("entries", []) if isinstance(entry, dict)]
+        r_hats = [
+            float(value)
+            for entry in entries
+            for value in [finite_float_or_none(entry.get("r_hat"))]
+            if value is not None
+        ]
+        fit_sigmas = [
+            float(value)
+            for entry in entries
+            for value in [finite_float_or_none(entry.get("sigma"))]
+            if value is not None
+        ]
+        r_hat_mean = sample_mean(r_hats)
+        fit_sigma_mean = sample_mean(fit_sigmas)
+        r_closure = r_hat_mean - float(metadata["injected_r"]) if r_hat_mean is not None else None
+        analysis["r_hat"] = r_hat_mean
+        analysis["r_hat_sample_sigma"] = sample_std(r_hats)
+        analysis["fit_sigma"] = fit_sigma_mean
+        analysis["fit_sigma_sample_sigma"] = sample_std(fit_sigmas)
+        analysis["r_closure"] = r_closure
         if dataset_strategy == "asimov":
             closure_pull = sample_mean(pulls)
             analysis["bias_metric"] = "asimov_closure_pull"
             analysis["asimov_closure_pull"] = closure_pull
+            analysis["asimov_r_hat"] = r_hat_mean
+            analysis["asimov_fit_sigma"] = fit_sigma_mean
+            analysis["asimov_r_closure"] = r_closure
             analysis["asimov_closure_status"] = "ok" if closure_pull is not None else "failed"
             analysis["bias_flag"] = (
                 bool(abs(float(closure_pull)) >= args.bias_pull_threshold)
@@ -1520,7 +1590,9 @@ def analyze_fit_result(result: dict[str, Any], args: argparse.Namespace) -> dict
                 Path(result["cwd"]),
                 (
                     f"{metadata.get('scheme')} {metadata.get('target_poi')} "
-                    f"truth={metadata.get('truth_pdf_label')} r={metadata.get('injected_r')}"
+                    f"truth={metadata.get('truth_pdf_label')} "
+                    f"target={metadata.get('fit_pdf_label', 'floating')} "
+                    f"r={metadata.get('injected_r')}"
                 ),
                 args.pull_range,
                 args.pull_bins,
@@ -1684,7 +1756,8 @@ def html_fixed_number_or_dash(value: Any, digits: int = 3) -> str:
 def scatter_plot_tile_html(plot: dict[str, Any], run_dir: Path) -> str:
     label = html_escape(plot.get("label", "-"))
     status = str(plot.get("status", "-"))
-    points = html_escape(plot.get("points", "-"))
+    points_label = "cells" if plot.get("cells") is not None else "points"
+    points = html_escape(plot.get("cells", plot.get("points", "-")))
     links = []
     if plot.get("plot_png"):
         links.append(html_link("png", href_relative_to(run_dir, Path(str(plot["plot_png"])))))
@@ -1692,6 +1765,8 @@ def scatter_plot_tile_html(plot: dict[str, Any], run_dir: Path) -> str:
         links.append(html_link("pdf", href_relative_to(run_dir, Path(str(plot["plot_pdf"])))))
     if plot.get("experiment_map"):
         links.append(html_link("map", href_relative_to(run_dir, Path(str(plot["experiment_map"])))))
+    if plot.get("values_json"):
+        links.append(html_link("values", href_relative_to(run_dir, Path(str(plot["values_json"])))))
     link_html = " | ".join(links) if links else "-"
     message = html_escape(plot.get("message", ""))
     message_html = f'<p class="muted">{message}</p>' if message else ""
@@ -1702,7 +1777,7 @@ def scatter_plot_tile_html(plot: dict[str, Any], run_dir: Path) -> str:
     return f"""
       <div class="plot-tile">
         <h3>{label}</h3>
-        <p class="muted">status: {html_escape(status)}; points: {points}</p>
+        <p class="muted">status: {html_escape(status)}; {html_escape(points_label)}: {points}</p>
         {message_html}
         <p class="plot-links">{link_html}</p>
         {image_html}
@@ -1752,6 +1827,9 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
             ["Bias metric", analysis.get("bias_metric", "-")],
             ["Entries used", analysis.get("entries_used", "-")],
             ["Entries skipped", analysis.get("entries_skipped", "-")],
+            ["Fitted r", analysis.get("r_hat", "-")],
+            ["Fitted r sigma", analysis.get("fit_sigma", "-")],
+            ["r closure", analysis.get("r_closure", "-")],
             ["Asimov closure pull", analysis.get("asimov_closure_pull", "-")],
             ["Gaussian mean", (analysis.get("pull_distribution") or {}).get("gaussian_mean", "-")],
             ["Gaussian sigma", (analysis.get("pull_distribution") or {}).get("gaussian_sigma", "-")],
@@ -1815,6 +1893,11 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "fit_algo": metadata.get("fit_algo"),
         "fit_pdf_mode": metadata.get("fit_pdf_mode"),
         "fit_pdf_index": metadata.get("fit_pdf_index"),
+        "fit_pdf_label": metadata.get("fit_pdf_label"),
+        "fit_pdf_family": metadata.get("fit_pdf_family"),
+        "target_pdf_index": metadata.get("target_pdf_index"),
+        "target_pdf_label": metadata.get("target_pdf_label"),
+        "target_pdf_family": metadata.get("target_pdf_family"),
         "injected_r": metadata.get("injected_r"),
         "dataset_strategy": metadata.get("dataset_strategy"),
         "pseudo_datasets": metadata.get("pseudo_datasets"),
@@ -1851,6 +1934,13 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "fit_algo": metadata.get("fit_algo"),
         "fit_pdf_mode": metadata.get("fit_pdf_mode"),
         "fit_pdf_index": metadata.get("fit_pdf_index"),
+        "fit_pdf": metadata.get("fit_pdf"),
+        "fit_pdf_label": metadata.get("fit_pdf_label"),
+        "fit_pdf_family": metadata.get("fit_pdf_family"),
+        "target_pdf_index": metadata.get("target_pdf_index"),
+        "target_pdf": metadata.get("target_pdf"),
+        "target_pdf_label": metadata.get("target_pdf_label"),
+        "target_pdf_family": metadata.get("target_pdf_family"),
         "injected_r": metadata.get("injected_r"),
         "injection_mode": metadata.get("injection_mode"),
         "dataset_strategy": metadata.get("dataset_strategy", "toys"),
@@ -1866,7 +1956,13 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "entries_total": analysis.get("entries_total"),
         "entries_used": analysis.get("entries_used"),
         "entries_skipped": analysis.get("entries_skipped"),
+        "r_hat": analysis.get("r_hat"),
+        "fit_sigma": analysis.get("fit_sigma"),
+        "r_closure": analysis.get("r_closure"),
         "asimov_closure_pull": analysis.get("asimov_closure_pull"),
+        "asimov_r_hat": analysis.get("asimov_r_hat"),
+        "asimov_fit_sigma": analysis.get("asimov_fit_sigma"),
+        "asimov_r_closure": analysis.get("asimov_r_closure"),
         "bias_metric": analysis.get("bias_metric"),
         "gaussian_mean": distribution.get("gaussian_mean"),
         "gaussian_mean_error": distribution.get("gaussian_mean_error"),
@@ -1907,6 +2003,31 @@ def finite_float_or_none(value: Any) -> float | None:
     return numeric
 
 
+def fit_target_pdf_label(experiment: dict[str, Any]) -> str:
+    mode = normalize_pdf_target_strategy(experiment.get("fit_pdf_mode", "floating"))
+    if mode == "fixed":
+        label = experiment.get("target_pdf_label") or experiment.get("fit_pdf_label")
+        index = experiment.get("target_pdf_index")
+        if label:
+            return str(label)
+        if index is not None:
+            return f"pdf{index}"
+        return "fixed"
+    return "floating"
+
+
+def fit_target_pdf_sort_key(experiment: dict[str, Any]) -> tuple[int, int, str]:
+    mode = normalize_pdf_target_strategy(experiment.get("fit_pdf_mode", "floating"))
+    if mode == "fixed":
+        index = experiment.get("target_pdf_index", experiment.get("fit_pdf_index"))
+        try:
+            pdf_index = int(index)
+        except (TypeError, ValueError):
+            pdf_index = 1_000_000
+        return (0, pdf_index, fit_target_pdf_label(experiment))
+    return (1, 1_000_000, "floating")
+
+
 def scatter_point_values(experiment: dict[str, Any]) -> tuple[float, float, str] | None:
     if str(experiment.get("dataset_strategy", "toys")) == "asimov":
         closure_pull = finite_float_or_none(experiment.get("asimov_closure_pull"))
@@ -1930,7 +2051,8 @@ def experiment_full_label(experiment: dict[str, Any]) -> str:
         f"{experiment.get('target_poi', '-')}\n"
         f"strategy = {experiment.get('dataset_strategy', 'toys')}\n"
         f"r = {format_number(float(experiment.get('injected_r', 0.0)))}\n"
-        f"truth pdf index {experiment.get('truth_pdf_index', '?')}"
+        f"truth pdf index {experiment.get('truth_pdf_index', '?')}\n"
+        f"target pdf = {fit_target_pdf_label(experiment)}"
     )
 
 
@@ -2017,6 +2139,7 @@ def make_scatter_plot(
             str(item.get("dataset_strategy", "toys")),
             float(item.get("injected_r", 0.0)),
             str(item.get("truth_pdf_label", "")),
+            fit_target_pdf_sort_key(item),
         )
     )
     for index, experiment in enumerate(point_records, start=1):
@@ -2270,7 +2393,7 @@ def make_scatter_plot(
         "experiment_map": str(map_path.resolve()),
         "experiment_map_repo_relative": repo_relative(map_path),
         "annotate_outliers": annotate_outliers,
-        "note": ("" if label == "Global" else f"Filtered to {label}. ") + "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Point color shows truth PDF, marker shape shows injected signal strength, and point area shows fitted sigma for toy fits. Asimov closure points use fixed area." + annotation_note,
+        "note": ("" if label == "Global" else f"Filtered to {label}. ") + "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Point color shows truth PDF, marker shape shows injected signal strength, and point area shows fitted sigma for toy fits. Fixed and floating target PDF fits are separate points. Asimov closure points use fixed area." + annotation_note,
     }
 
 
@@ -2498,6 +2621,397 @@ output_path.write_text(
         )
 
 
+def heatmap_metric_values(experiment: dict[str, Any]) -> tuple[float | None, float | None, str]:
+    dataset_strategy = str(experiment.get("dataset_strategy", "toys"))
+    if dataset_strategy == "asimov":
+        metric = finite_float_or_none(experiment.get("asimov_r_closure"))
+        if metric is None:
+            metric = finite_float_or_none(experiment.get("r_closure"))
+        sigma = finite_float_or_none(experiment.get("asimov_fit_sigma"))
+        if sigma is None:
+            sigma = finite_float_or_none(experiment.get("fit_sigma"))
+        return metric, sigma, "r_closure"
+
+    metric = finite_float_or_none(experiment.get("gaussian_mean"))
+    sigma = finite_float_or_none(experiment.get("gaussian_sigma"))
+    return metric, sigma, "pull_mean"
+
+
+def truth_pdf_axis_key(experiment: dict[str, Any]) -> tuple[int, str]:
+    try:
+        index = int(experiment.get("truth_pdf_index"))
+    except (TypeError, ValueError):
+        index = 1_000_000
+    label = str(experiment.get("truth_pdf_label") or f"pdf{index}")
+    return index, label
+
+
+def target_pdf_axis_key(experiment: dict[str, Any]) -> tuple[int, int, str]:
+    mode = normalize_pdf_target_strategy(experiment.get("fit_pdf_mode", "floating"))
+    if mode == "fixed":
+        index = experiment.get("target_pdf_index", experiment.get("fit_pdf_index"))
+        try:
+            pdf_index = int(index)
+        except (TypeError, ValueError):
+            pdf_index = 1_000_000
+        return 0, pdf_index, fit_target_pdf_label(experiment)
+    return 1, 1_000_000, "floating"
+
+
+def make_pdf_target_heatmap(
+    experiments: list[dict[str, Any]],
+    run_dir: Path,
+    plot_stem: str,
+    label: str,
+    split: dict[str, Any],
+    plt: Any,
+    np: Any,
+    TwoSlopeNorm: Any,
+) -> dict[str, Any]:
+    plot_dir = run_dir / "plots" / "pdf_target_heatmaps"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    png_path = plot_dir / f"{plot_stem}.png"
+    pdf_path = plot_dir / f"{plot_stem}.pdf"
+    values_path = plot_dir / f"{plot_stem}_values.json"
+
+    truth_axis = sorted({truth_pdf_axis_key(experiment) for experiment in experiments})
+    target_axis = sorted({target_pdf_axis_key(experiment) for experiment in experiments})
+    if not truth_axis or not target_axis:
+        payload = {
+            "status": "failed",
+            "message": "No truth or target PDF axis entries available.",
+            "label": label,
+            "split": split,
+            "plot_stem": plot_stem,
+            "points": 0,
+        }
+        values_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return payload
+
+    truth_positions = {axis_key: index for index, axis_key in enumerate(truth_axis)}
+    target_positions = {axis_key: index for index, axis_key in enumerate(target_axis)}
+    matrix = np.full((len(truth_axis), len(target_axis)), np.nan, dtype=float)
+    sigma_matrix = np.full((len(truth_axis), len(target_axis)), np.nan, dtype=float)
+    cell_records: list[dict[str, Any]] = []
+
+    for experiment in sorted(
+        experiments,
+        key=lambda item: (
+            truth_pdf_axis_key(item),
+            target_pdf_axis_key(item),
+            str(item.get("job_id", "")),
+        ),
+    ):
+        truth_key = truth_pdf_axis_key(experiment)
+        target_key = target_pdf_axis_key(experiment)
+        row = truth_positions[truth_key]
+        column = target_positions[target_key]
+        metric, sigma, metric_name = heatmap_metric_values(experiment)
+        if metric is not None:
+            matrix[row, column] = float(metric)
+        if sigma is not None:
+            sigma_matrix[row, column] = abs(float(sigma))
+        cell_records.append(
+            {
+                "truth_pdf_index": truth_key[0],
+                "truth_pdf_label": truth_key[1],
+                "target_pdf_index": None if target_key[0] == 1 else target_key[1],
+                "target_pdf_label": target_key[2],
+                "fit_pdf_mode": "floating" if target_key[0] == 1 else "fixed",
+                "metric": metric,
+                "metric_name": metric_name,
+                "sigma": sigma,
+                "experiment_index": experiment.get("experiment_index"),
+                "job_id": experiment.get("job_id"),
+                "status": experiment.get("status"),
+                "fit_summary_html": experiment.get("fit_summary_html"),
+            }
+        )
+
+    finite_values = [float(value) for value in matrix[np.isfinite(matrix)]]
+    max_abs = max([abs(value) for value in finite_values] + [1.0e-9])
+    if max_abs < 1.0e-9:
+        max_abs = 1.0
+    masked_matrix = np.ma.masked_invalid(matrix)
+    cmap = plt.get_cmap("RdBu_r").copy()
+    cmap.set_bad("#e5e7eb")
+    norm = TwoSlopeNorm(vmin=-max_abs, vcenter=0.0, vmax=max_abs)
+
+    fig_width = max(7.5, 1.25 * len(target_axis) + 3.5)
+    fig_height = max(5.0, 0.72 * len(truth_axis) + 2.8)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#f8fafc")
+    image = ax.imshow(masked_matrix, cmap=cmap, norm=norm, aspect="auto")
+
+    ax.set_xticks(range(len(target_axis)))
+    ax.set_xticklabels([axis_key[2] for axis_key in target_axis], rotation=35, ha="right", fontsize=10)
+    ax.set_yticks(range(len(truth_axis)))
+    ax.set_yticklabels([axis_key[1] for axis_key in truth_axis], fontsize=10)
+    ax.set_xlabel("Target PDF", fontsize=12)
+    ax.set_ylabel("Truth PDF", fontsize=12)
+    ax.set_title(label, fontsize=13, pad=14)
+    ax.set_xticks(np.arange(-0.5, len(target_axis), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(truth_axis), 1), minor=True)
+    ax.grid(which="minor", color="white", linestyle="-", linewidth=1.8)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    for row in range(len(truth_axis)):
+        for column in range(len(target_axis)):
+            metric_value = matrix[row, column]
+            sigma_value = sigma_matrix[row, column]
+            if np.isfinite(sigma_value):
+                text = f"{float(sigma_value):.2f}"
+            else:
+                text = "-"
+            text_color = "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * max_abs else "#111827"
+            ax.text(column, row, text, ha="center", va="center", color=text_color, fontsize=10, fontweight="bold")
+
+    dataset_strategy = str(split.get("dataset_strategy", "toys"))
+    colorbar_label = "r closure (r_hat - injected r)" if dataset_strategy == "asimov" else "fitted pull mean"
+    colorbar = fig.colorbar(image, ax=ax, shrink=0.92)
+    colorbar.set_label(colorbar_label, fontsize=11)
+    fig.text(0.01, 0.01, "Cell text: fitted sigma", ha="left", va="bottom", fontsize=9, color="#475569")
+    fig.savefig(png_path, dpi=180)
+    fig.savefig(pdf_path)
+    plt.close(fig)
+
+    payload = {
+        "status": "ok",
+        "label": label,
+        "split": split,
+        "plot_stem": plot_stem,
+        "points": len([record for record in cell_records if record.get("metric") is not None]),
+        "cells": len(cell_records),
+        "metric": colorbar_label,
+        "annotation": "fitted sigma",
+        "truth_axis": [{"index": index, "label": axis_label} for index, axis_label in truth_axis],
+        "target_axis": [
+            {
+                "mode": "floating" if mode_rank == 1 else "fixed",
+                "index": None if mode_rank == 1 else pdf_index,
+                "label": axis_label,
+            }
+            for mode_rank, pdf_index, axis_label in target_axis
+        ],
+        "values": cell_records,
+        "plot_png": str(png_path.resolve()),
+        "plot_png_repo_relative": repo_relative(png_path),
+        "plot_pdf": str(pdf_path.resolve()),
+        "plot_pdf_repo_relative": repo_relative(pdf_path),
+        "values_json": str(values_path.resolve()),
+        "values_json_repo_relative": repo_relative(values_path),
+        "note": "Rows show truth PDFs, columns show target PDFs. Cell color is the fitted pull mean for toys or r closure for Asimov. Cell text is the fitted sigma rounded to two decimals.",
+    }
+    values_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def make_summary_heatmaps(
+    experiments: list[dict[str, Any]],
+    run_dir: Path,
+) -> list[dict[str, Any]]:
+    plot_dir = run_dir / "plots" / "pdf_target_heatmaps"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from matplotlib.colors import TwoSlopeNorm
+    except Exception as exc:
+        return [
+            {
+                "status": "failed",
+                "message": f"Could not import matplotlib/numpy for PDF target heatmaps: {exc}",
+                "label": "PDF target heatmaps",
+                "split": {},
+                "plot_stem": "pdf_target_heatmaps",
+                "points": 0,
+            }
+        ]
+
+    heatmaps: list[dict[str, Any]] = []
+    dataset_strategies = sorted(
+        {str(experiment.get("dataset_strategy", "toys")) for experiment in experiments}
+    )
+    schemes = sorted(
+        {str(experiment.get("scheme")) for experiment in experiments if experiment.get("scheme") is not None}
+    )
+    for dataset_strategy in dataset_strategies:
+        for scheme in schemes:
+            target_pois = sorted(
+                {
+                    str(experiment.get("target_poi"))
+                    for experiment in experiments
+                    if str(experiment.get("dataset_strategy", "toys")) == dataset_strategy
+                    and str(experiment.get("scheme")) == scheme
+                    and experiment.get("target_poi") is not None
+                }
+            )
+            injected_rs = sorted(
+                {
+                    value
+                    for experiment in experiments
+                    if str(experiment.get("dataset_strategy", "toys")) == dataset_strategy
+                    and str(experiment.get("scheme")) == scheme
+                    for value in [finite_float_or_none(experiment.get("injected_r"))]
+                    if value is not None
+                }
+            )
+            for target_poi in target_pois:
+                target_label = next(
+                    (
+                        str(experiment.get("target_label"))
+                        for experiment in experiments
+                        if str(experiment.get("dataset_strategy", "toys")) == dataset_strategy
+                        and str(experiment.get("scheme")) == scheme
+                        and str(experiment.get("target_poi")) == target_poi
+                        and experiment.get("target_label") is not None
+                    ),
+                    target_poi,
+                )
+                for injected_r in injected_rs:
+                    selected = [
+                        experiment
+                        for experiment in experiments
+                        if str(experiment.get("dataset_strategy", "toys")) == dataset_strategy
+                        and str(experiment.get("scheme")) == scheme
+                        and str(experiment.get("target_poi")) == target_poi
+                        and same_injected_r(experiment, injected_r)
+                    ]
+                    if not selected:
+                        continue
+                    label = (
+                        f"{dataset_strategy} | {scheme} | {target_label} | "
+                        f"r={format_number(injected_r)}"
+                    )
+                    plot_stem = (
+                        f"pdf_target_heatmap__{safe_name(dataset_strategy)}"
+                        f"__scheme_{safe_name(scheme)}"
+                        f"__target_{safe_name(target_poi)}"
+                        f"__r_{injection_tag(injected_r)}"
+                    )
+                    heatmaps.append(
+                        make_pdf_target_heatmap(
+                            selected,
+                            run_dir,
+                            plot_stem,
+                            label,
+                            {
+                                "dataset_strategy": dataset_strategy,
+                                "scheme": scheme,
+                                "target_poi": target_poi,
+                                "target_label": target_label,
+                                "injected_r": injected_r,
+                            },
+                            plt,
+                            np,
+                            TwoSlopeNorm,
+                        )
+                    )
+    return heatmaps
+
+
+def failed_summary_heatmaps(
+    run_dir: Path,
+    message: str,
+    returncode: int | None = None,
+) -> list[dict[str, Any]]:
+    plot_dir = run_dir / "plots" / "pdf_target_heatmaps"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "status": "failed",
+        "label": "PDF target heatmaps",
+        "split": {},
+        "plot_stem": "pdf_target_heatmaps",
+        "points": 0,
+        "message": message,
+        "stdout_path": str((plot_dir / "summary_heatmaps_stdout.txt").resolve()),
+        "stdout_path_repo_relative": repo_relative(plot_dir / "summary_heatmaps_stdout.txt"),
+        "stderr_path": str((plot_dir / "summary_heatmaps_stderr.txt").resolve()),
+        "stderr_path_repo_relative": repo_relative(plot_dir / "summary_heatmaps_stderr.txt"),
+    }
+    if returncode is not None:
+        payload["returncode"] = returncode
+    return [payload]
+
+
+def make_summary_heatmaps_isolated(
+    experiments: list[dict[str, Any]],
+    run_dir: Path,
+) -> list[dict[str, Any]]:
+    plot_dir = run_dir / "plots" / "pdf_target_heatmaps"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    input_path = plot_dir / "summary_heatmaps_input.json"
+    output_path = plot_dir / "summary_heatmaps_output.json"
+    stdout_path = plot_dir / "summary_heatmaps_stdout.txt"
+    stderr_path = plot_dir / "summary_heatmaps_stderr.txt"
+    input_payload = {
+        "experiments": experiments,
+        "run_dir": str(run_dir.resolve()),
+    }
+    input_path.write_text(json.dumps(input_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    code = r"""
+import json
+import sys
+from pathlib import Path
+import scripts.bias_study as bias_study
+
+input_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+payload = json.loads(input_path.read_text(encoding='utf-8'))
+heatmaps = bias_study.make_summary_heatmaps(
+    payload['experiments'],
+    Path(payload['run_dir']),
+)
+output_path.write_text(
+    json.dumps({'heatmaps': heatmaps}, indent=2, sort_keys=True) + '\n',
+    encoding='utf-8',
+)
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", code, str(input_path), str(output_path)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=HEATMAP_PLOT_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
+        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+        return failed_summary_heatmaps(
+            run_dir,
+            f"Summary heatmap plotting timed out after {HEATMAP_PLOT_SUBPROCESS_TIMEOUT_SECONDS} seconds.",
+        )
+
+    stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+    stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+    if completed.returncode != 0:
+        message = f"Summary heatmap plotting subprocess failed with return code {completed.returncode}."
+        if completed.returncode < 0:
+            message += f" Signal {-completed.returncode} terminated the subprocess."
+        return failed_summary_heatmaps(run_dir, message, completed.returncode)
+    if not output_path.exists():
+        return failed_summary_heatmaps(
+            run_dir,
+            "Summary heatmap plotting subprocess finished without writing its output JSON.",
+            completed.returncode,
+        )
+
+    try:
+        output_payload = json.loads(output_path.read_text(encoding="utf-8"))
+        return list(output_payload.get("heatmaps", []))
+    except Exception as exc:
+        return failed_summary_heatmaps(
+            run_dir,
+            f"Could not read summary heatmap plotting output JSON: {exc}",
+            completed.returncode,
+        )
+
+
 def resolve_plot_only_run_dir(args: argparse.Namespace, output_dir: Path) -> Path:
     plot_only_value = args.plot_only
     if plot_only_value:
@@ -2590,6 +3104,21 @@ def infer_plot_only_args(
     args.pdf_index_name = str(
         first_metadata_value(fit_results, "pdf_index_name", existing_summary.get("pdf_index_name", args.pdf_index_name))
     )
+    fit_pdf_modes = ordered_unique(
+        [
+            normalize_pdf_target_strategy((result.get("metadata") or {}).get("fit_pdf_mode", "floating"))
+            for result in fit_results
+        ]
+    )
+    if set(fit_pdf_modes) >= {"fixed", "floating"}:
+        args.pdf_target_strategy = "both"
+    elif fit_pdf_modes:
+        args.pdf_target_strategy = fit_pdf_modes[0]
+    else:
+        args.pdf_target_strategy = normalize_pdf_target_strategy(
+            existing_summary.get("pdf_target_strategy", getattr(args, "pdf_target_strategy", DEFAULT_PDF_TARGET_STRATEGY))
+        )
+    args.pdf_target_strategies = selected_pdf_target_strategies(args)
     args.poi_min = float(
         first_metadata_value(fit_results, "requested_poi_min", existing_summary.get("requested_poi_min", args.poi_min))
     )
@@ -2791,6 +3320,7 @@ def run_plot_only(args: argparse.Namespace, output_dir: Path) -> int:
         args.bias_pull_threshold,
         args.annotate_scatter_outliers,
     )
+    heatmap_plots = make_summary_heatmaps_isolated(experiments, run_dir)
     write_run_summary(
         run_dir,
         output_dir,
@@ -2801,6 +3331,7 @@ def run_plot_only(args: argparse.Namespace, output_dir: Path) -> int:
         results,
         scatter_plot,
         scatter_plot_variations,
+        heatmap_plots,
     )
     log(f"Rebuilt plot-only summary: {repo_relative(run_dir / 'summary.json')}")
     log(f"Global summary: {repo_relative(output_dir / 'bias_study.html')}")
@@ -2828,6 +3359,7 @@ def write_run_summary(
     results: list[dict[str, Any]],
     scatter_plot: dict[str, Any] | None,
     scatter_plot_variations: dict[str, list[dict[str, Any]]] | None = None,
+    heatmap_plots: list[dict[str, Any]] | None = None,
 ) -> None:
     fit_results = [result for result in results if result.get("method") == "MultiDimFit"]
     experiments = [experiment_summary_from_fit(result, index) for index, result in enumerate(fit_results, start=1)]
@@ -2861,7 +3393,9 @@ def write_run_summary(
         "fit_algo": FIT_ALGO,
         "fit_poi_scan_mode": "target-only",
         "float_other_pois": True,
-        "fit_pdf_mode": "free",
+        "pdf_target_strategy": args.pdf_target_strategy,
+        "pdf_target_strategies": list(args.pdf_target_strategies),
+        "fit_pdf_mode": ",".join(args.pdf_target_strategies),
         "fit_pdf_index": None,
         "pdf_index_name": args.pdf_index_name,
         "poi_range_policy": "fixed requested range",
@@ -2900,6 +3434,7 @@ def write_run_summary(
         "experiments": experiments,
         "scatter_plot": scatter_plot,
         "scatter_plot_variations": scatter_plot_variations or {},
+        "heatmap_plots": heatmap_plots or [],
         "bias_flags": bias_flags,
         "pull_width_flags": width_flags,
         "answer": {
@@ -2932,7 +3467,8 @@ def write_run_summary(
         ["Job POI range policy", "fixed requested range"],
         ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
         ["Fit POI scan", "target POI only (-P target) with other signal POIs floating"],
-        ["Fit PDF mode", "free-floating pdfindex"],
+        ["PDF target strategy", args.pdf_target_strategy],
+        ["Fit PDF modes", ", ".join(args.pdf_target_strategies)],
         ["Quick mode", "enabled" if args.quick else "disabled"],
         ["Minimizer strategy", args.cmin_default_minimizer_strategy],
         ["Robust fit", "enabled" if args.robust_fit else "disabled"],
@@ -2989,17 +3525,23 @@ def write_run_summary(
             ),
         ]
     )
+    heatmap_section = scatter_plot_grid_section(
+        "PDF Target Heatmaps",
+        heatmap_plots or [],
+        run_dir,
+    )
     experiment_headers = [
         "Index",
         "Scheme",
         "Target POI",
         "Injected r",
         "Truth PDF",
+        "Target PDF",
         "POI Range",
         "Entries Used",
     ]
     if args.dataset_strategy == "asimov":
-        experiment_headers.extend(["Closure Pull", "Bias", "Fit Job"])
+        experiment_headers.extend(["r Closure", "Fit Sigma", "Closure Pull", "Bias", "Fit Job"])
     else:
         experiment_headers.extend(["Pull Mean", "Pull Sigma", "Bias", "Width", "Pull Plot", "Fit Job"])
 
@@ -3018,12 +3560,15 @@ def write_run_summary(
             html_escape(experiment.get("target_poi", "-")),
             html_escape(experiment.get("injected_r", "-")),
             html_escape(experiment.get("truth_pdf_label", "-")),
+            html_escape(fit_target_pdf_label(experiment)),
             poi_range,
             html_escape(experiment.get("entries_used", "-")),
         ]
         if args.dataset_strategy == "asimov":
             row.extend(
                 [
+                    html_fixed_number_or_dash(experiment.get("r_closure")),
+                    html_fixed_number_or_dash(experiment.get("fit_sigma")),
                     html_fixed_number_or_dash(experiment.get("asimov_closure_pull")),
                     flag_pill(experiment.get("bias_flag")),
                     html_link("fit", href_relative_to(run_dir, REPO_ROOT / fit_html)) if fit_html else "-",
@@ -3050,6 +3595,7 @@ def write_run_summary(
             html_escape(result.get("metadata", {}).get("scheme", "-")),
             html_escape(result.get("metadata", {}).get("target_poi", "-")),
             html_escape(result.get("metadata", {}).get("truth_pdf_label", "-")),
+            html_escape(result.get("metadata", {}).get("target_pdf_label", result.get("metadata", {}).get("fit_pdf_label", "-"))),
             html_escape(result.get("metadata", {}).get("injected_r", "-")),
             html_escape(result.get("duration", "-")),
             html_link("summary", href_relative_to(run_dir, Path(result.get("summary_html_path", ""))))
@@ -3060,7 +3606,7 @@ def write_run_summary(
     ]
     policy_note = """
       <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
-      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. No <code>pdfindex</code> freeze is applied in the fit, so the target POI, the other signal POIs, and the non-resonant discrete PDF choice float/profile against each pseudo-dataset. Job-level POI ranges use the fixed requested range. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report the single closure pull and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. The <code>--pdf-target-strategy</code> option controls whether <code>pdfindex</code> floats/profiled, is fixed to each target PDF index, or both. Job-level POI ranges use the fixed requested range. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report r closure and the closure pull, and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0.</p>
     """
     body = f"""
     <h1>Bias Study Run</h1>
@@ -3070,8 +3616,9 @@ def write_run_summary(
     <section class="card"><h2>Combine Prescription</h2>{policy_note}</section>
     {scatter_section}
     {scatter_variation_sections}
+    {heatmap_section}
     <section class="card"><h2>Experiments</h2>{html_table_raw(experiment_headers, experiment_rows)}</section>
-    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Strategy', 'Scheme', 'Target POI', 'Truth PDF', 'Injected r', 'Duration', 'Summary'], job_rows)}</section>
+    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Strategy', 'Scheme', 'Target POI', 'Truth PDF', 'Target PDF', 'Injected r', 'Duration', 'Summary'], job_rows)}</section>
     """
     (run_dir / "summary.html").write_text(html_document("Bias Study Run", body), encoding="utf-8")
     write_global_summary(output_dir)
@@ -3095,13 +3642,14 @@ def write_global_summary(output_dir: Path) -> None:
             )
         else:
             injections_text = ", ".join(str(value) for value in summary.get("injections", []))
+        pdf_target_text = summary.get("pdf_target_strategy") or summary.get("fit_pdf_mode", "-")
         rows.append(
             [
                 html_escape(summary.get("run_dir_repo_relative", run_dir.name)),
                 html_escape(", ".join(summary.get("dataset_strategies", [summary.get("dataset_strategy", "toys")]))),
                 html_escape(summary.get("toys", "-")),
                 html_escape(injections_text),
-                html_escape(summary.get("fit_pdf_mode", "-")),
+                html_escape(pdf_target_text),
                 html_escape(summary.get("answer", {}).get("flagged_experiments", "-")),
                 "yes" if summary.get("answer", {}).get("non_negligible_bias_found") else "no",
                 html_link("summary.html", href_relative_to(output_dir, run_dir / "summary.html")),
@@ -3111,7 +3659,7 @@ def write_global_summary(output_dir: Path) -> None:
     body = f"""
     <h1>Bias Study</h1>
     <p class="subtitle">Global index of bias-study runs.</p>
-    <section class="card"><h2>Runs</h2>{html_table_raw(['Run', 'Strategy', 'Toys/Exp', 'Injections', 'Fit PDF Mode', 'Flagged Bias Experiments', 'Bias Found', 'HTML', 'JSON'], rows)}</section>
+    <section class="card"><h2>Runs</h2>{html_table_raw(['Run', 'Strategy', 'Toys/Exp', 'Injections', 'PDF Target Strategy', 'Flagged Bias Experiments', 'Bias Found', 'HTML', 'JSON'], rows)}</section>
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "bias_study.html").write_text(html_document("Bias Study", body), encoding="utf-8")
@@ -3232,9 +3780,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Name of the RooMultiPdf discrete category in the Combine workspace.",
     )
     parser.add_argument(
+        "--pdf-target-strategy",
+        choices=PDF_TARGET_STRATEGIES,
+        default=DEFAULT_PDF_TARGET_STRATEGY,
+        help=(
+            "How to handle the target PDF during MultiDimFit: `floating` keeps pdfindex profiled, "
+            "`fixed` runs one fit per fixed target pdfindex, and `both` runs both strategies."
+        ),
+    )
+    parser.add_argument(
         "--profile-freeze-disassociated-params",
         action="store_true",
-        help="Pass --X-rtd MINIMIZER_freezeDisassociatedParams while leaving pdfindex free to float.",
+        help="Pass --X-rtd MINIMIZER_freezeDisassociatedParams to MultiDimFit jobs.",
     )
     parser.add_argument(
         "--quick",
@@ -3311,6 +3868,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def validate_args(args: argparse.Namespace) -> None:
     args.dataset_strategies = selected_dataset_strategies(args)
+    args.pdf_target_strategy = normalize_pdf_target_strategy(args.pdf_target_strategy)
+    args.pdf_target_strategies = selected_pdf_target_strategies(args)
     if args.quick:
         args.robust_fit = False
         args.cmin_default_minimizer_strategy = QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY
@@ -3374,6 +3933,7 @@ def main() -> int:
     log(f"Requested POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
     log("Job POI ranges use the fixed requested range.")
     log(f"Dataset strategies: {', '.join(args.dataset_strategies)}")
+    log(f"PDF target strategies: {', '.join(args.pdf_target_strategies)}")
     if "toys" in args.dataset_strategies:
         log(f"Toys per toy experiment: {args.toys}")
     if "asimov" in args.dataset_strategies:
@@ -3381,7 +3941,7 @@ def main() -> int:
     log(f"Worker policy: {worker_policy_text(args.workers, max(1, len(schemes)))}")
     log(
         f"Fit method: MultiDimFit --algo {FIT_ALGO} -P target --floatOtherPOIs 1 "
-        "with other POIs and pdfindex free"
+        "with other POIs floating; pdfindex is either floating or fixed by --pdf-target-strategy"
     )
     log(f"Minimizer strategy: {args.cmin_default_minimizer_strategy}")
     if args.quick:
@@ -3412,9 +3972,22 @@ def main() -> int:
         workspace_paths[first_scheme.name],
         args.pdf_families,
     )
+    target_pdfs = [
+        TruthPdf(
+            index=int(item["index"]),
+            name=str(item["name"]),
+            family=str(item["family"]),
+            label=str(item["label"]),
+        )
+        for item in truth_pdf_metadata.get("available_target_pdfs", [])
+    ] or truth_pdfs
     log(
         "Truth PDFs: "
         + ", ".join(f"{truth.index}:{truth.label}({truth.name})" for truth in truth_pdfs)
+    )
+    log(
+        "Target PDFs: "
+        + ", ".join(f"{target.index}:{target.label}({target.name})" for target in target_pdfs)
     )
 
     dataset_jobs: list[CommandJob] = []
@@ -3476,21 +4049,41 @@ def main() -> int:
                         toys_path = first_root_file(dataset_result, "higgsCombine")
                         if toys_path is None:
                             raise RuntimeError(f"No GenerateOnly ROOT file found for {dataset_result['job_id']}")
-                        fit_jobs.append(
-                            build_fit_job(
-                                run_dir,
-                                scheme,
-                                target,
-                                truth_pdf,
-                                injected_r,
-                                args.mass,
-                                workspace_paths[scheme.name],
-                                staged_datacards[scheme.name],
-                                toys_path,
-                                args,
-                                dataset_strategy,
+                        if "floating" in args.pdf_target_strategies:
+                            fit_jobs.append(
+                                build_fit_job(
+                                    run_dir,
+                                    scheme,
+                                    target,
+                                    truth_pdf,
+                                    None,
+                                    injected_r,
+                                    args.mass,
+                                    workspace_paths[scheme.name],
+                                    staged_datacards[scheme.name],
+                                    toys_path,
+                                    args,
+                                    dataset_strategy,
+                                )
                             )
-                        )
+                        if "fixed" in args.pdf_target_strategies:
+                            for target_pdf in target_pdfs:
+                                fit_jobs.append(
+                                    build_fit_job(
+                                        run_dir,
+                                        scheme,
+                                        target,
+                                        truth_pdf,
+                                        target_pdf,
+                                        injected_r,
+                                        args.mass,
+                                        workspace_paths[scheme.name],
+                                        staged_datacards[scheme.name],
+                                        toys_path,
+                                        args,
+                                        dataset_strategy,
+                                    )
+                                )
 
     fit_results = run_jobs_parallel(fit_jobs, args.workers, "MultiDimFit jobs")
     analyzed_fit_results = [analyze_fit_result(result, args) for result in fit_results]
@@ -3505,6 +4098,7 @@ def main() -> int:
         args.bias_pull_threshold,
         args.annotate_scatter_outliers,
     )
+    heatmap_plots = make_summary_heatmaps_isolated(experiments, run_dir)
     write_run_summary(
         run_dir,
         output_dir,
@@ -3515,6 +4109,7 @@ def main() -> int:
         all_results,
         scatter_plot,
         scatter_plot_variations,
+        heatmap_plots,
     )
 
     failed = [result for result in all_results if not result_successful(result)]
