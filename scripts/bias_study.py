@@ -2714,13 +2714,11 @@ output_path.write_text(
 def heatmap_metric_values(experiment: dict[str, Any]) -> tuple[float | None, float | None, str]:
     dataset_strategy = str(experiment.get("dataset_strategy", "toys"))
     if dataset_strategy == "asimov":
-        metric = finite_float_or_none(experiment.get("asimov_r_closure"))
-        if metric is None:
-            metric = finite_float_or_none(experiment.get("r_closure"))
+        metric = finite_float_or_none(experiment.get("asimov_closure_pull"))
         sigma = finite_float_or_none(experiment.get("asimov_fit_sigma"))
         if sigma is None:
             sigma = finite_float_or_none(experiment.get("fit_sigma"))
-        return metric, sigma, "r_closure"
+        return metric, sigma, "asimov_closure_pull"
 
     metric = finite_float_or_none(experiment.get("gaussian_mean"))
     sigma = finite_float_or_none(experiment.get("gaussian_sigma"))
@@ -2852,80 +2850,133 @@ def make_pdf_target_summary_heatmap(
 
     color_scale_min = -1.0
     color_scale_max = 1.0
-    masked_matrix = np.ma.masked_invalid(matrix)
+    from matplotlib.colors import ListedColormap
+
+    plot_matrix = matrix.T
+    plot_sigma_matrix = sigma_matrix.T
+    plot_failed_matrix = failed_matrix.T
+    masked_matrix = np.ma.masked_invalid(plot_matrix)
     cmap = plt.get_cmap("RdBu_r").copy()
     cmap.set_bad("#e5e7eb")
     norm = TwoSlopeNorm(vmin=color_scale_min, vcenter=0.0, vmax=color_scale_max)
+    failed_color = "#22c55e"
+    failed_cmap = ListedColormap([failed_color])
+    failed_cmap.set_bad((1.0, 1.0, 1.0, 0.0))
 
-    y_fontsize = 9 if len(row_axis) <= 40 else 7 if len(row_axis) <= 120 else 5
-    x_fontsize = 10 if len(target_axis) <= 10 else 8
-    fig_width = max(10.0, 1.15 * len(target_axis) + 6.5)
-    fig_height = max(7.0, min(120.0, 0.36 * len(row_axis) + 4.5))
+    x_fontsize = 8 if len(row_axis) <= 40 else 6 if len(row_axis) <= 120 else 4
+    y_fontsize = 10 if len(target_axis) <= 10 else 8
+    fig_width = max(12.0, min(180.0, 0.48 * len(row_axis) + 6.5))
+    fig_height = max(5.5, 0.72 * len(target_axis) + 3.8)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#f8fafc")
-    image = ax.imshow(masked_matrix, cmap=cmap, norm=norm, aspect="auto")
+    image = ax.imshow(masked_matrix, cmap=cmap, norm=norm, aspect="auto", interpolation="none")
+    if np.any(plot_failed_matrix):
+        failed_overlay = np.ma.masked_where(
+            ~plot_failed_matrix,
+            np.ones(plot_failed_matrix.shape, dtype=float),
+        )
+        ax.imshow(failed_overlay, cmap=failed_cmap, aspect="auto", interpolation="none", zorder=3)
 
-    ax.set_xticks(range(len(target_axis)))
-    ax.set_xticklabels([axis_key[2] for axis_key in target_axis], rotation=35, ha="right", fontsize=x_fontsize)
-    row_labels: list[str] = []
+    column_labels: list[str] = []
     group_boundaries: list[int] = []
+    groups: list[tuple[int, int, str]] = []
     previous_group = None
-    for row_index, row_key in enumerate(row_axis):
+    group_start = 0
+    for column_index, row_key in enumerate(row_axis):
         group_key = row_key[:5]
         group_label = summary_heatmap_group_label(row_key)
         truth_label = row_key[6]
         if previous_group is None or group_key != previous_group:
             if previous_group is not None:
-                group_boundaries.append(row_index)
-            row_labels.append(f"{group_label} | {truth_label}")
+                group_boundaries.append(column_index)
+                groups.append((group_start, column_index - 1, summary_heatmap_group_label(row_axis[group_start])))
+                group_start = column_index
+            column_labels.append(f"{group_label} | {truth_label}")
             previous_group = group_key
         else:
-            row_labels.append(f"  {truth_label}")
-    ax.set_yticks(range(len(row_axis)))
-    ax.set_yticklabels(row_labels, fontsize=y_fontsize)
-    ax.set_xlabel("Target PDF", fontsize=12)
-    ax.set_ylabel("Grouped tested combination | truth PDF", fontsize=12)
+            column_labels.append(truth_label)
+    groups.append((group_start, len(row_axis) - 1, summary_heatmap_group_label(row_axis[group_start])))
+
+    ax.set_xticks(range(len(row_axis)))
+    ax.set_xticklabels(
+        column_labels,
+        rotation=90,
+        ha="right",
+        va="center",
+        rotation_mode="anchor",
+        fontsize=x_fontsize,
+    )
+    ax.set_yticks(range(len(target_axis)))
+    ax.set_yticklabels([axis_key[2] for axis_key in target_axis], fontsize=y_fontsize)
+    ax.set_xlabel("Grouped tested combination | truth PDF", fontsize=12)
+    ax.set_ylabel("Target PDF", fontsize=12)
     ax.set_title(label, fontsize=13, pad=14)
-    ax.set_xticks(np.arange(-0.5, len(target_axis), 1), minor=True)
-    ax.set_yticks(np.arange(-0.5, len(row_axis), 1), minor=True)
+    ax.set_xticks(np.arange(-0.5, len(row_axis), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(target_axis), 1), minor=True)
     ax.grid(which="minor", color="white", linestyle="-", linewidth=1.2)
     ax.tick_params(which="minor", bottom=False, left=False)
     for boundary in group_boundaries:
-        ax.axhline(boundary - 0.5, color="#0f172a", linewidth=1.1, alpha=0.85)
+        ax.axvline(boundary - 0.5, color="#0f172a", linewidth=1.1, alpha=0.85)
+    if len(groups) <= 40:
+        for start, end, group_label in groups:
+            midpoint = 0.5 * (start + end)
+            ax.text(
+                midpoint,
+                1.01,
+                group_label,
+                transform=ax.get_xaxis_transform(),
+                ha="center",
+                va="bottom",
+                fontsize=max(5, x_fontsize),
+                color="#334155",
+                clip_on=False,
+            )
 
     annotation_fontsize = 8 if len(row_axis) <= 80 else 6 if len(row_axis) <= 180 else 4
     annotate_cells = len(row_axis) * len(target_axis) <= 4500
+    column_is_asimov = [row_key[0] == "asimov" for row_key in row_axis]
+    has_asimov_columns = any(column_is_asimov)
+    has_annotated_columns = any(not is_asimov for is_asimov in column_is_asimov)
     if annotate_cells:
-        for row in range(len(row_axis)):
-            for column in range(len(target_axis)):
-                metric_value = matrix[row, column]
-                sigma_value = sigma_matrix[row, column]
-                fit_failed = bool(failed_matrix[row, column])
-                if fit_failed:
-                    text = "FAILED"
-                elif np.isfinite(sigma_value):
+        for row in range(len(target_axis)):
+            for column in range(len(row_axis)):
+                if column_is_asimov[column] or bool(plot_failed_matrix[row, column]):
+                    continue
+                metric_value = plot_matrix[row, column]
+                sigma_value = plot_sigma_matrix[row, column]
+                if np.isfinite(sigma_value):
                     text = f"{float(sigma_value):.2f}"
                 else:
                     text = "-"
-                text_color = "#991b1b" if fit_failed else "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * color_scale_max else "#111827"
+                text_color = "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * color_scale_max else "#111827"
                 ax.text(column, row, text, ha="center", va="center", color=text_color, fontsize=annotation_fontsize, fontweight="bold")
-    else:
-        for row in range(len(row_axis)):
-            for column in range(len(target_axis)):
-                if not bool(failed_matrix[row, column]):
-                    continue
-                ax.text(column, row, "FAILED", ha="center", va="center", color="#991b1b", fontsize=annotation_fontsize, fontweight="bold")
 
-    colorbar_label = "toy fitted pull mean / Asimov r closure"
+    colorbar_label = "toy fitted pull mean / Asimov closure pull"
     colorbar = fig.colorbar(image, ax=ax, shrink=0.92, extend="both")
     colorbar.set_label(colorbar_label, fontsize=11)
     colorbar.set_ticks([color_scale_min, -0.5, 0.0, 0.5, color_scale_max])
-    cell_text_note = "Cell text: fitted sigma" if annotate_cells else "Cell text omitted because the summary heatmap is dense; see values JSON for fitted sigma."
-    fig.text(0.01, 0.01, cell_text_note, ha="left", va="bottom", fontsize=9, color="#475569")
+    cell_text_note = None
+    if annotate_cells and has_annotated_columns:
+        cell_text_note = "Cell text: fitted sigma for toy columns only." if has_asimov_columns else "Cell text: fitted sigma."
+    elif has_annotated_columns:
+        cell_text_note = "Cell text omitted because the summary heatmap is dense; see values JSON for fitted sigma."
+    if cell_text_note is not None and np.any(plot_failed_matrix):
+        cell_text_note += f" Failed cells are {failed_color}."
+    if cell_text_note is not None:
+        fig.text(0.01, 0.01, cell_text_note, ha="left", va="bottom", fontsize=9, color="#475569")
     fig.savefig(png_path, dpi=180)
     fig.savefig(pdf_path)
     plt.close(fig)
+
+    if not has_annotated_columns:
+        annotation = "none"
+    elif annotate_cells and has_asimov_columns:
+        annotation = "fitted sigma for non-Asimov columns"
+    elif annotate_cells:
+        annotation = "fitted sigma"
+    else:
+        annotation = "see values_json"
 
     payload = {
         "status": "ok",
@@ -2935,8 +2986,10 @@ def make_pdf_target_summary_heatmap(
         "points": len([record for record in cell_records if record.get("metric") is not None]),
         "cells": len(cell_records),
         "metric": colorbar_label,
-        "annotation": "fitted sigma" if annotate_cells else "see values_json",
+        "annotation": annotation,
         "color_scale": {"min": color_scale_min, "max": color_scale_max},
+        "failed_cell_color": failed_color,
+        "plot_orientation": "target_pdf_rows_tested_combination_columns",
         "row_axis": [
             {
                 "dataset_strategy": row_key[0],
@@ -2964,7 +3017,7 @@ def make_pdf_target_summary_heatmap(
         "plot_pdf_repo_relative": repo_relative(pdf_path),
         "values_json": str(values_path.resolve()),
         "values_json_repo_relative": repo_relative(values_path),
-        "note": "Single summary heatmap over all tested combinations. Rows are grouped by dataset strategy, POI scheme, target POI, injected r, and truth PDF; columns show target PDFs. Cell color uses a fixed -1 to 1 scale, and failed fits are marked FAILED.",
+        "note": f"Single summary heatmap over all tested combinations. Columns are grouped by dataset strategy, POI scheme, target POI, injected r, and truth PDF; rows show target PDFs. Cell color uses a fixed -1 to 1 scale for toy fitted pull mean or Asimov closure pull. Failed cells are filled {failed_color} and are not part of the colorbar. Asimov columns have no cell text.",
     }
     values_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
@@ -3070,29 +3123,38 @@ def make_pdf_target_heatmap(
     ax.grid(which="minor", color="white", linestyle="-", linewidth=1.8)
     ax.tick_params(which="minor", bottom=False, left=False)
 
-    for row in range(len(truth_axis)):
-        for column in range(len(target_axis)):
-            metric_value = matrix[row, column]
-            sigma_value = sigma_matrix[row, column]
-            fit_failed = bool(failed_matrix[row, column])
-            if fit_failed:
-                text = "FAILED"
-            elif np.isfinite(sigma_value):
-                text = f"{float(sigma_value):.2f}"
-            else:
-                text = "-"
-            text_color = "#991b1b" if fit_failed else "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * color_scale_max else "#111827"
-            ax.text(column, row, text, ha="center", va="center", color=text_color, fontsize=10, fontweight="bold")
-
     dataset_strategy = str(split.get("dataset_strategy", "toys"))
-    colorbar_label = "r closure (r_hat - injected r)" if dataset_strategy == "asimov" else "fitted pull mean"
+    annotate_cells = dataset_strategy != "asimov"
+    if annotate_cells:
+        for row in range(len(truth_axis)):
+            for column in range(len(target_axis)):
+                metric_value = matrix[row, column]
+                sigma_value = sigma_matrix[row, column]
+                fit_failed = bool(failed_matrix[row, column])
+                if fit_failed:
+                    text = "FAILED"
+                elif np.isfinite(sigma_value):
+                    text = f"{float(sigma_value):.2f}"
+                else:
+                    text = "-"
+                text_color = "#991b1b" if fit_failed else "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * color_scale_max else "#111827"
+                ax.text(column, row, text, ha="center", va="center", color=text_color, fontsize=10, fontweight="bold")
+
+    colorbar_label = "Asimov closure pull" if dataset_strategy == "asimov" else "fitted pull mean"
     colorbar = fig.colorbar(image, ax=ax, shrink=0.92, extend="both")
     colorbar.set_label(colorbar_label, fontsize=11)
     colorbar.set_ticks([color_scale_min, -0.5, 0.0, 0.5, color_scale_max])
-    fig.text(0.01, 0.01, "Cell text: fitted sigma", ha="left", va="bottom", fontsize=9, color="#475569")
+    if annotate_cells:
+        fig.text(0.01, 0.01, "Cell text: fitted sigma", ha="left", va="bottom", fontsize=9, color="#475569")
     fig.savefig(png_path, dpi=180)
     fig.savefig(pdf_path)
     plt.close(fig)
+
+    note = (
+        "Rows show truth PDFs, columns show target PDFs. Cell color is Asimov closure pull on a fixed -1 to 1 scale. Asimov heatmaps omit all cell text."
+        if dataset_strategy == "asimov"
+        else "Rows show truth PDFs, columns show target PDFs. Cell color is the fitted pull mean on a fixed -1 to 1 scale. Cell text is the fitted sigma rounded to two decimals; failed fits are marked FAILED."
+    )
 
     payload = {
         "status": "ok",
@@ -3102,7 +3164,7 @@ def make_pdf_target_heatmap(
         "points": len([record for record in cell_records if record.get("metric") is not None]),
         "cells": len(cell_records),
         "metric": colorbar_label,
-        "annotation": "fitted sigma",
+        "annotation": "none" if dataset_strategy == "asimov" else "fitted sigma",
         "color_scale": {"min": color_scale_min, "max": color_scale_max},
         "truth_axis": [{"index": index, "label": axis_label} for index, axis_label in truth_axis],
         "target_axis": [
@@ -3120,7 +3182,7 @@ def make_pdf_target_heatmap(
         "plot_pdf_repo_relative": repo_relative(pdf_path),
         "values_json": str(values_path.resolve()),
         "values_json_repo_relative": repo_relative(values_path),
-        "note": "Rows show truth PDFs, columns show target PDFs. Cell color is the fitted pull mean for toys or r closure for Asimov on a fixed -1 to 1 scale. Cell text is the fitted sigma rounded to two decimals; failed fits are marked FAILED.",
+        "note": note,
     }
     values_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
@@ -3895,7 +3957,7 @@ def write_run_summary(
         "Entries Used",
     ]
     if args.dataset_strategy == "asimov":
-        experiment_headers.extend(["r Closure", "Fit Sigma", "Closure Pull", "Bias", "Fit Job"])
+        experiment_headers.extend(["Closure Pull", "Bias", "Fit Job"])
     else:
         experiment_headers.extend(["Pull Mean", "Pull Sigma", "Bias", "Width", "Pull Plot", "Fit Job"])
 
@@ -3921,8 +3983,6 @@ def write_run_summary(
         if args.dataset_strategy == "asimov":
             row.extend(
                 [
-                    html_fixed_number_or_dash(experiment.get("r_closure")),
-                    html_fixed_number_or_dash(experiment.get("fit_sigma")),
                     html_fixed_number_or_dash(experiment.get("asimov_closure_pull")),
                     flag_pill(experiment.get("bias_flag")),
                     html_link("fit", href_relative_to(run_dir, REPO_ROOT / fit_html)) if fit_html else "-",
