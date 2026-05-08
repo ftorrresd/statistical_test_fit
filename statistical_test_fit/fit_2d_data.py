@@ -27,6 +27,7 @@ from .bkg_model import (
     compute_winner_and_start_indexes,
 )
 from .bkg_pdf_families import BkgPdfFamily
+from .display_names import pdf_state_display
 from .dimuon_non_correlated import dimuon_non_correlated
 from .mass_ranges import (
     BOSON_MASS_LOWER,
@@ -122,10 +123,18 @@ def _build_non_resonant_family_summary(
             boson_mass,
             sideband_entries,
         )
+        display = pdf_state_display(
+            family=family.value,
+            order=candidate_result.spec.scan_order,
+            name=candidate_result.model_name,
+        )
         candidate_summaries.append(
             {
                 "index": idx,
                 "label": candidate_result.spec.label,
+                "display_slug": display.slug,
+                "display_label": display.text,
+                "display_latex": display.latex,
                 "model_name": candidate_result.model_name,
                 "pdf_family": family.value,
                 "scan_order": candidate_result.spec.scan_order,
@@ -186,9 +195,11 @@ def _make_multipdf_readable_label(
     selection_role: str,
     scan_order: int | None,
 ) -> str:
-    if family == BkgPdfFamily.JOHNSON.value:
-        return "johnson_nominal"
-    return f"{family}_{selection_role}_order{scan_order}"
+    return pdf_state_display(
+        family=family,
+        order=scan_order,
+        selection_role=selection_role,
+    ).text
 
 
 def _write_non_resonant_summary(
@@ -539,15 +550,21 @@ def run_fit_2d_data(args: Namespace):
     johnson_candidates = test_bkg_pdfs.get(BkgPdfFamily.JOHNSON, [])
     if johnson_candidates:
         johnson_result = candidate_results_by_family[BkgPdfFamily.JOHNSON][0]
+        display = pdf_state_display(
+            index=len(final_multipdf_states),
+            family=BkgPdfFamily.JOHNSON.value,
+            order=johnson_result.spec.scan_order,
+            selection_role="nominal",
+            name=johnson_candidates[0].model.GetName(),
+        )
         final_multipdf_states.append(
             {
                 "index": len(final_multipdf_states),
                 "workspace_label": f"_pdf{len(final_multipdf_states)}",
-                "readable_label": _make_multipdf_readable_label(
-                    family=BkgPdfFamily.JOHNSON.value,
-                    selection_role="nominal",
-                    scan_order=johnson_result.spec.scan_order,
-                ),
+                "readable_label": display.text,
+                "display_slug": display.slug,
+                "display_label": display.text,
+                "display_latex": display.latex,
                 "pdf_name": johnson_candidates[0].model.GetName(),
                 "pdf_family": BkgPdfFamily.JOHNSON.value,
                 "selection_role": "nominal",
@@ -561,15 +578,21 @@ def run_fit_2d_data(args: Namespace):
             continue
         winner_index = winners[family]
         winner_result = candidate_results_by_family[family][winner_index]
+        display = pdf_state_display(
+            index=len(final_multipdf_states),
+            family=family.value,
+            order=winner_result.spec.scan_order,
+            selection_role="winner",
+            name=test_bkg_pdfs[family][winner_index].model.GetName(),
+        )
         final_multipdf_states.append(
             {
                 "index": len(final_multipdf_states),
                 "workspace_label": f"_pdf{len(final_multipdf_states)}",
-                "readable_label": _make_multipdf_readable_label(
-                    family=family.value,
-                    selection_role="winner",
-                    scan_order=winner_result.spec.scan_order,
-                ),
+                "readable_label": display.text,
+                "display_slug": display.slug,
+                "display_label": display.text,
+                "display_latex": display.latex,
                 "pdf_name": test_bkg_pdfs[family][winner_index].model.GetName(),
                 "pdf_family": family.value,
                 "selection_role": "winner",

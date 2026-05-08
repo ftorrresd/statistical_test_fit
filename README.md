@@ -347,6 +347,22 @@ python3 scripts/resonant_background.py --use-cache
 python3 scripts/build_bundled_workspace.py --output-dir /tmp/statistical_test_fit_single_card
 ```
 
+End-to-end smoke test (signal → resonant background → non-resonant background → single card → asymptotic limits → branching-fraction table → bias study):
+
+```bash
+python3 scripts/signal.py && \
+python3 scripts/resonant_background.py && \
+python3 scripts/non_resonant_background.py && \
+python3 scripts/build_bundled_workspace.py && \
+python3 scripts/limits.py --methods asymptotic && \
+python3 scripts/branching_fraction_table.py && \
+python3 scripts/bias_study.py \
+    --dataset-strategy toys --toys 10 --random-seeds \
+    --injections 0,1,10,100,1000 \
+    --scheme-injections h_grouped=0,1000,10000,100000 \
+    --scheme-injections three_poi_h=0,1000,10000,100000
+```
+
 ## Environment Notes
 
 - `statistical_test_fit/normalization_fit.py` uses ROOT plotting plus NumPy. Avoid reintroducing `matplotlib` casually in this CMSSW environment; NumPy / matplotlib ABI mismatches are a real failure mode here.

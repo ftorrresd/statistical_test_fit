@@ -42,6 +42,7 @@ from statistical_test_fit.mass_ranges import (
     UPSILON_MASS_LOWER,
     UPSILON_MASS_UPPER,
 )
+from statistical_test_fit.display_names import pdf_state_display
 from statistical_test_fit.signal_modeling import SIGNAL_SAMPLES
 from statistical_test_fit.ws_helper import freeze_pdf_params
 
@@ -50,6 +51,7 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "datacards"
 DEFAULT_WORKSPACE_NAME = "combined_workspace"
 DEFAULT_WORKSPACE_FILENAME = "workspace.root"
 DEFAULT_DATACARD_FILENAME = "datacard.txt"
+DEFAULT_SUMMARY_JSON_FILENAME = "bundle_summary.json"
 ANALYSIS_BIN_NAME = "cat1"
 NON_RESONANT_PROCESS_NAME = "non_resonant_bkg"
 RESONANT_H_PROCESS_NAME = "resonant_H_bkg"
@@ -512,7 +514,16 @@ def build_nonres_candidate_selection(
     johnson_candidate["workspace_state_label"] = (
         f"_pdf{johnson_candidate['workspace_state_index']}"
     )
-    johnson_candidate["readable_state_label"] = "johnson_nominal"
+    display = pdf_state_display(
+        index=johnson_candidate["workspace_state_index"],
+        family=johnson_candidate.get("pdf_family", "johnson"),
+        order=johnson_candidate.get("scan_order"),
+        selection_role=johnson_candidate.get("selection_role"),
+        name=johnson_candidate.get("model_name"),
+        workspace_label=johnson_candidate.get("workspace_state_label"),
+    )
+    johnson_candidate.update(display.metadata())
+    johnson_candidate["readable_state_label"] = display.text
     selected_candidates.append(johnson_candidate)
     seen_model_names.add(johnson_candidate["model_name"])
     selection_rows.append(
@@ -562,9 +573,16 @@ def build_nonres_candidate_selection(
             candidate["workspace_state_label"] = (
                 f"_pdf{candidate['workspace_state_index']}"
             )
-            candidate["readable_state_label"] = (
-                f"{family_name}_{selection_role}_order{candidate['scan_order']}"
+            display = pdf_state_display(
+                index=candidate["workspace_state_index"],
+                family=candidate.get("pdf_family", family_name),
+                order=candidate.get("scan_order"),
+                selection_role=selection_role,
+                name=model_name,
+                workspace_label=candidate.get("workspace_state_label"),
             )
+            candidate.update(display.metadata())
+            candidate["readable_state_label"] = display.text
             seen_model_names.add(model_name)
             selected_candidates.append(candidate)
             selection_rows.append(
@@ -705,6 +723,15 @@ def import_non_resonant_artifacts(
     )
     for candidate in nonres_selection["selected_candidates"]:
         alias_name = nonres_candidate_alias_name(candidate)
+        display = pdf_state_display(
+            index=candidate.get("workspace_state_index"),
+            family=candidate.get("pdf_family"),
+            order=candidate.get("scan_order"),
+            selection_role=candidate.get("selection_role"),
+            name=alias_name,
+            source_model_name=candidate.get("model_name"),
+            workspace_label=candidate.get("workspace_state_label"),
+        )
         import_pdf_with_shared_observables(
             target_workspace,
             nonres_workspace,
@@ -719,12 +746,13 @@ def import_non_resonant_artifacts(
             {
                 "index": int(candidate["workspace_state_index"]),
                 "workspace_label": candidate["workspace_state_label"],
-                "readable_label": candidate["readable_state_label"],
+                "readable_label": candidate.get("display_label", display.text),
                 "pdf_name": alias_name,
                 "source_model_name": candidate["model_name"],
                 "selection_role": candidate["selection_role"],
                 "scan_order": candidate["scan_order"],
                 "pdf_family": candidate["pdf_family"],
+                **display.metadata(),
             }
         )
 
@@ -1094,7 +1122,8 @@ def write_summary_report(
         [
             state["index"],
             state["workspace_label"],
-            state["readable_label"],
+            state.get("display_label", state["readable_label"]),
+            state.get("display_latex", "-"),
             state["pdf_name"],
             state["source_model_name"],
         ]
@@ -1113,6 +1142,38 @@ def write_summary_report(
         ]
         if validation_result
         else [["skipped", "skipped", "-"]]
+    )
+
+    summary_json_payload = {
+        "schema_version": 1,
+        "workspace_name": workspace_name,
+        "workspace_file_name": workspace_file_name,
+        "datacard_file_name": datacard_file_name,
+        "analysis_bin": ANALYSIS_BIN_NAME,
+        "non_resonant_mode": nonres_selection["mode_key"],
+        "signals": signal_reports,
+        "backgrounds": [nonres_report, *resonant_reports],
+        "non_resonant_selection": {
+            key: value
+            for key, value in nonres_selection.items()
+            if key != "selected_candidates"
+        },
+        "non_resonant_state_mappings": nonres_report["state_mappings"],
+        "validation": (
+            {
+                **validation_result,
+                "produced_files": [
+                    relative_to_repo(path) for path in validation_result.get("produced_files", [])
+                ],
+            }
+            if validation_result
+            else None
+        ),
+        "produced_files": sorted(relative_to_repo(path) for path in produced_files),
+    }
+    (output_dir / DEFAULT_SUMMARY_JSON_FILENAME).write_text(
+        json.dumps(summary_json_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
     summary_metrics = [
@@ -1204,6 +1265,7 @@ def write_summary_report(
                     "Index",
                     "Workspace label",
                     "Readable label",
+                    "LaTeX label",
                     "Imported PDF",
                     "Source model",
                 ],
@@ -1442,6 +1504,8 @@ def main() -> int:
         log_kv("text2workspace.py", validation_result["text2workspace_status"])
         log_kv("combine -M AsymptoticLimits", validation_result["combine_status"])
 
+    summary_json_path = output_dir / DEFAULT_SUMMARY_JSON_FILENAME
+    produced_files.append(summary_json_path)
     report_path = output_dir / "bundle_summary.html"
     produced_files.append(report_path)
     write_summary_report(

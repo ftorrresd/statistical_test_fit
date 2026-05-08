@@ -27,6 +27,8 @@ CONSOLE = Console()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from statistical_test_fit.display_names import poi_scheme_display, signal_target_display
+
 
 DEFAULT_DATACARD = REPO_ROOT / "datacards" / "datacard.txt"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "limits"
@@ -160,6 +162,30 @@ def safe_name(value: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
     value = value.strip("._")
     return value or "unnamed"
+
+
+def scheme_slug(name: str) -> str:
+    return poi_scheme_display(name).slug
+
+
+def scheme_label(name: str) -> str:
+    return poi_scheme_display(name).text
+
+
+def scheme_latex(name: str) -> str:
+    return poi_scheme_display(name).latex
+
+
+def target_slug(value: str) -> str:
+    return signal_target_display(value).slug
+
+
+def target_label(value: str) -> str:
+    return signal_target_display(value).text
+
+
+def target_latex(value: str) -> str:
+    return signal_target_display(value).latex
 
 
 def common_minimizer_options() -> list[str]:
@@ -448,7 +474,8 @@ def build_workspace_job(
     mass: str,
     scheme: PoiScheme,
 ) -> CommandJob:
-    cwd = run_dir / scheme.name / "workspace_build"
+    scheme_display = poi_scheme_display(scheme.name)
+    cwd = run_dir / scheme_display.slug / "workspace_build"
     reset_directory(cwd)
     _, inputs = stage_datacard_inputs(datacard_path, cwd)
     command: list[str] = [
@@ -464,7 +491,7 @@ def build_workspace_job(
     for poi_map in scheme.poi_maps:
         command.extend(["--PO", poi_map])
     return CommandJob(
-        job_id=f"workspace_{scheme.name}",
+        job_id=f"workspace_{scheme_display.slug}",
         kind="workspace_build",
         method="text2workspace.py",
         cwd=cwd,
@@ -473,6 +500,9 @@ def build_workspace_job(
         inputs=tuple(inputs),
         metadata={
             "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
             "scheme_title": scheme.title,
             "scheme_description": scheme.description,
             "poi_maps": list(scheme.poi_maps),
@@ -506,7 +536,8 @@ def build_blind_asimov_job(
     poi_min: float,
     poi_max: float,
 ) -> CommandJob:
-    cwd = run_dir / scheme.name / "blind_asimov"
+    scheme_display = poi_scheme_display(scheme.name)
+    cwd = run_dir / scheme_display.slug / "blind_asimov"
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     command = [
@@ -530,11 +561,11 @@ def build_blind_asimov_job(
         "-m",
         mass,
         "-n",
-        f".blind_asimov.{scheme.name}",
+        f".blind_asimov.{scheme_display.slug}",
     ]
     command.extend(common_minimizer_options())
     return CommandJob(
-        job_id=f"blind_asimov_{scheme.name}",
+        job_id=f"blind_asimov_{scheme_display.slug}",
         kind="blind_asimov_generation",
         method="GenerateOnly",
         cwd=cwd,
@@ -543,6 +574,9 @@ def build_blind_asimov_job(
         inputs=tuple(inputs),
         metadata={
             "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
             "pois": list(scheme.all_pois),
             "poi_min": poi_min,
             "poi_max": poi_max,
@@ -569,7 +603,9 @@ def build_asymptotic_job(
     poi_min: float,
     poi_max: float,
 ) -> CommandJob:
-    cwd = run_dir / scheme.name / "combine" / "asymptotic" / safe_name(target.label)
+    scheme_display = poi_scheme_display(scheme.name)
+    target_display = signal_target_display(target.label)
+    cwd = run_dir / scheme_display.slug / "combine" / "asymptotic" / target_display.slug
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path, blind_asimov_path)
     command = [
@@ -590,11 +626,11 @@ def build_asymptotic_job(
         "-m",
         mass,
         "-n",
-        f".asymptotic_blind.{safe_name(target.label)}",
+        f".asymptotic_blind.{target_display.slug}",
     ]
     command.extend(common_minimizer_options())
     return CommandJob(
-        job_id=f"asymptotic_{scheme.name}_{safe_name(target.label)}",
+        job_id=f"asymptotic_{scheme_display.slug}_{target_display.slug}",
         kind="combine",
         method="AsymptoticLimits",
         cwd=cwd,
@@ -603,7 +639,13 @@ def build_asymptotic_job(
         inputs=tuple(inputs),
         metadata={
             "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
             "target_label": target.label,
+            "target_slug": target_display.slug,
+            "target_display_label": target_display.text,
+            "target_latex": target_display.latex,
             "target_poi": target.poi,
             "target_processes": list(target.processes),
             "profiled_signal_pois": [poi for poi in scheme.all_pois if poi != target.poi],
@@ -647,12 +689,14 @@ def build_hybrid_job(
     retry_of: str | None = None,
     retry_reasons: tuple[str, ...] = (),
 ) -> CommandJob:
+    scheme_display = poi_scheme_display(scheme.name)
+    target_display = signal_target_display(target.label)
     base_cwd = (
         run_dir
-        / scheme.name
+        / scheme_display.slug
         / "combine"
         / "hybrid_lhc"
-        / safe_name(target.label)
+        / target_display.slug
         / quantile_tag(quantile)
     )
     cwd = base_cwd if attempt == 0 else base_cwd / f"retry_{attempt}"
@@ -685,7 +729,7 @@ def build_hybrid_job(
         "-m",
         mass,
         "-n",
-        f".hybrid_blind.{safe_name(target.label)}.{quantile_tag(quantile)}{retry_suffix}",
+        f".hybrid_blind.{target_display.slug}.{quantile_tag(quantile)}{retry_suffix}",
     ]
     command.extend(common_minimizer_options())
     if hint_method is not None:
@@ -702,7 +746,7 @@ def build_hybrid_job(
         command.extend(["--rAbsAcc", format_number(r_abs_acc)])
 
     return CommandJob(
-        job_id=f"hybrid_lhc_{scheme.name}_{safe_name(target.label)}_{quantile_tag(quantile)}"
+        job_id=f"hybrid_lhc_{scheme_display.slug}_{target_display.slug}_{quantile_tag(quantile)}"
         + (f"_retry{attempt}" if attempt else ""),
         kind="combine",
         method="HybridNew",
@@ -712,7 +756,13 @@ def build_hybrid_job(
         inputs=tuple(inputs),
         metadata={
             "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
             "target_label": target.label,
+            "target_slug": target_display.slug,
+            "target_display_label": target_display.text,
+            "target_latex": target_display.latex,
             "target_poi": target.poi,
             "target_processes": list(target.processes),
             "profiled_signal_pois": [poi for poi in scheme.all_pois if poi != target.poi],
@@ -829,9 +879,9 @@ def job_manifest_label(job: CommandJob) -> str:
     details: list[str] = []
     metadata = job.metadata
     if metadata.get("scheme"):
-        details.append(f"scheme={metadata['scheme']}")
+        details.append(f"scheme={metadata.get('scheme_label', metadata['scheme'])}")
     if metadata.get("target_poi"):
-        details.append(f"poi={metadata['target_poi']}")
+        details.append(f"target={metadata.get('target_display_label', metadata['target_poi'])}")
     if metadata.get("quantile") is not None:
         details.append(f"quantile={metadata['quantile']}")
     if metadata.get("poi_max") is not None:
@@ -1733,6 +1783,9 @@ def build_limit_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
             target_poi,
             {
                 "target_label": metadata.get("target_label"),
+                "target_slug": metadata.get("target_slug"),
+                "target_display_label": metadata.get("target_display_label"),
+                "target_latex": metadata.get("target_latex"),
                 "target_processes": metadata.get("target_processes", []),
                 "jobs": [],
                 "expected": {},
@@ -1787,6 +1840,9 @@ def write_run_summary(
         "schemes": [
             {
                 "name": scheme.name,
+                "slug": scheme_slug(scheme.name),
+                "label": scheme_label(scheme.name),
+                "latex": scheme_latex(scheme.name),
                 "title": scheme.title,
                 "description": scheme.description,
                 "pois": list(scheme.all_pois),
@@ -1794,6 +1850,9 @@ def write_run_summary(
                 "targets": [
                     {
                         "label": target.label,
+                        "slug": target_slug(target.label),
+                        "display_label": target_label(target.label),
+                        "latex": target_latex(target.label),
                         "poi": target.poi,
                         "processes": list(target.processes),
                     }
@@ -1813,8 +1872,8 @@ def write_run_summary(
             html_escape(result.get("job_id")),
             html_escape(result.get("method")),
             status_pill(result.get("status")),
-            html_escape(result.get("metadata", {}).get("scheme", "-")),
-            html_escape(result.get("metadata", {}).get("target_poi", "-")),
+            html_escape(result.get("metadata", {}).get("scheme_label", result.get("metadata", {}).get("scheme", "-"))),
+            html_escape(result.get("metadata", {}).get("target_display_label", result.get("metadata", {}).get("target_poi", "-"))),
             html_escape(result.get("metadata", {}).get("quantile", "-")),
             html_escape(
                 f"0 to {format_number(float(result.get('metadata', {}).get('poi_max')))}"
@@ -1859,6 +1918,7 @@ def write_run_summary(
         ["Blind Asimov dataset", BLIND_ASIMOV_DATASET],
         ["Minimizer strategy", DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY],
         ["POI scheme request", args.poi_scheme],
+        ["Selected POI schemes", ", ".join(scheme_label(scheme.name) for scheme in schemes)],
         ["Default POI range", f"{format_number(args.poi_min)} to {format_number(args.poi_max)}"],
         ["Quantiles", ", ".join(quantile_key(q) for q in args.quantiles)],
         ["Aggregate JSON", html_link("blind_limits_summary.json", "blind_limits_summary.json")],
@@ -2053,7 +2113,7 @@ def main() -> int:
     log(f"Run directory: {repo_relative(run_dir)}")
     log(f"Signals: {', '.join(processes.signals)}")
     log(f"Backgrounds: {', '.join(processes.backgrounds)}")
-    log(f"POI schemes: {', '.join(scheme.name for scheme in schemes)}")
+    log(f"POI schemes: {', '.join(scheme_label(scheme.name) for scheme in schemes)}")
     if args.quick:
         log(
             "Quick mode enabled: HybridNew "

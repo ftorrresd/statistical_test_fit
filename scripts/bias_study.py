@@ -29,6 +29,17 @@ CONSOLE = Console()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from statistical_test_fit.display_names import (
+    dataset_strategy_display,
+    floating_pdf_display,
+    infer_pdf_family_from_name,
+    infer_pdf_order,
+    normalize_pdf_family,
+    pdf_state_display,
+    poi_scheme_display,
+    signal_target_display,
+)
+
 
 DEFAULT_DATACARD = REPO_ROOT / "datacards" / "datacard.txt"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "bias_study"
@@ -102,6 +113,10 @@ class TruthPdf:
     name: str
     family: str
     label: str
+    slug: str
+    latex: str
+    scan_order: int | None = None
+    selection_role: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,13 +211,12 @@ def parse_scheme_injection_spec(value: str) -> tuple[str, tuple[float, ...]]:
 
 
 def parse_family_list(value: str) -> tuple[str, ...]:
-    aliases = {"checbchev": "chebychev", "cheb": "chebychev"}
     families: list[str] = []
     for item in value.split(","):
-        family = item.strip().lower()
-        if not family:
+        item = item.strip()
+        if not item:
             continue
-        family = aliases.get(family, family)
+        family = normalize_pdf_family(item)
         families.append(family)
     if not families:
         raise argparse.ArgumentTypeError("at least one family is required")
@@ -213,6 +227,34 @@ def safe_name(value: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
     value = value.strip("._")
     return value or "unnamed"
+
+
+def scheme_slug(name: str) -> str:
+    return poi_scheme_display(name).slug
+
+
+def scheme_label(name: str) -> str:
+    return poi_scheme_display(name).text
+
+
+def scheme_latex(name: str) -> str:
+    return poi_scheme_display(name).latex
+
+
+def target_slug(value: str) -> str:
+    return signal_target_display(value).slug
+
+
+def target_label(value: str) -> str:
+    return signal_target_display(value).text
+
+
+def target_latex(value: str) -> str:
+    return signal_target_display(value).latex
+
+
+def injection_output_slug(value: float) -> str:
+    return "injected_r_" + format_number(value).replace("-", "minus_").replace(".", "p")
 
 
 def injection_tag(value: float) -> str:
@@ -464,7 +506,7 @@ def format_injection_values(values: tuple[float, ...]) -> str:
 
 def format_injections_by_scheme(mapping: dict[str, tuple[float, ...]]) -> str:
     return "; ".join(
-        f"{scheme_name}={format_injection_values(values)}"
+        f"{scheme_label(scheme_name)}={format_injection_values(values)}"
         for scheme_name, values in mapping.items()
     )
 
@@ -555,7 +597,8 @@ def parameter_ranges_argument(pois: tuple[str, ...], lower: float, upper: float)
 
 
 def build_workspace_job(run_dir: Path, datacard_path: Path, mass: str, scheme: PoiScheme) -> CommandJob:
-    cwd = run_dir / scheme.name / "workspace_build"
+    scheme_display = poi_scheme_display(scheme.name)
+    cwd = run_dir / scheme_display.slug / "workspace_build"
     reset_directory(cwd)
     _, inputs = stage_datacard_inputs(datacard_path, cwd)
     command: list[str] = [
@@ -571,7 +614,7 @@ def build_workspace_job(run_dir: Path, datacard_path: Path, mass: str, scheme: P
     for poi_map in scheme.poi_maps:
         command.extend(["--PO", poi_map])
     return CommandJob(
-        job_id=f"workspace_{scheme.name}",
+        job_id=f"workspace_{scheme_display.slug}",
         kind="workspace_build",
         method="text2workspace.py",
         cwd=cwd,
@@ -580,6 +623,9 @@ def build_workspace_job(run_dir: Path, datacard_path: Path, mass: str, scheme: P
         inputs=tuple(inputs),
         metadata={
             "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
             "scheme_title": scheme.title,
             "scheme_description": scheme.description,
             "poi_maps": list(scheme.poi_maps),
@@ -603,12 +649,16 @@ def build_dataset_generation_job(
     experiment_index: int,
 ) -> CommandJob:
     generation_dir_name = "toys" if dataset_strategy == "toys" else "asimov"
+    scheme_display = poi_scheme_display(scheme.name)
+    target_display = signal_target_display(target.label)
+    dataset_display = dataset_strategy_display(dataset_strategy)
+    truth_slug = truth_pdf.slug or safe_name(truth_pdf.label)
     cwd = (
         run_dir
-        / scheme.name
-        / safe_name(target.label)
-        / safe_name(truth_pdf.label)
-        / injection_tag(injected_r)
+        / scheme_display.slug
+        / target_display.slug
+        / truth_slug
+        / injection_output_slug(injected_r)
         / generation_dir_name
     )
     reset_directory(cwd)
@@ -644,7 +694,7 @@ def build_dataset_generation_job(
         "-m",
         mass,
         "-n",
-        f".{generation_dir_name}.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
+        f".{dataset_display.slug}.{scheme_display.slug}.{target_display.slug}.{truth_slug}.{injection_output_slug(injected_r)}",
     ]
     seed = None
     if dataset_strategy == "toys":
@@ -657,8 +707,8 @@ def build_dataset_generation_job(
     job_prefix = "toys" if dataset_strategy == "toys" else "asimov"
     return CommandJob(
         job_id=(
-            f"{job_prefix}_{scheme.name}_{safe_name(target.label)}_"
-            f"{safe_name(truth_pdf.label)}_{injection_tag(injected_r)}"
+            f"{job_prefix}_{scheme_display.slug}_{target_display.slug}_"
+            f"{truth_slug}_{injection_output_slug(injected_r)}"
         ),
         kind="toy_generation" if dataset_strategy == "toys" else "asimov_generation",
         method="GenerateOnly",
@@ -668,13 +718,23 @@ def build_dataset_generation_job(
         inputs=tuple(inputs),
         metadata={
             "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
             "target_label": target.label,
+            "target_slug": target_display.slug,
+            "target_display_label": target_display.text,
+            "target_latex": target_display.latex,
             "target_poi": target.poi,
             "target_processes": list(target.processes),
             "truth_pdf_index": truth_pdf.index,
             "truth_pdf": truth_pdf.name,
             "truth_pdf_label": truth_pdf.label,
+            "truth_pdf_slug": truth_pdf.slug,
+            "truth_pdf_latex": truth_pdf.latex,
             "truth_pdf_family": truth_pdf.family,
+            "truth_pdf_scan_order": truth_pdf.scan_order,
+            "truth_pdf_selection_role": truth_pdf.selection_role,
             "injected_r": injected_r,
             "injection_mode": args.injection_mode,
             "dataset_strategy": dataset_strategy,
@@ -709,13 +769,24 @@ def build_fit_job(
 ) -> CommandJob:
     fit_dir_name = "fit" if dataset_strategy == "toys" else "asimov_fit"
     fit_pdf_mode = "floating" if target_pdf is None else "fixed"
-    fit_pdf_tag = "floating" if target_pdf is None else f"fixed_{safe_name(target_pdf.label)}"
+    scheme_display = poi_scheme_display(scheme.name)
+    target_display = signal_target_display(target.label)
+    dataset_display = dataset_strategy_display(dataset_strategy)
+    truth_slug = truth_pdf.slug or safe_name(truth_pdf.label)
+    fit_pdf_display = floating_pdf_display() if target_pdf is None else pdf_state_display(
+        index=target_pdf.index,
+        family=target_pdf.family,
+        order=target_pdf.scan_order,
+        selection_role=target_pdf.selection_role,
+        name=target_pdf.name,
+    )
+    fit_pdf_tag = fit_pdf_display.slug if target_pdf is None else f"fixed_{fit_pdf_display.slug}"
     cwd = (
         run_dir
-        / scheme.name
-        / safe_name(target.label)
-        / safe_name(truth_pdf.label)
-        / injection_tag(injected_r)
+        / scheme_display.slug
+        / target_display.slug
+        / truth_slug
+        / injection_output_slug(injected_r)
         / fit_dir_name
         / fit_pdf_tag
     )
@@ -770,7 +841,7 @@ def build_fit_job(
         "-m",
         mass,
         "-n",
-        f".{fit_dir_name}.{fit_pdf_tag}.{scheme.name}.{safe_name(target.label)}.{safe_name(truth_pdf.label)}.{injection_tag(injected_r)}",
+        f".{fit_dir_name}.{fit_pdf_tag}.{scheme_display.slug}.{target_display.slug}.{truth_slug}.{injection_output_slug(injected_r)}",
     ]
     if freeze_parameters:
         command.extend(["--freezeParameters", ",".join(freeze_parameters)])
@@ -782,8 +853,8 @@ def build_fit_job(
     job_prefix = "fit" if dataset_strategy == "toys" else "asimov_fit"
     return CommandJob(
         job_id=(
-            f"{job_prefix}_{fit_pdf_tag}_{scheme.name}_{safe_name(target.label)}_"
-            f"{safe_name(truth_pdf.label)}_{injection_tag(injected_r)}"
+            f"{job_prefix}_{fit_pdf_tag}_{scheme_display.slug}_{target_display.slug}_"
+            f"{truth_slug}_{injection_output_slug(injected_r)}"
         ),
         kind="toy_fit" if dataset_strategy == "toys" else "asimov_fit",
         method="MultiDimFit",
@@ -793,24 +864,38 @@ def build_fit_job(
         inputs=tuple(inputs),
         metadata={
             "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
             "target_label": target.label,
+            "target_slug": target_display.slug,
+            "target_display_label": target_display.text,
+            "target_latex": target_display.latex,
             "target_poi": target.poi,
             "all_pois": list(scheme.all_pois),
             "target_processes": list(target.processes),
             "truth_pdf_index": truth_pdf.index,
             "truth_pdf": truth_pdf.name,
             "truth_pdf_label": truth_pdf.label,
+            "truth_pdf_slug": truth_pdf.slug,
+            "truth_pdf_latex": truth_pdf.latex,
             "truth_pdf_family": truth_pdf.family,
+            "truth_pdf_scan_order": truth_pdf.scan_order,
+            "truth_pdf_selection_role": truth_pdf.selection_role,
             "fit_method": "MultiDimFit",
             "fit_algo": FIT_ALGO,
             "fit_pdf_mode": fit_pdf_mode,
             "fit_pdf_index": None if target_pdf is None else target_pdf.index,
             "fit_pdf": None if target_pdf is None else target_pdf.name,
-            "fit_pdf_label": "floating" if target_pdf is None else target_pdf.label,
+            "fit_pdf_label": fit_pdf_display.text,
+            "fit_pdf_slug": fit_pdf_display.slug,
+            "fit_pdf_latex": fit_pdf_display.latex,
             "fit_pdf_family": None if target_pdf is None else target_pdf.family,
             "target_pdf_index": None if target_pdf is None else target_pdf.index,
             "target_pdf": None if target_pdf is None else target_pdf.name,
-            "target_pdf_label": "floating" if target_pdf is None else target_pdf.label,
+            "target_pdf_label": fit_pdf_display.text,
+            "target_pdf_slug": fit_pdf_display.slug,
+            "target_pdf_latex": fit_pdf_display.latex,
             "target_pdf_family": None if target_pdf is None else target_pdf.family,
             "free_floating_pois": list(scheme.all_pois),
             "scanned_pois": list(scanned_pois),
@@ -1071,17 +1156,71 @@ def open_workspace_from_file(root_path: Path, preferred_names: tuple[str, ...] =
 
 
 def infer_pdf_family(name: str) -> str:
-    lower = name.lower()
-    if "johnson" in lower:
-        return "johnson"
-    if "bernstein" in lower:
-        return "bernstein"
-    if "chebychev" in lower or "cheb" in lower:
-        return "chebychev"
-    return "other"
+    return infer_pdf_family_from_name(name)
 
 
-def discover_truth_pdfs(workspace_path: Path, requested_families: tuple[str, ...]) -> tuple[list[TruthPdf], dict[str, Any]]:
+def load_bundle_pdf_state_metadata(datacard_path: Path) -> dict[int, dict[str, Any]]:
+    summary_path = datacard_path.parent / "bundle_summary.json"
+    if not summary_path.exists():
+        return {}
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log(f"Could not read bundle PDF metadata from {repo_relative(summary_path)}: {exc}")
+        return {}
+    states = payload.get("non_resonant_state_mappings", [])
+    mapping: dict[int, dict[str, Any]] = {}
+    for state in states:
+        if not isinstance(state, dict) or state.get("index") is None:
+            continue
+        try:
+            mapping[int(state["index"])] = dict(state)
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
+def make_truth_pdf(index: int, pdf_name: str, state_metadata: dict[str, Any] | None = None) -> TruthPdf:
+    state_metadata = state_metadata or {}
+    family = normalize_pdf_family(
+        state_metadata.get("pdf_family")
+        or state_metadata.get("family")
+        or infer_pdf_family_from_name(pdf_name, state_metadata.get("source_model_name"))
+    )
+    order = infer_pdf_order(
+        state_metadata.get("scan_order"),
+        pdf_name,
+        state_metadata.get("source_model_name"),
+        state_metadata.get("readable_label"),
+    )
+    selection_role = state_metadata.get("selection_role")
+    display = pdf_state_display(
+        index=index,
+        family=family,
+        order=order,
+        selection_role=selection_role,
+        name=pdf_name,
+        source_model_name=state_metadata.get("source_model_name"),
+        workspace_label=state_metadata.get("workspace_label"),
+    )
+    return TruthPdf(
+        index=index,
+        name=pdf_name,
+        family=family,
+        label=str(state_metadata.get("display_label") or display.text),
+        slug=str(state_metadata.get("display_slug") or display.slug),
+        latex=str(state_metadata.get("display_latex") or display.latex),
+        scan_order=order,
+        selection_role=None if selection_role is None else str(selection_role),
+    )
+
+
+def discover_truth_pdfs(
+    workspace_path: Path,
+    requested_families: tuple[str, ...],
+    pdf_state_metadata: dict[int, dict[str, Any]] | None = None,
+) -> tuple[list[TruthPdf], dict[str, Any]]:
+    pdf_state_metadata = pdf_state_metadata or {}
     ROOT, root_file, workspace = open_workspace_from_file(workspace_path)
     try:
         multipdf_candidates = []
@@ -1113,13 +1252,9 @@ def discover_truth_pdfs(workspace_path: Path, requested_families: tuple[str, ...
         for index in range(n_pdfs):
             pdf = multipdf.getPdf(index)
             pdf_name = str(pdf.GetName()) if pdf is not None else f"pdf_{index}"
-            family = infer_pdf_family(pdf_name)
-            label = f"pdf{index}_{family}"
-            if family == "other":
-                label = f"pdf{index}_{safe_name(pdf_name)}"
-            candidate = TruthPdf(index=index, name=pdf_name, family=family, label=label)
+            candidate = make_truth_pdf(index, pdf_name, pdf_state_metadata.get(index))
             available_pdfs.append(candidate)
-            if requested_families == ("all",) or family in requested_families:
+            if requested_families == ("all",) or candidate.family in requested_families:
                 truths.append(candidate)
 
         category_names = [cat.GetName() for cat in list(workspace.allCats())]
@@ -1882,22 +2017,36 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "summary_json": result.get("summary_json_path_repo_relative", result.get("summary_json_path")),
         "summary_html": result.get("summary_html_path_repo_relative", result.get("summary_html_path")),
         "scheme": metadata.get("scheme"),
+        "scheme_slug": metadata.get("scheme_slug"),
+        "scheme_label": metadata.get("scheme_label"),
+        "scheme_latex": metadata.get("scheme_latex"),
         "target_poi": metadata.get("target_poi"),
         "target_label": metadata.get("target_label"),
+        "target_slug": metadata.get("target_slug"),
+        "target_display_label": metadata.get("target_display_label"),
+        "target_latex": metadata.get("target_latex"),
         "scanned_pois": metadata.get("scanned_pois"),
         "profiled_pois": metadata.get("profiled_pois"),
         "poi_scan_mode": metadata.get("poi_scan_mode"),
         "float_other_pois": metadata.get("float_other_pois"),
         "truth_pdf_index": metadata.get("truth_pdf_index"),
         "truth_pdf_label": metadata.get("truth_pdf_label"),
+        "truth_pdf_slug": metadata.get("truth_pdf_slug"),
+        "truth_pdf_latex": metadata.get("truth_pdf_latex"),
         "truth_pdf_family": metadata.get("truth_pdf_family"),
+        "truth_pdf_scan_order": metadata.get("truth_pdf_scan_order"),
+        "truth_pdf_selection_role": metadata.get("truth_pdf_selection_role"),
         "fit_algo": metadata.get("fit_algo"),
         "fit_pdf_mode": metadata.get("fit_pdf_mode"),
         "fit_pdf_index": metadata.get("fit_pdf_index"),
         "fit_pdf_label": metadata.get("fit_pdf_label"),
+        "fit_pdf_slug": metadata.get("fit_pdf_slug"),
+        "fit_pdf_latex": metadata.get("fit_pdf_latex"),
         "fit_pdf_family": metadata.get("fit_pdf_family"),
         "target_pdf_index": metadata.get("target_pdf_index"),
         "target_pdf_label": metadata.get("target_pdf_label"),
+        "target_pdf_slug": metadata.get("target_pdf_slug"),
+        "target_pdf_latex": metadata.get("target_pdf_latex"),
         "target_pdf_family": metadata.get("target_pdf_family"),
         "injected_r": metadata.get("injected_r"),
         "dataset_strategy": metadata.get("dataset_strategy"),
@@ -1917,12 +2066,29 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
     metadata = result.get("metadata", {})
     analysis = result.get("bias_analysis") or {}
     distribution = analysis.get("pull_distribution") or {}
+    raw_scheme = str(metadata.get("scheme", ""))
+    raw_target = str(metadata.get("target_label") or metadata.get("target_poi") or "")
+    scheme_display = poi_scheme_display(raw_scheme)
+    target_display = signal_target_display(raw_target)
+    truth_display = pdf_state_display(
+        index=metadata.get("truth_pdf_index"),
+        family=metadata.get("truth_pdf_family"),
+        order=metadata.get("truth_pdf_scan_order"),
+        selection_role=metadata.get("truth_pdf_selection_role"),
+        name=metadata.get("truth_pdf"),
+    )
     return {
         "experiment_index": index,
         "job_id": result.get("job_id"),
         "status": result.get("status"),
         "scheme": metadata.get("scheme"),
+        "scheme_slug": metadata.get("scheme_slug") or scheme_display.slug,
+        "scheme_label": metadata.get("scheme_label") or scheme_display.text,
+        "scheme_latex": metadata.get("scheme_latex") or scheme_display.latex,
         "target_label": metadata.get("target_label"),
+        "target_slug": metadata.get("target_slug") or target_display.slug,
+        "target_display_label": metadata.get("target_display_label") or target_display.text,
+        "target_latex": metadata.get("target_latex") or target_display.latex,
         "target_poi": metadata.get("target_poi"),
         "scanned_pois": metadata.get("scanned_pois"),
         "profiled_pois": metadata.get("profiled_pois"),
@@ -1930,17 +2096,25 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "float_other_pois": metadata.get("float_other_pois"),
         "truth_pdf_index": metadata.get("truth_pdf_index"),
         "truth_pdf": metadata.get("truth_pdf"),
-        "truth_pdf_label": metadata.get("truth_pdf_label"),
+        "truth_pdf_label": metadata.get("truth_pdf_label") or truth_display.text,
+        "truth_pdf_slug": metadata.get("truth_pdf_slug") or truth_display.slug,
+        "truth_pdf_latex": metadata.get("truth_pdf_latex") or truth_display.latex,
         "truth_pdf_family": metadata.get("truth_pdf_family"),
+        "truth_pdf_scan_order": metadata.get("truth_pdf_scan_order"),
+        "truth_pdf_selection_role": metadata.get("truth_pdf_selection_role"),
         "fit_algo": metadata.get("fit_algo"),
         "fit_pdf_mode": metadata.get("fit_pdf_mode"),
         "fit_pdf_index": metadata.get("fit_pdf_index"),
         "fit_pdf": metadata.get("fit_pdf"),
         "fit_pdf_label": metadata.get("fit_pdf_label"),
+        "fit_pdf_slug": metadata.get("fit_pdf_slug"),
+        "fit_pdf_latex": metadata.get("fit_pdf_latex"),
         "fit_pdf_family": metadata.get("fit_pdf_family"),
         "target_pdf_index": metadata.get("target_pdf_index"),
         "target_pdf": metadata.get("target_pdf"),
         "target_pdf_label": metadata.get("target_pdf_label"),
+        "target_pdf_slug": metadata.get("target_pdf_slug"),
+        "target_pdf_latex": metadata.get("target_pdf_latex"),
         "target_pdf_family": metadata.get("target_pdf_family"),
         "injected_r": metadata.get("injected_r"),
         "injection_mode": metadata.get("injection_mode"),
@@ -2015,7 +2189,18 @@ def fit_target_pdf_label(experiment: dict[str, Any]) -> str:
         if index is not None:
             return f"pdf{index}"
         return "fixed"
-    return "floating"
+    return floating_pdf_display().text
+
+
+def fit_target_pdf_plot_label(experiment: dict[str, Any]) -> str:
+    mode = normalize_pdf_target_strategy(experiment.get("fit_pdf_mode", "floating"))
+    if mode == "fixed":
+        return str(
+            experiment.get("target_pdf_latex")
+            or experiment.get("fit_pdf_latex")
+            or fit_target_pdf_label(experiment)
+        )
+    return floating_pdf_display().latex
 
 
 def fit_target_pdf_sort_key(experiment: dict[str, Any]) -> tuple[int, int, str]:
@@ -2050,10 +2235,10 @@ def scatter_point_values(experiment: dict[str, Any]) -> tuple[float, float, str]
 
 def experiment_full_label(experiment: dict[str, Any]) -> str:
     return (
-        f"{experiment.get('target_poi', '-')}\n"
+        f"{experiment.get('target_display_label') or experiment.get('target_poi', '-')}\n"
         f"strategy = {experiment.get('dataset_strategy', 'toys')}\n"
         f"r = {format_number(float(experiment.get('injected_r', 0.0)))}\n"
-        f"truth pdf index {experiment.get('truth_pdf_index', '?')}\n"
+        f"truth PDF = {experiment.get('truth_pdf_label', '?')}\n"
         f"target pdf = {fit_target_pdf_label(experiment)}"
     )
 
@@ -2136,11 +2321,11 @@ def make_scatter_plot(
     }
     point_records.sort(
         key=lambda item: (
-            str(item.get("scheme", "")),
-            str(item.get("target_poi", "")),
+            str(item.get("scheme_slug") or item.get("scheme", "")),
+            str(item.get("target_slug") or item.get("target_poi", "")),
             str(item.get("dataset_strategy", "toys")),
             float(item.get("injected_r", 0.0)),
-            str(item.get("truth_pdf_label", "")),
+            str(item.get("truth_pdf_slug") or item.get("truth_pdf_label", "")),
             fit_target_pdf_sort_key(item),
         )
     )
@@ -2258,7 +2443,7 @@ def make_scatter_plot(
                 break
             group_end += 1
         end_index = group_end - 1
-        group_label = f"{group_key[1]}"
+        group_label = str(current.get("target_latex") or current.get("target_display_label") or group_key[1])
         groups.append((group_start, end_index, group_label))
         group_start = group_end
 
@@ -2284,7 +2469,7 @@ def make_scatter_plot(
     pdf_labels: dict[int, str] = {}
     for experiment in point_records:
         pdf_index = int(experiment.get("truth_pdf_index", -1))
-        pdf_label = str(experiment.get("truth_pdf_label", f"pdf{pdf_index}"))
+        pdf_label = str(experiment.get("truth_pdf_latex") or experiment.get("truth_pdf_label", f"pdf{pdf_index}"))
         pdf_labels.setdefault(pdf_index, pdf_label)
     pdf_handles = [
         Patch(
@@ -2465,7 +2650,8 @@ def make_summary_scatter_plots(
     }
 
     for scheme in schemes:
-        label = f"POI scheme {scheme}"
+        display = poi_scheme_display(scheme)
+        label = f"POI scheme {display.text}"
         log(f"Summary scatter plot {completed_plots + 1}/{total_plots}: {label}")
         variations["by_poi_scheme"].append(
             make_scatter_plot(
@@ -2473,9 +2659,9 @@ def make_summary_scatter_plots(
                 run_dir,
                 bias_threshold,
                 annotate_outliers,
-                f"pull_mean_sigma_scatter__scheme_{safe_name(scheme)}",
+                f"pull_mean_sigma_scatter__scheme_{display.slug}",
                 label,
-                {"scheme": scheme},
+                {"scheme": scheme, "scheme_slug": display.slug, "scheme_label": display.text, "scheme_latex": display.latex},
                 y_limits,
             )
         )
@@ -2491,7 +2677,7 @@ def make_summary_scatter_plots(
                 run_dir,
                 bias_threshold,
                 annotate_outliers,
-                f"pull_mean_sigma_scatter__r_{injection_tag(injected_r)}",
+                f"pull_mean_sigma_scatter__{injection_output_slug(injected_r)}",
                 label,
                 {"injected_r": injected_r},
                 y_limits,
@@ -2501,8 +2687,9 @@ def make_summary_scatter_plots(
         log(f"Finished summary scatter plot {completed_plots}/{total_plots}: {label}")
 
     for scheme in schemes:
+        display = poi_scheme_display(scheme)
         for injected_r in injected_rs:
-            label = f"POI scheme {scheme}; injected r {format_number(injected_r)}"
+            label = f"POI scheme {display.text}; injected r {format_number(injected_r)}"
             log(f"Summary scatter plot {completed_plots + 1}/{total_plots}: {label}")
             variations["by_poi_scheme_and_injected_r"].append(
                 make_scatter_plot(
@@ -2515,9 +2702,9 @@ def make_summary_scatter_plots(
                     run_dir,
                     bias_threshold,
                     annotate_outliers,
-                    f"pull_mean_sigma_scatter__scheme_{safe_name(scheme)}__r_{injection_tag(injected_r)}",
+                    f"pull_mean_sigma_scatter__scheme_{display.slug}__{injection_output_slug(injected_r)}",
                     label,
-                    {"scheme": scheme, "injected_r": injected_r},
+                    {"scheme": scheme, "scheme_slug": display.slug, "scheme_label": display.text, "scheme_latex": display.latex, "injected_r": injected_r},
                     y_limits,
                 )
             )
@@ -2734,7 +2921,7 @@ def truth_pdf_axis_key(experiment: dict[str, Any]) -> tuple[int, str]:
         index = int(experiment.get("truth_pdf_index"))
     except (TypeError, ValueError):
         index = 1_000_000
-    label = str(experiment.get("truth_pdf_label") or f"pdf{index}")
+    label = str(experiment.get("truth_pdf_latex") or experiment.get("truth_pdf_label") or f"pdf{index}")
     return index, label
 
 
@@ -2746,8 +2933,8 @@ def target_pdf_axis_key(experiment: dict[str, Any]) -> tuple[int, int, str]:
             pdf_index = int(index)
         except (TypeError, ValueError):
             pdf_index = 1_000_000
-        return 0, pdf_index, fit_target_pdf_label(experiment)
-    return 1, 1_000_000, "floating"
+        return 0, pdf_index, fit_target_pdf_plot_label(experiment)
+    return 1, 1_000_000, floating_pdf_display().latex
 
 
 def summary_heatmap_row_key(experiment: dict[str, Any]) -> tuple[str, str, str, str, float, int, str]:
@@ -2757,7 +2944,7 @@ def summary_heatmap_row_key(experiment: dict[str, Any]) -> tuple[str, str, str, 
         str(experiment.get("dataset_strategy", "toys")),
         str(experiment.get("scheme", "-")),
         str(experiment.get("target_poi", "-")),
-        str(experiment.get("target_label") or experiment.get("target_poi", "-")),
+        str(experiment.get("target_latex") or experiment.get("target_display_label") or experiment.get("target_label") or experiment.get("target_poi", "-")),
         float(injected_r) if injected_r is not None else 0.0,
         truth_index,
         truth_label,
@@ -2766,7 +2953,7 @@ def summary_heatmap_row_key(experiment: dict[str, Any]) -> tuple[str, str, str, 
 
 def summary_heatmap_group_label(row_key: tuple[str, str, str, str, float, int, str]) -> str:
     dataset_strategy, scheme, _target_poi, target_label, injected_r, _truth_index, _truth_label = row_key
-    return f"{dataset_strategy} | {scheme} | {target_label} | r={format_number(injected_r)}"
+    return f"{dataset_strategy_display(dataset_strategy).text} | {scheme_latex(scheme)} | {target_label} | r={format_number(injected_r)}"
 
 
 def make_pdf_target_summary_heatmap(
@@ -3253,6 +3440,9 @@ def make_summary_heatmaps(
                     ),
                     target_poi,
                 )
+                scheme_display = poi_scheme_display(scheme)
+                target_display = signal_target_display(target_label)
+                dataset_display = dataset_strategy_display(dataset_strategy)
                 for injected_r in injected_rs:
                     selected = [
                         experiment
@@ -3265,14 +3455,14 @@ def make_summary_heatmaps(
                     if not selected:
                         continue
                     label = (
-                        f"{dataset_strategy} | {scheme} | {target_label} | "
+                        f"{dataset_display.text} | {scheme_display.text} | {target_display.text} | "
                         f"r={format_number(injected_r)}"
                     )
                     plot_stem = (
-                        f"pdf_target_heatmap__{safe_name(dataset_strategy)}"
-                        f"__scheme_{safe_name(scheme)}"
-                        f"__target_{safe_name(target_poi)}"
-                        f"__r_{injection_tag(injected_r)}"
+                        f"pdf_target_heatmap__{dataset_display.slug}"
+                        f"__scheme_{scheme_display.slug}"
+                        f"__target_{target_display.slug}"
+                        f"__{injection_output_slug(injected_r)}"
                     )
                     heatmap_tasks.append(
                         (
@@ -3665,11 +3855,22 @@ def infer_truth_pdf_metadata_for_plot_only(
         if metadata.get("truth_pdf_index") is None:
             continue
         index = int(metadata["truth_pdf_index"])
+        display = pdf_state_display(
+            index=index,
+            family=metadata.get("truth_pdf_family"),
+            order=metadata.get("truth_pdf_scan_order"),
+            selection_role=metadata.get("truth_pdf_selection_role"),
+            name=metadata.get("truth_pdf"),
+        )
         truths[index] = {
             "index": index,
             "name": str(metadata.get("truth_pdf", "")),
             "family": str(metadata.get("truth_pdf_family", "")),
-            "label": str(metadata.get("truth_pdf_label", f"pdf{index}")),
+            "label": str(metadata.get("truth_pdf_label") or display.text),
+            "slug": str(metadata.get("truth_pdf_slug") or display.slug),
+            "latex": str(metadata.get("truth_pdf_latex") or display.latex),
+            "scan_order": metadata.get("truth_pdf_scan_order"),
+            "selection_role": metadata.get("truth_pdf_selection_role"),
         }
     return {"selected_truth_pdfs": [truths[index] for index in sorted(truths)]}
 
@@ -3830,6 +4031,9 @@ def write_run_summary(
         "schemes": [
             {
                 "name": scheme.name,
+                "slug": scheme_slug(scheme.name),
+                "label": scheme_label(scheme.name),
+                "latex": scheme_latex(scheme.name),
                 "title": scheme.title,
                 "description": scheme.description,
                 "pois": list(scheme.all_pois),
@@ -3837,6 +4041,9 @@ def write_run_summary(
                 "targets": [
                     {
                         "label": target.label,
+                        "slug": target_slug(target.label),
+                        "display_label": target_label(target.label),
+                        "latex": target_latex(target.label),
                         "poi": target.poi,
                         "processes": list(target.processes),
                     }
@@ -3875,7 +4082,7 @@ def write_run_summary(
         ["Worker request", "auto" if args.workers <= 0 else args.workers],
         ["System nproc", nproc()],
         ["Worker cap", nproc() if args.workers <= 0 else min(args.workers, nproc())],
-        ["POI schemes", ", ".join(scheme.name for scheme in schemes)],
+        ["POI schemes", ", ".join(scheme_label(scheme.name) for scheme in schemes)],
         ["Default injections", format_injection_values(args.injections)],
         ["Injections by scheme", format_injections_by_scheme(scheme_injection_map)],
         ["Injection mode", args.injection_mode],
@@ -3972,8 +4179,8 @@ def write_run_summary(
         )
         row = [
             html_escape(experiment.get("experiment_index", "-")),
-            html_escape(experiment.get("scheme", "-")),
-            html_escape(experiment.get("target_poi", "-")),
+            html_escape(experiment.get("scheme_label") or experiment.get("scheme", "-")),
+            html_escape(experiment.get("target_display_label") or experiment.get("target_poi", "-")),
             html_escape(experiment.get("injected_r", "-")),
             html_escape(experiment.get("truth_pdf_label", "-")),
             html_escape(fit_target_pdf_label(experiment)),
@@ -4006,8 +4213,8 @@ def write_run_summary(
             html_escape(result.get("method", "-")),
             status_pill(result.get("status", "-")),
             html_escape(result.get("metadata", {}).get("dataset_strategy", "-")),
-            html_escape(result.get("metadata", {}).get("scheme", "-")),
-            html_escape(result.get("metadata", {}).get("target_poi", "-")),
+            html_escape(result.get("metadata", {}).get("scheme_label", result.get("metadata", {}).get("scheme", "-"))),
+            html_escape(result.get("metadata", {}).get("target_display_label", result.get("metadata", {}).get("target_poi", "-"))),
             html_escape(result.get("metadata", {}).get("truth_pdf_label", "-")),
             html_escape(result.get("metadata", {}).get("target_pdf_label", result.get("metadata", {}).get("fit_pdf_label", "-"))),
             html_escape(result.get("metadata", {}).get("injected_r", "-")),
@@ -4051,7 +4258,7 @@ def write_global_summary(output_dir: Path) -> None:
         summary_injections = summary.get("injections_by_scheme")
         if isinstance(summary_injections, dict) and summary_injections:
             injections_text = "; ".join(
-                f"{scheme}={','.join(str(value) for value in values)}"
+                f"{scheme_label(scheme)}={','.join(str(value) for value in values)}"
                 for scheme, values in summary_injections.items()
             )
         else:
@@ -4186,7 +4393,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pdf-families",
         type=parse_family_list,
         default=("all",),
-        help="Comma-separated truth PDF families to generate from: all,johnson,bernstein,chebychev.",
+        help="Comma-separated truth PDF families to generate from, e.g. all,johnson,bernstein,chebychev,power_law,exponential.",
     )
     parser.add_argument(
         "--pdf-index-name",
@@ -4342,7 +4549,7 @@ def main() -> int:
     log(f"Run directory: {repo_relative(run_dir)}")
     log(f"Signals: {', '.join(processes.signals)}")
     log(f"Backgrounds: {', '.join(processes.backgrounds)}")
-    log(f"POI schemes: {', '.join(scheme.name for scheme in schemes)}")
+    log(f"POI schemes: {', '.join(scheme_label(scheme.name) for scheme in schemes)}")
     log(f"Default injections: {format_injection_values(args.injections)}")
     log(f"Injections by scheme: {format_injections_by_scheme(scheme_injection_map)}")
     log(f"Requested POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
@@ -4383,17 +4590,14 @@ def main() -> int:
         staged_datacards[scheme_name] = Path(result["cwd"]) / LOCAL_DATACARD_NAME
 
     first_scheme = schemes[0]
+    pdf_state_metadata = load_bundle_pdf_state_metadata(datacard_path)
     truth_pdfs, truth_pdf_metadata = discover_truth_pdfs(
         workspace_paths[first_scheme.name],
         args.pdf_families,
+        pdf_state_metadata,
     )
     target_pdfs = [
-        TruthPdf(
-            index=int(item["index"]),
-            name=str(item["name"]),
-            family=str(item["family"]),
-            label=str(item["label"]),
-        )
+        make_truth_pdf(int(item["index"]), str(item["name"]), pdf_state_metadata.get(int(item["index"]), item))
         for item in truth_pdf_metadata.get("available_target_pdfs", [])
     ] or truth_pdfs
     log(
