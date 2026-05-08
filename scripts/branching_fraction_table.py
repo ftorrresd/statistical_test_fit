@@ -683,9 +683,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Significant figures used in scientific-notation table cells.",
     )
     parser.add_argument(
-        "--compile-pdf",
+        "--skip-compile-pdf",
         action="store_true",
-        help="Compile the standalone .tex to PDF using Singularity with a Docker LaTeX image.",
+        help="Skip PDF compilation. By default the standalone .tex is compiled to PDF via Singularity.",
     )
     parser.add_argument(
         "--latex-image",
@@ -711,7 +711,7 @@ def main() -> int:
     )
     if args.sig_figs < 1:
         raise ValueError("--sig-figs must be at least 1")
-    if args.compile_pdf and not args.latex_image.startswith("docker://"):
+    if not args.skip_compile_pdf and not args.latex_image.startswith("docker://"):
         raise ValueError("--latex-image must be a docker:// URI when compiling through Singularity")
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -747,7 +747,7 @@ def main() -> int:
     for warning in warnings:
         log(f"warning: {warning}")
 
-    if args.compile_pdf:
+    if not args.skip_compile_pdf:
         pdf_path = compile_with_singularity(
             paths["document"],
             image=args.latex_image,

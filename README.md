@@ -273,14 +273,7 @@ Default behavior:
 - Represents the one-standard-deviation expected band as deltas, e.g. `99.8^{+10.1}_{-0.9}`
 - Writes `branching_fraction_limits.table.tex`, `branching_fraction_limits.tex`, and `branching_fraction_limits.json` into a `tables/` directory next to the summary
 - Leaves observed cells as `--` when no observed limit is available in the JSON
-
-To compile the standalone LaTeX file to PDF, use Singularity with the Docker LaTeX image:
-
-```bash
-python3 scripts/branching_fraction_table.py \
-  --summary datacards/limits/<run>/blind_limits_summary.json \
-  --compile-pdf
-```
+- Compiles the standalone `.tex` to PDF by default via Singularity with `docker://ghcr.io/xu-cheng/texlive-full:latest`
 
 Useful examples:
 
@@ -288,7 +281,8 @@ Useful examples:
 python3 scripts/branching_fraction_table.py --method asymptotic
 python3 scripts/branching_fraction_table.py --scheme z_grouped
 python3 scripts/branching_fraction_table.py --scheme h_grouped
-python3 scripts/branching_fraction_table.py --compile-pdf --latex-image docker://ghcr.io/xu-cheng/texlive-full:latest
+python3 scripts/branching_fraction_table.py --skip-compile-pdf
+python3 scripts/branching_fraction_table.py --latex-image docker://ghcr.io/xu-cheng/texlive-full:latest
 ```
 
 ## Workflow Notes
@@ -355,7 +349,7 @@ python3 scripts/resonant_background.py && \
 python3 scripts/non_resonant_background.py && \
 python3 scripts/build_bundled_workspace.py && \
 python3 scripts/limits.py --methods asymptotic && \
-python3 scripts/branching_fraction_table.py --compile-pdf && \
+python3 scripts/branching_fraction_table.py && \
 python3 scripts/bias_study.py \
     --dataset-strategy toys --toys 10 --random-seeds \
     --injections 0,1,10,100,1000 \
