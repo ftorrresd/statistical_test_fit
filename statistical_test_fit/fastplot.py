@@ -92,6 +92,7 @@ def fastplot(
     model_legend_name="Fit",
     show_residuals=True,
     residual_mode=ResidualMode.RELATIVE_DIFF,
+    residual_y_range=None,
 ):
     """Generic plot function
 
@@ -141,6 +142,8 @@ def fastplot(
             Draw a residual panel below the main plot
         residual_mode (ResidualMode):
             Residual strategy for the lower panel
+        residual_y_range (tuple or list):
+            Optional (min, max) y-axis range for the residual panel
 
     Todo:
         * Change or remove extra_info
@@ -367,14 +370,24 @@ def fastplot(
         residual_frame.GetYaxis().CenterTitle()
         residual_frame.GetYaxis().SetNdivisions(505)
 
-        max_abs_residual = _max_abs_graph_y(residual_hist)
-        residual_extent = (
-            max(_default_residual_extent(), 1.15 * max_abs_residual)
-            if max_abs_residual > 0
-            else _default_residual_extent()
-        )
-        residual_frame.SetMinimum(-residual_extent)
-        residual_frame.SetMaximum(residual_extent)
+        if residual_y_range is not None:
+            if len(residual_y_range) != 2:
+                raise ValueError("residual_y_range must contain exactly two values")
+            residual_y_min = float(residual_y_range[0])
+            residual_y_max = float(residual_y_range[1])
+            if residual_y_min >= residual_y_max:
+                raise ValueError("residual_y_range minimum must be smaller than maximum")
+            residual_frame.SetMinimum(residual_y_min)
+            residual_frame.SetMaximum(residual_y_max)
+        else:
+            max_abs_residual = _max_abs_graph_y(residual_hist)
+            residual_extent = (
+                max(_default_residual_extent(), 1.15 * max_abs_residual)
+                if max_abs_residual > 0
+                else _default_residual_extent()
+            )
+            residual_frame.SetMinimum(-residual_extent)
+            residual_frame.SetMaximum(residual_extent)
 
         residual_frame.GetXaxis().SetTitleSize(0.12 * font_scale)
         residual_frame.GetXaxis().SetLabelSize(0.10 * label_scale)

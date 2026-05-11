@@ -189,6 +189,7 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
         else [0.6, 0.6, 0.93, 0.92],
         is_data=False,
         plot_range=get_signal_boson_plot_range(sample.process),
+        residual_y_range=(-2.0, 2.0),
     )
 
     upsilon_plot = f"{job.plot_dir}/signal_fit_upsilon_{sample.inner_file_name}.pdf"
@@ -201,6 +202,7 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
         legend=[0.65, 0.7, 0.9, 0.92],
         is_data=False,
         plot_range=get_signal_upsilon_plot_range(sample.state),
+        residual_y_range=(-2.0, 2.0),
     )
 
     w = set_constant(w)
