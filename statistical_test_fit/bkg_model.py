@@ -472,7 +472,7 @@ def build_background_bernstein(
       - By default, coefficients are constrained to be >= 0 for positivity.
     """
     lo = 0.0 if force_positive else -10.0
-    hi = 10.0
+    hi = 1.0
 
     coeff_vars = [
         RooRealVar(f"b{i}", f"Bernstein b{i}", float(v), lo, hi)
@@ -671,7 +671,7 @@ def build_background_bernstein_2d(
 ):
     name = f"{name}_{len(bern_coeffs)}"
     lo = 0.0 if force_positive else -10.0
-    hi = 10.0
+    hi = 1.0
     if x_coeffs is None:
         x_coeffs = [0.0]
 
