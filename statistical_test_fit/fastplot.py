@@ -93,6 +93,8 @@ def fastplot(
     show_residuals=True,
     residual_mode=ResidualMode.RELATIVE_DIFF,
     residual_y_range=None,
+    show_chi2_ndf=True,
+    chi2_nfloatpars=None,
 ):
     """Generic plot function
 
@@ -144,6 +146,10 @@ def fastplot(
             Residual strategy for the lower panel
         residual_y_range (tuple or list):
             Optional (min, max) y-axis range for the residual panel
+        show_chi2_ndf (bool):
+            Add the projection chi-square per degree of freedom to the fit legend entry
+        chi2_nfloatpars (int):
+            Optional number of floated fit parameters to subtract from chi-square ndf
 
     Todo:
         * Change or remove extra_info
@@ -194,6 +200,53 @@ def fastplot(
                 ROOT.RooFit.Name(name),
                 ROOT.RooFit.LineColor(color_cycle[0]),
             )
+
+    def _count_float_pars():
+        if chi2_nfloatpars is not None:
+            return int(chi2_nfloatpars)
+
+        observable_set = data.get() if hasattr(data, "get") else None
+        if observable_set is None:
+            observable_set = ROOT.RooArgSet(observable)
+
+        params_set = model.getParameters(observable_set)
+        params_list = ROOT.RooArgList(params_set)
+        nfree = 0
+        for i in range(params_list.getSize()):
+            p = params_list[i]
+            if hasattr(p, "isConstant") and not p.isConstant():
+                nfree += 1
+        return nfree
+
+    def _format_chi2_ndf(chi2_ndf):
+        if not math.isfinite(chi2_ndf):
+            return None
+        if chi2_ndf >= 1000:
+            return f"{chi2_ndf:.2e}"
+        return f"{chi2_ndf:.2f}"
+
+    def _compute_chi2_ndf(target_frame, curve_name, data_name):
+        if not show_chi2_ndf:
+            return None
+
+        data_hist = target_frame.findObject(data_name)
+        model_curve = target_frame.findObject(curve_name)
+        if data_hist is None or model_curve is None:
+            return None
+
+        npoints = int(data_hist.GetN())
+        if npoints <= 0:
+            return None
+
+        nfloatpars = max(0, _count_float_pars())
+        if nfloatpars >= npoints:
+            nfloatpars = max(0, npoints - 1)
+
+        chi2_ndf = target_frame.chiSquare(curve_name, data_name, nfloatpars)
+        if not math.isfinite(chi2_ndf) or chi2_ndf < 0:
+            return None
+
+        return chi2_ndf
 
     def _max_abs_graph_y(graph):
         max_abs = 0.0
@@ -285,7 +338,15 @@ def fastplot(
 
     _plot_model(frame, "Model")
 
-    leg.AddEntry(frame.findObject("Model"), model_legend_name, "L")
+    model_legend_label = model_legend_name
+    chi2_ndf = _compute_chi2_ndf(frame, "Model", "Data")
+    chi2_ndf_label = (
+        _format_chi2_ndf(chi2_ndf) if chi2_ndf is not None else None
+    )
+    if chi2_ndf_label is not None:
+        model_legend_label = f"{model_legend_name} (#chi^{{2}}/ndf = {chi2_ndf_label})"
+
+    leg.AddEntry(frame.findObject("Model"), model_legend_label, "L")
 
     if components is not None:
         n_col = 1
