@@ -3,6 +3,7 @@ __all__ = [
     "run_fit_2d",
     "run_fit_2d_data",
     "run_signal_modeling",
+    "run_correlation_study",
     "run_resonant_background",
 ]
 
@@ -27,6 +28,11 @@ def __getattr__(name):
         from .signal_modeling import run_signal_modeling
 
         return run_signal_modeling
+
+    if name == "run_correlation_study":
+        from .correlation_study import run_correlation_study
+
+        return run_correlation_study
 
     if name == "run_resonant_background":
         from .resonant_bkg_modeling import run_resonant_background
