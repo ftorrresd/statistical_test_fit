@@ -19,7 +19,10 @@ from .signal_modeling import SIGNAL_SAMPLES, SignalSample
 
 PLOT_DIR = "plots/correlation_study"
 RESULTS_JSON = f"{PLOT_DIR}/correlation_study.json"
+SUMMARY_PLOT = f"{PLOT_DIR}/correlation_study_summary.pdf"
 SIGNAL_PROCESSES = ("H", "Z")
+DEFAULT_M_MUMU_LOWER = 9.0
+DEFAULT_M_MUMU_UPPER = 10.6
 
 
 @dataclass(frozen=True)
@@ -263,7 +266,7 @@ def _empty_result(job: MumugammaWindowFitJob, data) -> dict:
         "m_mumu_high": job.window.high,
         "m_mumu_high_inclusive": job.window.include_high,
         "m_mumu_cut": job.window.cut,
-        "n_events": int(data.numEntries()),
+        "n_unweighted_events": int(data.numEntries()),
         "sum_weights": _safe_float(data.sumEntries()),
         "fit_status": None,
         "cov_qual": None,
@@ -276,7 +279,6 @@ def _empty_result(job: MumugammaWindowFitJob, data) -> dict:
         "chi2_nbins": None,
         "parameters": {},
         "plot": None,
-        "workspace": None,
         "m_mumugamma_plot_range": list(get_signal_boson_plot_range(job.process)),
         "samples": [sample.input_file for sample in job.samples],
         "status": "skipped_empty",
@@ -291,8 +293,6 @@ def _fit_mumugamma_window(job: MumugammaWindowFitJob) -> dict:
     from ROOT import RooFit, RooWorkspace  # type: ignore
 
     from .fastplot import fastplot
-
-    from .ws_helper import set_constant
 
     print("\n\n##############################################")
     print(f"######## SIGNAL {job.process} {job.window.label} ########")
@@ -348,10 +348,6 @@ def _fit_mumugamma_window(job: MumugammaWindowFitJob) -> dict:
         chi2_nfloatpars=nfloatpars,
     )
 
-    w = set_constant(w)
-    workspace_file = f"{job.plot_dir}/signal_mumugamma_workspace_{job.key}.root"
-    w.writeToFile(workspace_file)
-
     print("\n\n--> Fit parameters")
     fit_result.Print("v")
     print("data.numEntries(): ", data.numEntries())
@@ -364,7 +360,7 @@ def _fit_mumugamma_window(job: MumugammaWindowFitJob) -> dict:
         "m_mumu_high": job.window.high,
         "m_mumu_high_inclusive": job.window.include_high,
         "m_mumu_cut": job.window.cut,
-        "n_events": int(data.numEntries()),
+        "n_unweighted_events": int(data.numEntries()),
         "sum_weights": _safe_float(data.sumEntries()),
         "fit_status": int(fit_result.status()),
         "cov_qual": int(fit_result.covQual()),
@@ -377,7 +373,6 @@ def _fit_mumugamma_window(job: MumugammaWindowFitJob) -> dict:
         "chi2_nbins": chi2_summary["nbins"],
         "parameters": _parameter_dict(fit_result),
         "plot": plot_file,
-        "workspace": workspace_file,
         "m_mumugamma_plot_range": list(plot_range),
         "samples": [sample.input_file for sample in job.samples],
         "status": "fit",
@@ -392,15 +387,344 @@ def _write_results_json(output_json: str, payload: dict) -> None:
         output_file.write("\n")
 
 
+def _build_m_mumu_histograms(
+    processes: tuple[str, ...],
+    samples_by_process: dict[str, tuple[SignalSample, ...]],
+    lower: float,
+    upper: float,
+    hist_bins: int,
+) -> dict[str, dict]:
+    from ROOT import TFile  # type: ignore
+
+    if hist_bins <= 0:
+        raise ValueError("m_mumu histogram bin count must be positive")
+
+    width = (upper - lower) / hist_bins
+    bin_edges = [lower + idx * width for idx in range(hist_bins + 1)]
+    histograms: dict[str, dict] = {}
+    for process in processes:
+        counts = [0.0 for _ in range(hist_bins)]
+        for sample in samples_by_process[process]:
+            root_file = TFile.Open(sample.input_file)
+            if root_file is None or root_file.IsZombie():
+                raise RuntimeError(f"Could not open signal input {sample.input_file}")
+
+            events = root_file.Get("Events")
+            if events is None:
+                root_file.Close()
+                raise RuntimeError(f"Could not find 'Events' tree in {sample.input_file}")
+
+            for event in events:
+                upsilon_mass = float(event.upsilon_mass)
+                if upsilon_mass < lower or upsilon_mass > upper:
+                    continue
+                bin_index = int((upsilon_mass - lower) / width)
+                if bin_index == hist_bins and upsilon_mass == upper:
+                    bin_index = hist_bins - 1
+                if 0 <= bin_index < hist_bins:
+                    counts[bin_index] += float(event.weight)
+
+            root_file.Close()
+
+        histograms[process] = {
+            "bin_edges": bin_edges,
+            "counts": counts,
+            "hist_bins": hist_bins,
+            "source": "weighted_signal_events",
+        }
+
+    return histograms
+
+
+def _summary_value(result: dict, parameter_name: str, field: str) -> float | None:
+    parameter = result.get("parameters", {}).get(parameter_name, {})
+    value = parameter.get(field)
+    if value is None:
+        return None
+    return _safe_float(value)
+
+
+def _normalize_excluded_windows(excluded_windows) -> tuple[int, ...]:
+    if excluded_windows is None:
+        return ()
+    normalized = tuple(sorted(set(int(window) for window in excluded_windows)))
+    if any(window < 0 for window in normalized):
+        raise ValueError("Excluded summary window indices must be non-negative")
+    return normalized
+
+
+def _summary_rows(
+    payload: dict,
+    processes: tuple[str, ...] | None,
+    excluded_windows: tuple[int, ...] | None = None,
+) -> dict[str, list[dict]]:
+    requested = set(processes) if processes is not None else None
+    excluded_window_set = set(_normalize_excluded_windows(excluded_windows))
+    rows_by_process: dict[str, list[dict]] = {}
+    for result in payload.get("results", []):
+        process = result.get("process")
+        if process is None or (requested is not None and process not in requested):
+            continue
+        if result.get("status") != "fit":
+            continue
+        window_index = int(result.get("window_index", -1))
+        if window_index in excluded_window_set:
+            continue
+
+        mean = _summary_value(result, "mean_boson", "value")
+        sigma = _summary_value(result, "sigma_boson", "value")
+        if mean is None or sigma is None:
+            continue
+
+        low = _safe_float(result["m_mumu_low"])
+        high = _safe_float(result["m_mumu_high"])
+        rows_by_process.setdefault(process, []).append(
+            {
+                "window_index": window_index,
+                "low": low,
+                "high": high,
+                "midpoint": 0.5 * (low + high),
+                "n_unweighted_events": int(
+                    result.get("n_unweighted_events", result.get("n_events", 0))
+                ),
+                "mean": mean,
+                "mean_error": _summary_value(result, "mean_boson", "error"),
+                "sigma": sigma,
+                "sigma_error": _summary_value(result, "sigma_boson", "error"),
+            }
+        )
+
+    return {
+        process: sorted(rows, key=lambda row: row["midpoint"])
+        for process, rows in rows_by_process.items()
+        if len(rows) > 0
+    }
+
+
+def _finite_values(values) -> list[float]:
+    return [float(value) for value in values if value is not None and math.isfinite(value)]
+
+
+def _apply_headroom(axis, values, errors=None, *, zero_floor=False) -> None:
+    finite_values = _finite_values(values)
+    if not finite_values:
+        return
+
+    if errors is None:
+        lows = finite_values
+        highs = finite_values
+    else:
+        finite_errors = [0.0 if error is None else float(error) for error in errors]
+        lows = [value - error for value, error in zip(finite_values, finite_errors)]
+        highs = [value + error for value, error in zip(finite_values, finite_errors)]
+
+    low = min(lows)
+    high = max(highs)
+    if zero_floor:
+        low = 0.0
+    span = high - low
+    if span <= 0.0:
+        span = max(abs(high), 1.0) * 0.1
+
+    bottom = 0.0 if zero_floor else low - 0.08 * span
+    axis.set_ylim(bottom, high + 0.5 * span)
+
+
+def _window_edges(rows: list[dict]) -> list[float]:
+    if not rows:
+        return []
+    edges = [rows[0]["low"]]
+    edges.extend(row["high"] for row in rows)
+    return edges
+
+
+def _histogram_line(payload: dict, process: str, rows: list[dict]) -> tuple[list[float], list[float], str]:
+    histograms = payload.get("m_mumu_histograms", {})
+    histogram = histograms.get(process)
+    if histogram is not None:
+        bin_edges = histogram.get("bin_edges", [])
+        counts = histogram.get("counts", [])
+        centers = [0.5 * (bin_edges[idx] + bin_edges[idx + 1]) for idx in range(len(counts))]
+        source = histogram.get("source")
+        label = (
+            r"weighted $m_{\mu\mu}$ histogram"
+            if source == "weighted_signal_events"
+            else r"$m_{\mu\mu}$ histogram"
+        )
+        return centers, counts, label
+
+    return (
+        [row["midpoint"] for row in rows],
+        [row["n_unweighted_events"] for row in rows],
+        r"$m_{\mu\mu}$ window counts",
+    )
+
+
+def make_correlation_summary_plot(
+    input_json: str = RESULTS_JSON,
+    output_plot: str = SUMMARY_PLOT,
+    processes: tuple[str, ...] | None = None,
+    excluded_windows: tuple[int, ...] | None = None,
+) -> str:
+    input_path = Path(input_json)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Could not find correlation-study JSON: {input_json}")
+
+    with input_path.open("r", encoding="utf-8") as input_file:
+        payload = json.load(input_file)
+
+    excluded_windows = _normalize_excluded_windows(excluded_windows)
+    rows_by_process = _summary_rows(payload, processes, excluded_windows)
+    if not rows_by_process:
+        raise RuntimeError(f"No fitted correlation-study rows found in {input_json}")
+    all_rows_by_process = _summary_rows(payload, processes)
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    selected_processes = [
+        process
+        for process in (processes or tuple(payload.get("config", {}).get("processes", ())))
+        if process in rows_by_process
+    ]
+    if not selected_processes:
+        selected_processes = sorted(rows_by_process)
+
+    fig, axes = plt.subplots(
+        len(selected_processes),
+        1,
+        figsize=(10.5, 4.2 * len(selected_processes)),
+        squeeze=False,
+    )
+    colors = {
+        "histogram": "#1f77b4",
+        "mean": "#d62728",
+        "sigma": "#2ca02c",
+    }
+
+    for axis_row, process in zip(axes, selected_processes):
+        ax_hist = axis_row[0]
+        ax_mean = ax_hist.twinx()
+        ax_sigma = ax_hist.twinx()
+        ax_sigma.spines["right"].set_position(("axes", 1.14))
+        ax_sigma.spines["right"].set_visible(True)
+
+        rows = rows_by_process[process]
+        x_values = [row["midpoint"] for row in rows]
+        means = [row["mean"] for row in rows]
+        mean_errors = [row["mean_error"] or 0.0 for row in rows]
+        sigmas = [row["sigma"] for row in rows]
+        sigma_errors = [row["sigma_error"] or 0.0 for row in rows]
+
+        edges = _window_edges(all_rows_by_process.get(process, rows))
+        for idx, (low, high) in enumerate(zip(edges[:-1], edges[1:])):
+            if idx % 2 == 1:
+                ax_hist.axvspan(
+                    low,
+                    high,
+                    color="0.5",
+                    alpha=0.10,
+                    linewidth=0,
+                    zorder=0,
+                )
+            ax_hist.axvline(
+                low,
+                color="0.55",
+                linestyle=":",
+                linewidth=0.6,
+                alpha=0.25,
+                zorder=1,
+            )
+        if edges:
+            ax_hist.axvline(
+                edges[-1],
+                color="0.55",
+                linestyle=":",
+                linewidth=0.6,
+                alpha=0.25,
+                zorder=1,
+            )
+
+        hist_x, hist_counts, hist_label = _histogram_line(payload, process, rows)
+        hist_handle = ax_hist.plot(
+            hist_x,
+            hist_counts,
+            color=colors["histogram"],
+            drawstyle="steps-mid",
+            alpha=0.50,
+            linewidth=1.7,
+            label=hist_label,
+            zorder=2,
+        )[0]
+
+        mean_handle = ax_mean.errorbar(
+            x_values,
+            means,
+            yerr=mean_errors,
+            color=colors["mean"],
+            marker="s",
+            capsize=3,
+            capthick=1,
+            label="CB mean",
+        ).lines[0]
+        sigma_handle = ax_sigma.errorbar(
+            x_values,
+            sigmas,
+            yerr=sigma_errors,
+            color=colors["sigma"],
+            marker="^",
+            capsize=3,
+            capthick=1,
+            label="CB sigma",
+        ).lines[0]
+
+        ax_hist.set_title(f"{process} signal m_mumugamma fit vs m_mumu window")
+        ax_hist.set_xlabel(r"$m_{\mu\mu}$ window midpoint [GeV]")
+        ax_hist.set_ylabel(r"weighted $m_{\mu\mu}$ histogram", color=colors["histogram"])
+        ax_mean.set_ylabel("CB mean [GeV]", color=colors["mean"])
+        ax_sigma.set_ylabel("CB sigma [GeV]", color=colors["sigma"])
+        ax_hist.tick_params(axis="y", labelcolor=colors["histogram"])
+        ax_mean.tick_params(axis="y", labelcolor=colors["mean"])
+        ax_sigma.tick_params(axis="y", labelcolor=colors["sigma"])
+        ax_hist.grid(True, axis="both", alpha=0.25)
+        _apply_headroom(ax_hist, hist_counts, zero_floor=True)
+        _apply_headroom(ax_mean, means, mean_errors)
+        _apply_headroom(ax_sigma, sigmas, sigma_errors)
+        ax_hist.legend(
+            [hist_handle, mean_handle, sigma_handle],
+            [hist_label, "CB mean", "CB sigma"],
+            loc="upper left",
+            ncol=3,
+            framealpha=0.92,
+        )
+
+    fig.subplots_adjust(right=0.78, hspace=0.35)
+    output_path = Path(output_plot)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path)
+    plt.close(fig)
+    print(f"Wrote correlation summary plot to {output_plot}")
+    return str(output_path)
+
+
 def run_correlation_study(args: Namespace):
     plot_dir = getattr(args, "plot_dir", PLOT_DIR)
     output_json = getattr(args, "output_json", RESULTS_JSON)
+    summary_plot = getattr(args, "summary_plot", SUMMARY_PLOT)
     nbins = getattr(args, "nbins", 60)
     workers = getattr(args, "workers", None)
     n_windows = getattr(args, "windows", 10)
-    lower = getattr(args, "m_mumu_min", UPSILON_MASS_LOWER)
-    upper = getattr(args, "m_mumu_max", UPSILON_MASS_UPPER)
+    lower = getattr(args, "m_mumu_min", DEFAULT_M_MUMU_LOWER)
+    upper = getattr(args, "m_mumu_max", DEFAULT_M_MUMU_UPPER)
     processes = tuple(getattr(args, "processes", SIGNAL_PROCESSES))
+    excluded_summary_windows = _normalize_excluded_windows(
+        getattr(args, "exclude_summary_windows", ())
+    )
+    hist_bins = getattr(args, "m_mumu_hist_bins", None)
+    if hist_bins is None:
+        hist_bins = max(50, 10 * n_windows)
 
     os.makedirs(plot_dir, exist_ok=True)
     windows = _build_windows(n_windows, lower, upper)
@@ -442,13 +766,29 @@ def run_correlation_study(args: Namespace):
             "m_mumu_max": upper,
             "processes": list(processes),
             "plot_dir": plot_dir,
+            "summary_plot": summary_plot,
+            "m_mumu_hist_bins": hist_bins,
+            "exclude_summary_windows": list(excluded_summary_windows),
         },
         "samples": {
             process: [sample.input_file for sample in samples]
             for process, samples in samples_by_process.items()
         },
+        "m_mumu_histograms": _build_m_mumu_histograms(
+            processes,
+            samples_by_process,
+            lower,
+            upper,
+            hist_bins,
+        ),
         "results": fit_results,
     }
     _write_results_json(output_json, payload)
     print(f"Wrote aggregated results to {output_json}")
+    make_correlation_summary_plot(
+        output_json,
+        summary_plot,
+        processes,
+        excluded_summary_windows,
+    )
     return payload
