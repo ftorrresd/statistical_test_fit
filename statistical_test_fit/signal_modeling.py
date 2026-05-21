@@ -76,14 +76,18 @@ SIGNAL_SAMPLES = [
 
 
 def _build_signal_model(w, sample: SignalSample) -> None:
+    boson_dcb_fraction = "signal_dcb_frac[0.9,0,1]"
+
     if sample.process == "Z":
         w.factory(
-            "RooCBShape::signal_model_boson_cb("
+            "RooDoubleCB::signal_model_boson_dcb("
             "boson_mass[70,120], "
             "mean_boson[91.1876, 70, 120], "
-            "sigma_boson[2, 1E-3, 6], "
-            "alpha_boson[3, 0, 10],"
-            "n_boson[0.5, 0, 10]"
+            "sigma_boson[3, 1E-3, 6], "
+            "alpha1_boson[1, 0.1, 20],"
+            "n1_boson[0.8, 0.5, 100],"
+            "alpha2_boson[3, 0.1, 20],"
+            "n2_boson[0.5, 0.5, 100]"
             ")"
         )
         w.factory(
@@ -94,24 +98,33 @@ def _build_signal_model(w, sample: SignalSample) -> None:
             ")"
         )
         w.factory(
-            f"RooDoubleCB::signal_model_upsilon("
+            f"RooDoubleCB::signal_model_upsilon_dcb("
             f"upsilon_mass[{UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
             f"mean_upsilon[{UPSILON_MASS_SEEDS[sample.state]}, {UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
-            "sigma_upsilon[0.1, 1E-3, 6],"
-            "alpha1_upsilon[3, 0, 10],"
-            "n1_upsilon[1, 0, 30],"
-            "alpha2_upsilon[3, 0, 10],"
-            "n2_upsilon[1, 0, 30]"
+            "sigma_upsilon[0.2, 1E-3, 6],"
+            "alpha1_upsilon[3, 0.1, 20],"
+            "n1_upsilon[1, 0.5, 100],"
+            "alpha2_upsilon[3, 0.1, 20],"
+            "n2_upsilon[1, 0.5, 100]"
+            ")"
+        )
+        w.factory(
+            "Gaussian::signal_model_upsilon_gauss("
+            "upsilon_mass,"
+            "mean_upsilon,"
+            "sigma_upsilon_gauss[0.1, 1E-3, 6]"
             ")"
         )
     elif sample.process == "H":
         w.factory(
-            "RooCBShape::signal_model_boson_cb("
+            "RooDoubleCB::signal_model_boson_dcb("
             "boson_mass[100,150], "
             "mean_boson[125, 100, 150], "
-            "sigma_boson[1.5, 1E-3, 6], "
-            "alpha_boson[1.5, 0, 10],"
-            "n_boson[5, 0, 10]"
+            "sigma_boson[2, 1E-3, 6], "
+            "alpha1_boson[1.5, 0.1, 20],"
+            "n1_boson[5, 0.5, 100],"
+            "alpha2_boson[1.5, 0.1, 20],"
+            "n2_boson[5, 0.5, 100]"
             ")"
         )
         w.factory(
@@ -122,14 +135,21 @@ def _build_signal_model(w, sample: SignalSample) -> None:
             ")"
         )
         w.factory(
-            f"RooDoubleCB::signal_model_upsilon("
+            f"RooDoubleCB::signal_model_upsilon_dcb("
             f"upsilon_mass[{UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
             f"mean_upsilon[{UPSILON_MASS_SEEDS[sample.state]}, {UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
-            "sigma_upsilon[0.1, 1E-3, 6],"
-            "alpha1_upsilon[1, 0, 10],"
-            "n1_upsilon[5, 0, 30],"
-            "alpha2_upsilon[1, 0, 10],"
-            "n2_upsilon[5, 0, 30]"
+            "sigma_upsilon[0.2, 1E-3, 6],"
+            "alpha1_upsilon[1, 0.1, 20],"
+            "n1_upsilon[5, 0.5, 100],"
+            "alpha2_upsilon[1, 0.1, 20],"
+            "n2_upsilon[5, 0.5, 100]"
+            ")"
+        )
+        w.factory(
+            "Gaussian::signal_model_upsilon_gauss("
+            "upsilon_mass,"
+            "mean_upsilon,"
+            "sigma_upsilon_gauss[0.1, 1E-3, 6]"
             ")"
         )
     else:
@@ -137,8 +157,13 @@ def _build_signal_model(w, sample: SignalSample) -> None:
 
     w.factory(
         "RSUM::signal_model_boson("
-        "signal_cb_fracs[0.5,0,1]*signal_model_boson_cb,"
+        f"{boson_dcb_fraction}*signal_model_boson_dcb,"
         "signal_model_boson_gauss)"
+    )
+    w.factory(
+        "RSUM::signal_model_upsilon("
+        "signal_upsilon_dcb_frac[0.9,0,1]*signal_model_upsilon_dcb,"
+        "signal_model_upsilon_gauss)"
     )
     w.factory("PROD::signal_model(signal_model_boson,signal_model_upsilon)")
     w.factory("weight[-100,100]")
@@ -194,8 +219,10 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
     w.var("boson_mass").setUnit(r"GeV")
     w.var("upsilon_mass").SetTitle(r"m_{#mu#mu}")
     w.var("upsilon_mass").setUnit(r"GeV")
+    w.pdf("signal_model_boson_dcb").SetTitle(r"Double-sided CB Component")
     w.pdf("signal_model_boson_gauss").SetTitle(r"Gaussian Component")
-    w.pdf("signal_model_boson_cb").SetTitle(r"CB Component")
+    w.pdf("signal_model_upsilon_dcb").SetTitle(r"Double-sided CB Component")
+    w.pdf("signal_model_upsilon_gauss").SetTitle(r"Gaussian Component")
 
     boson_plot = f"{job.plot_dir}/signal_fit_boson_{sample.inner_file_name}.pdf"
     fastplot(
@@ -204,7 +231,7 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
         w.var("boson_mass"),
         boson_plot,
         components=[
-            (w.pdf("signal_model_boson_cb"), "CB Component"),
+            (w.pdf("signal_model_boson_dcb"), "Double-sided CB Component"),
             (w.pdf("signal_model_boson_gauss"), "Gaussian Component"),
         ],
         nbins=job.nbins,
@@ -212,6 +239,7 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
         if sample.process == "H"
         else [0.6, 0.6, 0.93, 0.92],
         is_data=False,
+        model_legend_name="Double-sided CB + Gaussian",
         plot_range=get_signal_boson_plot_range(sample.process),
         residual_y_range=(-2.0, 2.0),
     )
@@ -222,9 +250,14 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
         w.data("signal_data"),
         w.var("upsilon_mass"),
         upsilon_plot,
+        components=[
+            (w.pdf("signal_model_upsilon_dcb"), "Double-sided CB Component"),
+            (w.pdf("signal_model_upsilon_gauss"), "Gaussian Component"),
+        ],
         nbins=job.nbins,
         legend=[0.65, 0.7, 0.9, 0.92],
         is_data=False,
+        model_legend_name="Double-sided CB + Gaussian",
         plot_range=get_signal_upsilon_plot_range(sample.state),
         residual_y_range=(-2.0, 2.0),
     )
