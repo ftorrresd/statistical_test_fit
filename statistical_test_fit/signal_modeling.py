@@ -23,7 +23,7 @@ class SignalSample:
 
     @property
     def inner_file_name(self) -> str:
-        return self.input_file.replace("inputs/mass_", "").replace(".root", "")
+        return os.path.splitext(os.path.basename(self.input_file))[0].removeprefix("mass_")
 
 
 @dataclass(frozen=True)
@@ -42,12 +42,36 @@ class SignalFitJob:
 
 
 SIGNAL_SAMPLES = [
-    SignalSample("H", "1S", "inputs/mass_H_HToUps1SG_Run2.root"),
-    SignalSample("H", "2S", "inputs/mass_H_HToUps2SG_Run2.root"),
-    SignalSample("H", "3S", "inputs/mass_H_HToUps3SG_Run2.root"),
-    SignalSample("Z", "1S", "inputs/mass_Z_ZToUpsilon1SGamma_Run2.root"),
-    SignalSample("Z", "2S", "inputs/mass_Z_ZToUpsilon2SGamma_Run2.root"),
-    SignalSample("Z", "3S", "inputs/mass_Z_ZToUpsilon3SGamma_Run2.root"),
+    SignalSample(
+        "H",
+        "1S",
+        "inputs/selected_ggH_HToUps1SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root",
+    ),
+    SignalSample(
+        "H",
+        "2S",
+        "inputs/selected_ggH_HToUps2SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root",
+    ),
+    SignalSample(
+        "H",
+        "3S",
+        "inputs/selected_ggH_HToUps3SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root",
+    ),
+    SignalSample(
+        "Z",
+        "1S",
+        "inputs/selected_ZToUpsilon1SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root",
+    ),
+    SignalSample(
+        "Z",
+        "2S",
+        "inputs/selected_ZToUpsilon2SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root",
+    ),
+    SignalSample(
+        "Z",
+        "3S",
+        "inputs/selected_ZToUpsilon3SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root",
+    ),
 ]
 
 
