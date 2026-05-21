@@ -35,6 +35,7 @@ class SignalFitJob:
     nbins: int
     plot_dir: str
     high_fit_effort: bool = False
+    high_fit_starts: int = 24
     start_workers: int = 1
 
     @property
@@ -189,6 +190,98 @@ HIGH_EFFORT_STARTS = (
         "sigma_boson": 3.0,
         "sigma_upsilon": 0.2,
     },
+    {
+        "sigma_boson": 0.3,
+        "sigma_boson_gauss": 0.2,
+        "sigma_upsilon": 0.03,
+        "sigma_upsilon_gauss": 0.03,
+        "signal_dcb_frac": 0.7,
+        "signal_upsilon_dcb_frac": 0.7,
+    },
+    {
+        "sigma_boson": 0.5,
+        "sigma_boson_gauss": 1.0,
+        "sigma_upsilon": 0.1,
+        "sigma_upsilon_gauss": 0.05,
+        "signal_dcb_frac": 0.6,
+        "signal_upsilon_dcb_frac": 0.9,
+    },
+    {
+        "sigma_boson": 1.0,
+        "sigma_boson_gauss": 0.3,
+        "sigma_upsilon": 0.15,
+        "sigma_upsilon_gauss": 0.25,
+        "signal_dcb_frac": 0.9,
+        "signal_upsilon_dcb_frac": 0.6,
+    },
+    {
+        "sigma_boson": 1.8,
+        "sigma_boson_gauss": 3.0,
+        "sigma_upsilon": 0.06,
+        "sigma_upsilon_gauss": 0.4,
+        "signal_dcb_frac": 0.75,
+        "signal_upsilon_dcb_frac": 0.75,
+    },
+    {
+        "sigma_boson": 3.5,
+        "sigma_boson_gauss": 0.7,
+        "sigma_upsilon": 0.3,
+        "sigma_upsilon_gauss": 0.1,
+        "signal_dcb_frac": 0.55,
+        "signal_upsilon_dcb_frac": 0.85,
+    },
+    {
+        "sigma_boson": 5.0,
+        "sigma_boson_gauss": 4.5,
+        "sigma_upsilon": 0.6,
+        "sigma_upsilon_gauss": 0.5,
+        "signal_dcb_frac": 0.85,
+        "signal_upsilon_dcb_frac": 0.55,
+    },
+    {
+        "alpha1_boson": 0.7,
+        "n1_boson": 2.0,
+        "alpha2_boson": 4.0,
+        "n2_boson": 15.0,
+        "signal_dcb_frac": 0.65,
+    },
+    {
+        "alpha1_boson": 4.0,
+        "n1_boson": 15.0,
+        "alpha2_boson": 0.7,
+        "n2_boson": 2.0,
+        "signal_dcb_frac": 0.85,
+    },
+    {
+        "alpha1_upsilon": 0.7,
+        "n1_upsilon": 2.0,
+        "alpha2_upsilon": 4.0,
+        "n2_upsilon": 15.0,
+        "signal_upsilon_dcb_frac": 0.65,
+    },
+    {
+        "alpha1_upsilon": 4.0,
+        "n1_upsilon": 15.0,
+        "alpha2_upsilon": 0.7,
+        "n2_upsilon": 2.0,
+        "signal_upsilon_dcb_frac": 0.85,
+    },
+    {
+        "sigma_boson": 0.8,
+        "alpha1_boson": 2.5,
+        "alpha2_boson": 2.5,
+        "sigma_upsilon": 0.08,
+        "alpha1_upsilon": 2.5,
+        "alpha2_upsilon": 2.5,
+    },
+    {
+        "sigma_boson": 2.0,
+        "alpha1_boson": 0.5,
+        "alpha2_boson": 5.0,
+        "sigma_upsilon": 0.25,
+        "alpha1_upsilon": 5.0,
+        "alpha2_upsilon": 0.5,
+    },
 )
 
 
@@ -250,6 +343,64 @@ Z_FIT_INITIALS = {
 }
 
 
+H_FIT_INITIALS = {
+    "1S": {
+        "mean_boson": 125.02214561,
+        "sigma_boson": 1.19655568795,
+        "alpha1_boson": 1.52713636172,
+        "n1_boson": 2.10600153652,
+        "alpha2_boson": 1.53158750437,
+        "n2_boson": 4.96311685292,
+        "sigma_boson_gauss": 1.96765449134,
+        "signal_dcb_frac": 0.66975578095,
+        "mean_upsilon": 9.45981940878,
+        "sigma_upsilon": 0.0790037498453,
+        "alpha1_upsilon": 1.02754631305,
+        "n1_upsilon": 4.19311827063,
+        "alpha2_upsilon": 0.992182341674,
+        "n2_upsilon": 4.96706598492,
+        "sigma_upsilon_gauss": 0.0832827965007,
+        "signal_upsilon_dcb_frac": 0.78370990067,
+    },
+    "2S": {
+        "mean_boson": 124.995851389,
+        "sigma_boson": 1.18103644201,
+        "alpha1_boson": 1.51820514651,
+        "n1_boson": 2.10864239688,
+        "alpha2_boson": 1.52045540453,
+        "n2_boson": 4.9651067451,
+        "sigma_boson_gauss": 1.84923754962,
+        "signal_dcb_frac": 0.696926079,
+        "mean_upsilon": 10.0197510483,
+        "sigma_upsilon": 0.0750684153274,
+        "alpha1_upsilon": 1.14468956752,
+        "n1_upsilon": 1.63792767564,
+        "alpha2_upsilon": 0.974685799505,
+        "n2_upsilon": 4.86009580752,
+        "sigma_upsilon_gauss": 0.0904366087853,
+        "signal_upsilon_dcb_frac": 0.762266051197,
+    },
+    "3S": {
+        "mean_boson": 124.983611204,
+        "sigma_boson": 1.17973712738,
+        "alpha1_boson": 1.52421099342,
+        "n1_boson": 2.11289370425,
+        "alpha2_boson": 1.52109683895,
+        "n2_boson": 4.95952000293,
+        "sigma_boson_gauss": 1.90656350359,
+        "signal_dcb_frac": 0.691539431083,
+        "mean_upsilon": 10.3500961844,
+        "sigma_upsilon": 0.076391166293,
+        "alpha1_upsilon": 1.0993598888,
+        "n1_upsilon": 2.22799732628,
+        "alpha2_upsilon": 0.983087470533,
+        "n2_upsilon": 4.8815918708,
+        "sigma_upsilon_gauss": 0.0875083601584,
+        "signal_upsilon_dcb_frac": 0.769236387607,
+    },
+}
+
+
 def _build_signal_model(w, sample: SignalSample) -> None:
     boson_dcb_fraction = "signal_dcb_frac[0.9,0.5,1]"
     upsilon_dcb_fraction = "signal_upsilon_dcb_frac[0.9,0.5,1]"
@@ -299,40 +450,47 @@ def _build_signal_model(w, sample: SignalSample) -> None:
             ")"
         )
     elif sample.process == "H":
+        h_initials = H_FIT_INITIALS[sample.state]
+        boson_dcb_fraction = (
+            f"signal_dcb_frac[{h_initials['signal_dcb_frac']},0.5,1]"
+        )
+        upsilon_dcb_fraction = (
+            f"signal_upsilon_dcb_frac[{h_initials['signal_upsilon_dcb_frac']},0.6,1]"
+        )
         w.factory(
             "RooDoubleCB::signal_model_boson_dcb("
             "boson_mass[100,150], "
-            "mean_boson[125, 100, 150], "
-            "sigma_boson[2, 1E-3, 6], "
-            "alpha1_boson[1.5, 0.1, 20],"
-            "n1_boson[5, 0.5, 30],"
-            "alpha2_boson[1.5, 0.1, 20],"
-            "n2_boson[5, 0.5, 30]"
+            f"mean_boson[{h_initials['mean_boson']}, 100, 150], "
+            f"sigma_boson[{h_initials['sigma_boson']}, 1E-3, 6], "
+            f"alpha1_boson[{h_initials['alpha1_boson']}, 0.1, 20],"
+            f"n1_boson[{h_initials['n1_boson']}, 0.5, 30],"
+            f"alpha2_boson[{h_initials['alpha2_boson']}, 0.1, 20],"
+            f"n2_boson[{h_initials['n2_boson']}, 0.5, 30]"
             ")"
         )
         w.factory(
             "Gaussian::signal_model_boson_gauss("
             "boson_mass,"
             "mean_boson,"
-            "sigma_boson_gauss[0.5, 1E-3, 6]"
+            f"sigma_boson_gauss[{h_initials['sigma_boson_gauss']}, 1E-3, 6]"
             ")"
         )
         w.factory(
             f"RooDoubleCB::signal_model_upsilon_dcb("
             f"upsilon_mass[{UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
-            f"mean_upsilon[{UPSILON_MASS_SEEDS[sample.state]}, {UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
-            "sigma_upsilon[0.2, 1E-3, 6],"
-            "alpha1_upsilon[1, 0.1, 20],"
-            "n1_upsilon[5, 0.5, 30],"
-            "alpha2_upsilon[1, 0.1, 20],"
-            "n2_upsilon[5, 0.5, 30]"
+            f"mean_upsilon[{h_initials['mean_upsilon']}, {UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
+            f"sigma_upsilon[{h_initials['sigma_upsilon']}, 1E-3, 6],"
+            f"alpha1_upsilon[{h_initials['alpha1_upsilon']}, 0.1, 20],"
+            f"n1_upsilon[{h_initials['n1_upsilon']}, 0.5, 30],"
+            f"alpha2_upsilon[{h_initials['alpha2_upsilon']}, 0.1, 20],"
+            f"n2_upsilon[{h_initials['n2_upsilon']}, 0.5, 30]"
             ")"
         )
         w.factory(
             "Gaussian::signal_model_upsilon_gauss("
             "upsilon_mass,"
             "mean_upsilon,"
-            "sigma_upsilon_gauss[0.1, 1E-3, 6]"
+            f"sigma_upsilon_gauss[{h_initials['sigma_upsilon_gauss']}, 1E-3, 6]"
             ")"
         )
     else:
@@ -477,14 +635,28 @@ def _run_high_effort_start(payload: SignalStartFitJob) -> dict:
         root_file.Close()
 
 
-def _run_high_effort_starts(sample: SignalSample, start_workers: int) -> list[dict]:
+def _run_high_effort_starts(
+    sample: SignalSample,
+    start_workers: int,
+    high_fit_starts: int,
+) -> list[dict]:
+    if high_fit_starts < 1:
+        raise ValueError("--high-fit-starts must be at least 1")
+    if high_fit_starts > len(HIGH_EFFORT_STARTS):
+        raise ValueError(
+            f"--high-fit-starts={high_fit_starts} exceeds the "
+            f"{len(HIGH_EFFORT_STARTS)} configured deterministic starts"
+        )
     start_jobs = [
         SignalStartFitJob(
             sample=sample,
             start_index=index,
             start_values=dict(start_values),
         )
-        for index, start_values in enumerate(HIGH_EFFORT_STARTS, start=1)
+        for index, start_values in enumerate(
+            HIGH_EFFORT_STARTS[:high_fit_starts],
+            start=1,
+        )
     ]
     max_workers = max(1, min(int(start_workers), len(start_jobs)))
     print(
@@ -558,7 +730,11 @@ def _fit_with_high_effort(w, data, ROOT, RooFit, job: SignalFitJob):
     best_state = None
     best_nll = math.inf
 
-    for result in _run_high_effort_starts(job.sample, job.start_workers):
+    for result in _run_high_effort_starts(
+        job.sample,
+        job.start_workers,
+        job.high_fit_starts,
+    ):
         start_index = int(result["start_index"])
         if result["state"] is None:
             print(f"    start {start_index}: failed ({result['message']})")
@@ -713,16 +889,36 @@ def run_signal_modeling(args: Namespace):
     nbins = getattr(args, "nbins", 60)
     workers = getattr(args, "workers", None)
     high_fit_effort = bool(getattr(args, "high_fit_effort", False))
-    outer_workers = resolve_worker_count(workers, len(SIGNAL_SAMPLES))
+    high_fit_starts = int(getattr(args, "high_fit_starts", 24))
+    selected_process = getattr(args, "process", "all")
+    if selected_process == "all":
+        selected_samples = SIGNAL_SAMPLES
+    else:
+        selected_samples = [
+            sample for sample in SIGNAL_SAMPLES if sample.process == selected_process
+        ]
+
+    if not selected_samples:
+        raise ValueError(f"No signal samples selected for process {selected_process!r}")
+
+    outer_workers = resolve_worker_count(workers, len(selected_samples))
     start_workers = 1
     if high_fit_effort:
+        if high_fit_starts < 1:
+            raise ValueError("--high-fit-starts must be at least 1")
+        if high_fit_starts > len(HIGH_EFFORT_STARTS):
+            raise ValueError(
+                f"--high-fit-starts={high_fit_starts} exceeds the "
+                f"{len(HIGH_EFFORT_STARTS)} configured deterministic starts"
+            )
         cpu_count = os.cpu_count() or 1
         start_workers = max(
             1,
-            min(len(HIGH_EFFORT_STARTS), math.ceil(cpu_count / max(1, outer_workers))),
+            min(high_fit_starts, math.ceil(cpu_count / max(1, outer_workers))),
         )
         print(
             "High fit effort enabled: "
+            f"{high_fit_starts} start point(s), "
             f"up to {outer_workers} sample worker(s), "
             f"{start_workers} start worker(s) per sample."
         )
@@ -735,10 +931,11 @@ def run_signal_modeling(args: Namespace):
                 nbins=nbins,
                 plot_dir=PLOT_DIR,
                 high_fit_effort=high_fit_effort,
+                high_fit_starts=high_fit_starts,
                 start_workers=start_workers,
             ),
         )
-        for sample in SIGNAL_SAMPLES
+        for sample in selected_samples
     ]
     results = run_parallel_jobs(
         "Signal fits",
@@ -746,4 +943,4 @@ def run_signal_modeling(args: Namespace):
         _fit_signal_sample,
         workers=workers,
     )
-    return [results[sample.inner_file_name] for sample in SIGNAL_SAMPLES]
+    return [results[sample.inner_file_name] for sample in selected_samples]

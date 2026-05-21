@@ -40,9 +40,21 @@ else:
         parser.add_argument("--nbins", type=int, default=60)
         parser.add_argument("--workers", type=int, default=None)
         parser.add_argument(
+            "--process",
+            choices=("all", "H", "Z"),
+            default="all",
+            help="Signal process to fit: H, Z, or all.",
+        )
+        parser.add_argument(
             "--high-fit-effort",
             action="store_true",
             help="Use higher Minuit settings and deterministic multistart signal fits.",
+        )
+        parser.add_argument(
+            "--high-fit-starts",
+            type=int,
+            default=24,
+            help="Number of deterministic starts to try with --high-fit-effort.",
         )
         args = parser.parse_args()
 
