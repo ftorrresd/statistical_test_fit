@@ -39,6 +39,11 @@ else:
         )
         parser.add_argument("--nbins", type=int, default=60)
         parser.add_argument("--workers", type=int, default=None)
+        parser.add_argument(
+            "--high-fit-effort",
+            action="store_true",
+            help="Use higher Minuit settings and deterministic multistart signal fits.",
+        )
         args = parser.parse_args()
 
         os.system("mkdir -p plots")

@@ -1,5 +1,8 @@
 from argparse import Namespace
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+import math
+import multiprocessing as mp
 import os
 
 from .mass_ranges import (
@@ -9,7 +12,7 @@ from .mass_ranges import (
     get_signal_boson_plot_range,
     get_signal_upsilon_plot_range,
 )
-from .parallel_utils import ParallelJob, run_parallel_jobs
+from .parallel_utils import ParallelJob, resolve_worker_count, run_parallel_jobs
 
 
 PLOT_DIR = "plots/signal_fit"
@@ -31,6 +34,8 @@ class SignalFitJob:
     sample: SignalSample
     nbins: int
     plot_dir: str
+    high_fit_effort: bool = False
+    start_workers: int = 1
 
     @property
     def key(self) -> str:
@@ -39,6 +44,13 @@ class SignalFitJob:
     @property
     def label(self) -> str:
         return f"{self.sample.process} {self.sample.state}"
+
+
+@dataclass(frozen=True)
+class SignalStartFitJob:
+    sample: SignalSample
+    start_index: int
+    start_values: dict[str, float]
 
 
 SIGNAL_SAMPLES = [
@@ -75,44 +87,215 @@ SIGNAL_SAMPLES = [
 ]
 
 
+HIGH_EFFORT_STARTS = (
+    {},
+    {
+        "sigma_boson": 0.7,
+        "sigma_boson_gauss": 0.4,
+        "sigma_upsilon": 0.05,
+        "sigma_upsilon_gauss": 0.04,
+        "signal_dcb_frac": 0.9,
+        "signal_upsilon_dcb_frac": 0.9,
+    },
+    {
+        "sigma_boson": 1.2,
+        "sigma_boson_gauss": 0.8,
+        "sigma_upsilon": 0.08,
+        "sigma_upsilon_gauss": 0.08,
+        "signal_dcb_frac": 0.8,
+        "signal_upsilon_dcb_frac": 0.8,
+    },
+    {
+        "sigma_boson": 2.5,
+        "sigma_boson_gauss": 1.5,
+        "sigma_upsilon": 0.2,
+        "sigma_upsilon_gauss": 0.15,
+        "signal_dcb_frac": 0.7,
+        "signal_upsilon_dcb_frac": 0.7,
+    },
+    {
+        "sigma_boson": 4.0,
+        "sigma_boson_gauss": 2.5,
+        "sigma_upsilon": 0.4,
+        "sigma_upsilon_gauss": 0.3,
+        "signal_dcb_frac": 0.5,
+        "signal_upsilon_dcb_frac": 0.5,
+    },
+    {
+        "alpha1_boson": 0.4,
+        "n1_boson": 0.6,
+        "alpha2_boson": 0.4,
+        "n2_boson": 0.6,
+        "alpha1_upsilon": 0.4,
+        "n1_upsilon": 0.6,
+        "alpha2_upsilon": 0.4,
+        "n2_upsilon": 0.6,
+        "signal_dcb_frac": 0.9,
+        "signal_upsilon_dcb_frac": 0.9,
+    },
+    {
+        "alpha1_boson": 1.0,
+        "n1_boson": 1.0,
+        "alpha2_boson": 1.0,
+        "n2_boson": 1.0,
+        "alpha1_upsilon": 1.0,
+        "n1_upsilon": 1.0,
+        "alpha2_upsilon": 1.0,
+        "n2_upsilon": 1.0,
+        "signal_dcb_frac": 0.8,
+        "signal_upsilon_dcb_frac": 0.8,
+    },
+    {
+        "alpha1_boson": 5.0,
+        "n1_boson": 20.0,
+        "alpha2_boson": 5.0,
+        "n2_boson": 20.0,
+        "alpha1_upsilon": 5.0,
+        "n1_upsilon": 20.0,
+        "alpha2_upsilon": 5.0,
+        "n2_upsilon": 20.0,
+        "signal_dcb_frac": 0.5,
+        "signal_upsilon_dcb_frac": 0.5,
+    },
+    {
+        "alpha1_boson": 0.3,
+        "n1_boson": 0.6,
+        "alpha2_boson": 3.0,
+        "n2_boson": 10.0,
+        "alpha1_upsilon": 0.3,
+        "n1_upsilon": 0.6,
+        "alpha2_upsilon": 3.0,
+        "n2_upsilon": 10.0,
+    },
+    {
+        "alpha1_boson": 3.0,
+        "n1_boson": 10.0,
+        "alpha2_boson": 0.3,
+        "n2_boson": 0.6,
+        "alpha1_upsilon": 3.0,
+        "n1_upsilon": 10.0,
+        "alpha2_upsilon": 0.3,
+        "n2_upsilon": 0.6,
+    },
+    {
+        "signal_dcb_frac": 0.5,
+        "signal_upsilon_dcb_frac": 0.5,
+        "sigma_boson_gauss": 1.5,
+        "sigma_upsilon_gauss": 0.2,
+    },
+    {
+        "signal_dcb_frac": 0.95,
+        "signal_upsilon_dcb_frac": 0.95,
+        "sigma_boson": 3.0,
+        "sigma_upsilon": 0.2,
+    },
+)
+
+
+Z_FIT_INITIALS = {
+    "1S": {
+        "mean_boson": 91.1251,
+        "sigma_boson": 1.28845,
+        "alpha1_boson": 1.13806,
+        "n1_boson": 9.12668,
+        "alpha2_boson": 2.30193,
+        "n2_boson": 4.28881,
+        "sigma_boson_gauss": 0.627102,
+        "signal_dcb_frac": 0.8392,
+        "mean_upsilon": 9.45798,
+        "sigma_upsilon": 0.0898103,
+        "alpha1_upsilon": 2.00974,
+        "n1_upsilon": 1.10676,
+        "alpha2_upsilon": 3.17943,
+        "n2_upsilon": 1.16456,
+        "sigma_upsilon_gauss": 0.206566,
+        "signal_upsilon_dcb_frac": 0.768843,
+    },
+    "2S": {
+        "mean_boson": 91.1665,
+        "sigma_boson": 1.06662,
+        "alpha1_boson": 1.01452,
+        "n1_boson": 8.88621,
+        "alpha2_boson": 3.11102,
+        "n2_boson": 1.15361,
+        "sigma_boson_gauss": 2.23579,
+        "signal_dcb_frac": 0.852226,
+        "mean_upsilon": 10.0179,
+        "sigma_upsilon": 0.09,
+        "alpha1_upsilon": 2.37887,
+        "n1_upsilon": 0.545057,
+        "alpha2_upsilon": 2.86702,
+        "n2_upsilon": 1.59121,
+        "sigma_upsilon_gauss": 0.186,
+        "signal_upsilon_dcb_frac": 0.65,
+    },
+    "3S": {
+        "mean_boson": 91.1776,
+        "sigma_boson": 1.02036,
+        "alpha1_boson": 1.05157,
+        "n1_boson": 5.25265,
+        "alpha2_boson": 1.99113,
+        "n2_boson": 4.30759,
+        "sigma_boson_gauss": 1.43633,
+        "signal_dcb_frac": 0.885992,
+        "mean_upsilon": 10.3499,
+        "sigma_upsilon": 0.0889776,
+        "alpha1_upsilon": 2.31292,
+        "n1_upsilon": 0.73828,
+        "alpha2_upsilon": 2.97709,
+        "n2_upsilon": 0.973556,
+        "sigma_upsilon_gauss": 0.192096,
+        "signal_upsilon_dcb_frac": 0.603921,
+    },
+}
+
+
 def _build_signal_model(w, sample: SignalSample) -> None:
-    boson_dcb_fraction = "signal_dcb_frac[0.9,0,1]"
+    boson_dcb_fraction = "signal_dcb_frac[0.9,0.5,1]"
+    upsilon_dcb_fraction = "signal_upsilon_dcb_frac[0.9,0.5,1]"
 
     if sample.process == "Z":
+        z_initials = Z_FIT_INITIALS[sample.state]
+        boson_dcb_fraction = (
+            f"signal_dcb_frac[{z_initials['signal_dcb_frac']},0.5,1]"
+        )
+        upsilon_dcb_fraction = (
+            f"signal_upsilon_dcb_frac[{z_initials['signal_upsilon_dcb_frac']},0.6,1]"
+        )
         w.factory(
             "RooDoubleCB::signal_model_boson_dcb("
             "boson_mass[70,120], "
-            "mean_boson[91.1876, 70, 120], "
-            "sigma_boson[3, 1E-3, 6], "
-            "alpha1_boson[1, 0.1, 20],"
-            "n1_boson[0.8, 0.5, 100],"
-            "alpha2_boson[3, 0.1, 20],"
-            "n2_boson[0.5, 0.5, 100]"
+            f"mean_boson[{z_initials['mean_boson']}, 70, 120], "
+            f"sigma_boson[{z_initials['sigma_boson']}, 1E-3, 6], "
+            f"alpha1_boson[{z_initials['alpha1_boson']}, 0.1, 20],"
+            f"n1_boson[{z_initials['n1_boson']}, 0.5, 30],"
+            f"alpha2_boson[{z_initials['alpha2_boson']}, 0.1, 20],"
+            f"n2_boson[{z_initials['n2_boson']}, 0.5, 30]"
             ")"
         )
         w.factory(
             "Gaussian::signal_model_boson_gauss("
             "boson_mass,"
             "mean_boson,"
-            "sigma_boson_gauss[2, 1E-3, 6]"
+            f"sigma_boson_gauss[{z_initials['sigma_boson_gauss']}, 1E-3, 6]"
             ")"
         )
         w.factory(
             f"RooDoubleCB::signal_model_upsilon_dcb("
             f"upsilon_mass[{UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
-            f"mean_upsilon[{UPSILON_MASS_SEEDS[sample.state]}, {UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
-            "sigma_upsilon[0.2, 1E-3, 6],"
-            "alpha1_upsilon[3, 0.1, 20],"
-            "n1_upsilon[1, 0.5, 100],"
-            "alpha2_upsilon[3, 0.1, 20],"
-            "n2_upsilon[1, 0.5, 100]"
+            f"mean_upsilon[{z_initials['mean_upsilon']}, {UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
+            f"sigma_upsilon[{z_initials['sigma_upsilon']}, 1E-3, 6],"
+            f"alpha1_upsilon[{z_initials['alpha1_upsilon']}, 0.1, 20],"
+            f"n1_upsilon[{z_initials['n1_upsilon']}, 0.5, 30],"
+            f"alpha2_upsilon[{z_initials['alpha2_upsilon']}, 0.1, 20],"
+            f"n2_upsilon[{z_initials['n2_upsilon']}, 0.5, 30]"
             ")"
         )
         w.factory(
             "Gaussian::signal_model_upsilon_gauss("
             "upsilon_mass,"
             "mean_upsilon,"
-            "sigma_upsilon_gauss[0.1, 1E-3, 6]"
+            f"sigma_upsilon_gauss[{z_initials['sigma_upsilon_gauss']}, 0.15, 6]"
             ")"
         )
     elif sample.process == "H":
@@ -122,9 +305,9 @@ def _build_signal_model(w, sample: SignalSample) -> None:
             "mean_boson[125, 100, 150], "
             "sigma_boson[2, 1E-3, 6], "
             "alpha1_boson[1.5, 0.1, 20],"
-            "n1_boson[5, 0.5, 100],"
+            "n1_boson[5, 0.5, 30],"
             "alpha2_boson[1.5, 0.1, 20],"
-            "n2_boson[5, 0.5, 100]"
+            "n2_boson[5, 0.5, 30]"
             ")"
         )
         w.factory(
@@ -140,9 +323,9 @@ def _build_signal_model(w, sample: SignalSample) -> None:
             f"mean_upsilon[{UPSILON_MASS_SEEDS[sample.state]}, {UPSILON_MASS_LOWER}, {UPSILON_MASS_UPPER}],"
             "sigma_upsilon[0.2, 1E-3, 6],"
             "alpha1_upsilon[1, 0.1, 20],"
-            "n1_upsilon[5, 0.5, 100],"
+            "n1_upsilon[5, 0.5, 30],"
             "alpha2_upsilon[1, 0.1, 20],"
-            "n2_upsilon[5, 0.5, 100]"
+            "n2_upsilon[5, 0.5, 30]"
             ")"
         )
         w.factory(
@@ -162,17 +345,256 @@ def _build_signal_model(w, sample: SignalSample) -> None:
     )
     w.factory(
         "RSUM::signal_model_upsilon("
-        "signal_upsilon_dcb_frac[0.9,0,1]*signal_model_upsilon_dcb,"
+        f"{upsilon_dcb_fraction}*signal_model_upsilon_dcb,"
         "signal_model_upsilon_gauss)"
     )
     w.factory("PROD::signal_model(signal_model_boson,signal_model_upsilon)")
     w.factory("weight[-100,100]")
 
 
+def _configure_high_fit_effort(ROOT) -> None:
+    ROOT.Math.MinimizerOptions.SetDefaultMinimizer("Minuit2", "Migrad")
+    ROOT.Math.MinimizerOptions.SetDefaultStrategy(2)
+    ROOT.Math.MinimizerOptions.SetDefaultMaxFunctionCalls(100000)
+    ROOT.Math.MinimizerOptions.SetDefaultMaxIterations(100000)
+    ROOT.Math.MinimizerOptions.SetDefaultTolerance(1e-4)
+
+
+def _signal_parameter_names(w, data) -> list[str]:
+    return [p.GetName() for p in w.pdf("signal_model").getParameters(data.get())]
+
+
+def _capture_parameter_state(w, parameter_names: list[str]) -> dict[str, tuple[float, float]]:
+    state = {}
+    for name in parameter_names:
+        var = w.var(name)
+        if var is not None:
+            state[name] = (float(var.getVal()), float(var.getError()))
+    return state
+
+
+def _restore_parameter_state(
+    w,
+    state: dict[str, tuple[float, float]],
+    *,
+    make_float: bool = False,
+) -> None:
+    for name, (value, error) in state.items():
+        var = w.var(name)
+        if var is None:
+            continue
+        if make_float:
+            var.setConstant(False)
+        var.setVal(value)
+        var.setError(error)
+
+
+def _apply_start_values(w, start_values: dict[str, float]) -> None:
+    for name, value in start_values.items():
+        var = w.var(name)
+        if var is None:
+            continue
+        lower = float(var.getMin())
+        upper = float(var.getMax())
+        var.setVal(min(max(float(value), lower), upper))
+
+
+def _fit_with_default_effort(w, data, RooFit):
+    return w.pdf("signal_model").fitTo(data, RooFit.Save())
+
+
+def _run_high_effort_start(payload: SignalStartFitJob) -> dict:
+    from .root_runtime import configure_root
+
+    configure_root()
+
+    import ROOT  # type: ignore
+
+    from ROOT import (  # type: ignore
+        RooArgSet,  # type: ignore
+        RooDataSet,  # type: ignore
+        RooFit,  # type: ignore
+        RooWorkspace,  # type: ignore
+        TFile,  # type: ignore
+    )
+
+    _configure_high_fit_effort(ROOT)
+
+    w = RooWorkspace("ws")
+    _build_signal_model(w, payload.sample)
+
+    root_file = TFile.Open(payload.sample.input_file)
+    if root_file is None or root_file.IsZombie():
+        raise RuntimeError(f"Could not open signal input {payload.sample.input_file}")
+
+    try:
+        events = root_file.Get("Events")
+        if events is None:
+            raise RuntimeError(
+                f"Could not find 'Events' tree in {payload.sample.input_file}"
+            )
+
+        data = RooDataSet(
+            "signal_data",
+            "signal_data",
+            RooArgSet(w.var("boson_mass"), w.var("upsilon_mass"), w.var("weight")),
+            RooFit.Import(events),
+            RooFit.WeightVar(w.var("weight")),
+        )
+        getattr(w, "import")(data)
+
+        parameter_names = _signal_parameter_names(w, data)
+        _apply_start_values(w, payload.start_values)
+        fit_result = w.pdf("signal_model").fitTo(
+            data,
+            RooFit.Save(True),
+            RooFit.SumW2Error(True),
+            RooFit.Strategy(2),
+            RooFit.Minimizer("Minuit2", "Migrad"),
+            RooFit.Hesse(True),
+            RooFit.PrintLevel(-1),
+            RooFit.Verbose(False),
+        )
+        if fit_result is None:
+            return {
+                "start_index": payload.start_index,
+                "min_nll": math.inf,
+                "status": -1,
+                "cov_qual": -1,
+                "state": None,
+                "message": "fit returned None",
+            }
+
+        return {
+            "start_index": payload.start_index,
+            "min_nll": float(fit_result.minNll()),
+            "status": int(fit_result.status()),
+            "cov_qual": int(fit_result.covQual()),
+            "state": _capture_parameter_state(w, parameter_names),
+            "message": "ok",
+        }
+    finally:
+        root_file.Close()
+
+
+def _run_high_effort_starts(sample: SignalSample, start_workers: int) -> list[dict]:
+    start_jobs = [
+        SignalStartFitJob(
+            sample=sample,
+            start_index=index,
+            start_values=dict(start_values),
+        )
+        for index, start_values in enumerate(HIGH_EFFORT_STARTS, start=1)
+    ]
+    max_workers = max(1, min(int(start_workers), len(start_jobs)))
+    print(
+        f"--> High fit effort: trying {len(start_jobs)} start points "
+        f"with {max_workers} start worker(s)"
+    )
+
+    if max_workers == 1:
+        results = []
+        for start_job in start_jobs:
+            try:
+                results.append(_run_high_effort_start(start_job))
+            except Exception as exc:
+                results.append(
+                    {
+                        "start_index": start_job.start_index,
+                        "min_nll": math.inf,
+                        "status": -1,
+                        "cov_qual": -1,
+                        "state": None,
+                        "message": repr(exc),
+                    }
+                )
+        return results
+
+    results = []
+    context = mp.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as executor:
+        future_to_start = {
+            executor.submit(_run_high_effort_start, start_job): start_job
+            for start_job in start_jobs
+        }
+        for future in as_completed(future_to_start):
+            start_job = future_to_start[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append(
+                    {
+                        "start_index": start_job.start_index,
+                        "min_nll": math.inf,
+                        "status": -1,
+                        "cov_qual": -1,
+                        "state": None,
+                        "message": repr(exc),
+                    }
+                )
+
+    return sorted(results, key=lambda result: int(result["start_index"]))
+
+
+def _final_high_effort_fit(w, data, RooFit):
+    return w.pdf("signal_model").fitTo(
+        data,
+        RooFit.Save(True),
+        RooFit.SumW2Error(True),
+        RooFit.Strategy(2),
+        RooFit.Minimizer("Minuit2", "Migrad"),
+        RooFit.Hesse(True),
+        RooFit.PrintLevel(-1),
+        RooFit.Verbose(False),
+    )
+
+
+def _fit_with_high_effort(w, data, ROOT, RooFit, job: SignalFitJob):
+    _configure_high_fit_effort(ROOT)
+
+    parameter_names = _signal_parameter_names(w, data)
+    nominal_state = _capture_parameter_state(w, parameter_names)
+    best_result = None
+    best_state = None
+    best_nll = math.inf
+
+    for result in _run_high_effort_starts(job.sample, job.start_workers):
+        start_index = int(result["start_index"])
+        if result["state"] is None:
+            print(f"    start {start_index}: failed ({result['message']})")
+            continue
+
+        min_nll = float(result["min_nll"])
+        status = int(result["status"])
+        cov_qual = int(result["cov_qual"])
+        print(
+            f"    start {start_index}: minNll={min_nll:.6g}, "
+            f"status={status}, covQual={cov_qual}"
+        )
+        if math.isfinite(min_nll) and min_nll < best_nll:
+            best_nll = min_nll
+            best_result = result
+            best_state = result["state"]
+
+    if best_state is None or best_result is None:
+        print("--> High fit effort did not find a valid multistart result; keeping nominal fit")
+        _restore_parameter_state(w, nominal_state, make_float=True)
+        return _final_high_effort_fit(w, data, RooFit)
+
+    _restore_parameter_state(w, best_state, make_float=True)
+    print(f"--> High fit effort selected minNll={best_nll:.6g}")
+    fit_result = _final_high_effort_fit(w, data, RooFit)
+    if fit_result is None:
+        _restore_parameter_state(w, best_state, make_float=True)
+    return fit_result
+
+
 def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
     from .root_runtime import configure_root
 
     configure_root()
+
+    import ROOT  # type: ignore
 
     from ROOT import (  # type: ignore
         RooArgSet,  # type: ignore
@@ -213,7 +635,10 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
     )
     getattr(w, "import")(data)
 
-    fit_result = w.pdf("signal_model").fitTo(data, RooFit.Save())
+    if job.high_fit_effort:
+        fit_result = _fit_with_high_effort(w, data, ROOT, RooFit, job)
+    else:
+        fit_result = _fit_with_default_effort(w, data, RooFit)
 
     w.var("boson_mass").SetTitle(r"m_{#mu#mu#gamma}")
     w.var("boson_mass").setUnit(r"GeV")
@@ -265,7 +690,10 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
     w = set_constant(w)
 
     print("\n\n--> Fit parameters")
-    fit_result.Print("v")
+    if fit_result is not None:
+        fit_result.Print("v")
+    else:
+        print("Fit result unavailable; workspace parameters reflect the selected start state.")
     print("data.sumEntries(): ", data.sumEntries())
     print("model Integral: ", w.pdf("signal_model").createIntegral(data.get()).getVal())
 
@@ -284,11 +712,31 @@ def run_signal_modeling(args: Namespace):
     os.makedirs(PLOT_DIR, exist_ok=True)
     nbins = getattr(args, "nbins", 60)
     workers = getattr(args, "workers", None)
+    high_fit_effort = bool(getattr(args, "high_fit_effort", False))
+    outer_workers = resolve_worker_count(workers, len(SIGNAL_SAMPLES))
+    start_workers = 1
+    if high_fit_effort:
+        cpu_count = os.cpu_count() or 1
+        start_workers = max(
+            1,
+            min(len(HIGH_EFFORT_STARTS), math.ceil(cpu_count / max(1, outer_workers))),
+        )
+        print(
+            "High fit effort enabled: "
+            f"up to {outer_workers} sample worker(s), "
+            f"{start_workers} start worker(s) per sample."
+        )
     jobs = [
         ParallelJob(
             key=sample.inner_file_name,
             label=f"{sample.process} {sample.state}",
-            payload=SignalFitJob(sample=sample, nbins=nbins, plot_dir=PLOT_DIR),
+            payload=SignalFitJob(
+                sample=sample,
+                nbins=nbins,
+                plot_dir=PLOT_DIR,
+                high_fit_effort=high_fit_effort,
+                start_workers=start_workers,
+            ),
         )
         for sample in SIGNAL_SAMPLES
     ]
