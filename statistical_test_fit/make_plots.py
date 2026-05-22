@@ -1,9 +1,11 @@
+from array import array
 from enum import Enum, auto
 from itertools import cycle
 from typing import Optional, List, Any
 
 from ROOT import (
     RooArgSet,  # type: ignore
+    RooBinning,  # type: ignore
     RooFit,  # type: ignore
     TBox,  # type: ignore
     TCanvas,  # type: ignore
@@ -52,6 +54,42 @@ def shade_blind_region(bl_lo, bl_hi, ymin, ymax, color=kGray, alpha=0.35):
     box.SetFillColorAlpha(color, alpha)
     box.SetLineColor(color)
     return box
+
+
+def _build_edge_aligned_binning(nbins: int, boundaries: list[float], name: str):
+    """Build non-uniform plot binning with exact user-supplied boundaries."""
+    if nbins < len(boundaries) - 1:
+        return None
+
+    widths = [high - low for low, high in zip(boundaries[:-1], boundaries[1:])]
+    total_width = sum(widths)
+    ideal = [nbins * width / total_width for width in widths]
+    bins_per_interval = [max(1, int(value)) for value in ideal]
+
+    while sum(bins_per_interval) > nbins:
+        candidates = [idx for idx, bins in enumerate(bins_per_interval) if bins > 1]
+        idx = min(candidates, key=lambda i: ideal[i] - bins_per_interval[i])
+        bins_per_interval[idx] -= 1
+
+    deficit = nbins - sum(bins_per_interval)
+    remainder_order = sorted(
+        range(len(bins_per_interval)),
+        key=lambda idx: ideal[idx] - int(ideal[idx]),
+        reverse=True,
+    )
+    for idx in remainder_order[:deficit]:
+        bins_per_interval[idx] += 1
+
+    edges = [boundaries[0]]
+    for low, high, interval_bins in zip(
+        boundaries[:-1], boundaries[1:], bins_per_interval
+    ):
+        step = (high - low) / interval_bins
+        for bin_idx in range(1, interval_bins + 1):
+            edge = high if bin_idx == interval_bins else low + step * bin_idx
+            edges.append(edge)
+
+    return RooBinning(len(edges) - 1, array("d", edges), name)
 
 
 def make_plots_1d(
@@ -208,7 +246,21 @@ def make_plots_2d(
         data_postfix = "_data"
 
     # Frame
+    plot_binning = None
     if proj_dim == ProjDim.Y:
+        if data_type == DataType.REAL:
+            plot_binning = _build_edge_aligned_binning(
+                nbins,
+                [
+                    left_lower,
+                    left_upper,
+                    middle_lower,
+                    middle_upper,
+                    right_lower,
+                    right_upper,
+                ],
+                "mumugamma_plot_binning",
+            )
         frame = y.frame(
             RooFit.Bins(nbins),
             RooFit.Title(""),
@@ -222,14 +274,19 @@ def make_plots_2d(
     frame.SetTitle("")
 
     # Plot only sideband data points
-    data_sb.plotOn(frame, RooFit.Name("data_sb"))
+    data_plot_args = [RooFit.Name("data_sb")]
+    if plot_binning is not None:
+        data_plot_args.append(RooFit.Binning(plot_binning))
+    data_sb.plotOn(frame, *data_plot_args)
     if data_full is not None and proj_dim == ProjDim.Y:
-        data_full.plotOn(
-            frame,
+        full_data_plot_args = [
             RooFit.Name("data_full"),
             RooFit.MarkerStyle(20),
             RooFit.MarkerColor(kRed),
-        )
+        ]
+        if plot_binning is not None:
+            full_data_plot_args.append(RooFit.Binning(plot_binning))
+        data_full.plotOn(frame, *full_data_plot_args)
 
     # Draw fitted background on sidebands only (solid), normalized to sidebands
     if bkg_pdf is not None:
@@ -350,7 +407,7 @@ def make_plots_2d(
     leg.Draw()
 
     # Plot only sideband data points - again
-    data_sb.plotOn(frame, RooFit.Name("data_sb"))
+    data_sb.plotOn(frame, *data_plot_args)
 
     # # Bottom pad: pulls
     # can.cd(2)

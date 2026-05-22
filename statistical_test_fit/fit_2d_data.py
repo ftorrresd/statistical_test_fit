@@ -113,6 +113,9 @@ def _build_non_resonant_family_summary(
     sideband_entries: int,
 ):
     assert len(test_bkg_pdfs) == len(candidate_results)
+    current_selection = (
+        strict_selection if current_selection_mode == "strict" else relaxed_selection
+    )
 
     candidate_summaries = []
     for idx, (test_bkg_pdf, candidate_result) in enumerate(
@@ -149,10 +152,10 @@ def _build_non_resonant_family_summary(
                 "NLL": candidate_result.NLL,
                 "params": candidate_result.params_dict,
                 "initial_norm_estimate": initial_norm_estimate,
-                "is_start": strict_selection.get("status") == "ok"
-                and idx == strict_selection.get("start_index"),
-                "is_winner": strict_selection.get("status") == "ok"
-                and idx == strict_selection.get("winner_index"),
+                "is_start": current_selection.get("status") == "ok"
+                and idx == current_selection.get("start_index"),
+                "is_winner": current_selection.get("status") == "ok"
+                and idx == current_selection.get("winner_index"),
             }
         )
 
@@ -177,9 +180,7 @@ def _build_non_resonant_family_summary(
         "family_label": str(family),
         "plots": plot_files,
         "current_selection_mode": current_selection_mode,
-        "selection": strict_selection
-        if current_selection_mode == "strict"
-        else relaxed_selection,
+        "selection": current_selection,
         "selections": {
             "strict": strict_selection,
             "relaxed": relaxed_selection,
@@ -218,7 +219,7 @@ def _write_non_resonant_summary(
         "summary_path": NON_RESONANT_SUMMARY_PATH,
         "workspace_path": NON_RESONANT_WORKSPACE_PATH,
         "plots_dir": "plots/fit_2d_data",
-        "input_file": "inputs/mass_Run2.root",
+        "input_file": "inputs/preselected_Run2.root",
         "plot_nbins": args.nbins,
         "chi2_nbins": args.chi2_nbins,
         "workers": getattr(args, "workers", None),
@@ -368,7 +369,7 @@ def run_fit_2d_data(args: Namespace):
     boson_mass.SetTitle("m_{#mu#mu#gamma}")  # LaTeX-style title
     boson_mass.setUnit("GeV")  # physical unit
 
-    f = TFile.Open("inputs/mass_Run2.root")
+    f = TFile.Open("inputs/preselected_Run2.root")
     data_full = RooDataSet(
         "data_obs",
         "data_obs",
@@ -406,7 +407,7 @@ def run_fit_2d_data(args: Namespace):
     candidate_specs = build_non_resonant_candidate_specs(
         upsilon_params=upsilon_params,
         chi2_nbins=args.chi2_nbins,
-        input_file="inputs/mass_Run2.root",
+        input_file="inputs/preselected_Run2.root",
         upsilon_mass_lower=upsilon_mass_lower,
         upsilon_mass_upper=upsilon_mass_upper,
         boson_mass_lower=BOSON_MASS_LOWER,

@@ -251,7 +251,7 @@ def _select_relaxed_winner(
     valid_models = [
         (idx, test_bkg_model)
         for idx, test_bkg_model in enumerate(test_bkg_models)
-        if test_bkg_model.fit_ok
+        if test_bkg_model.chi_square_res is not None
     ]
 
     details = [
@@ -261,7 +261,7 @@ def _select_relaxed_winner(
 
     if len(valid_models) == 0:
         _print_big_warning(
-            f"No fit-quality-passing candidates available for {family}",
+            f"No chi-square diagnostics available for {family}",
             details
             + [
                 _format_candidate_summary(idx, test_bkg_model)
@@ -289,7 +289,7 @@ def _select_relaxed_winner(
     assert start_idx is not None and winner_idx is not None
 
     details.append(
-        "Falling back to the fit-quality-passing candidate with the best available chi-square p-value."
+        "Falling back to chi-square-driven selection without fit-quality filtering."
     )
     details.extend(
         _format_candidate_summary(idx, test_bkg_model)
@@ -359,17 +359,21 @@ def compute_winner_and_start_indexes(
 
     valid_models = []
     for idx, test_bkg_model in enumerate(test_bkg_models):
-        if not test_bkg_model.is_complete():
-            message = f"Model {idx} is missing fit diagnostics required by selection."
-            if strict_mode:
+        if strict_mode:
+            if not test_bkg_model.is_complete():
+                message = f"Model {idx} is missing fit diagnostics required by selection."
                 _raise_family_strict_selection_error(test_bkg_models, message)
-            return _select_relaxed_winner(test_bkg_models, message)
-
-        if test_bkg_model.fit_ok:
+            if test_bkg_model.fit_ok:
+                valid_models.append((idx, test_bkg_model))
+        elif test_bkg_model.chi_square_res is not None:
             valid_models.append((idx, test_bkg_model))
 
     if len(valid_models) == 0:
-        message = "No candidate in this family passed the fit-quality requirements."
+        message = (
+            "No candidate in this family passed the fit-quality requirements."
+            if strict_mode
+            else "No candidate in this family has chi-square diagnostics."
+        )
         if strict_mode:
             _raise_family_strict_selection_error(test_bkg_models, message)
         return _select_relaxed_winner(test_bkg_models, message)
@@ -384,7 +388,11 @@ def compute_winner_and_start_indexes(
             break
 
     if start_idx is None or winner_idx is None:
-        message = "No candidate in this family passed the chi-square p-value threshold after fit-quality filtering."
+        message = (
+            "No candidate in this family passed the chi-square p-value threshold after fit-quality filtering."
+            if strict_mode
+            else "No candidate in this family passed the chi-square p-value threshold."
+        )
         if strict_mode:
             _raise_family_strict_selection_error(test_bkg_models, message)
         return _select_relaxed_winner(test_bkg_models, message)
