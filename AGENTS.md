@@ -30,8 +30,10 @@
 ## Combine Packaging
 - The single-card builder writes public processes `H_1S`, `H_2S`, `H_3S`, `Z_1S`, `Z_2S`, `Z_3S`, `non_resonant_bkg`, `resonant_H_bkg`, and `resonant_Z_bkg`.
 - The builder requires `inputs/yields_nevents.json` and derives asymmetric `lnN` rows for `pu_r`, `trg`, `muon_id`, `muon_iso`, `ph_id`, `ele_veto`, `pdf_alpha_s_weight`, and `l1_prefiring`; only `lumi` and `HZ_xs_sc` remain hardcoded.
+- The builder requires `inputs/mass_systematics_summary.json` and turns signal `mean_boson` / DCB `sigma_boson` into functions of `CMS_sig_mmg_muon_cor`, `CMS_sig_mmg_photon_E_scale`, and `CMS_sig_mmg_photon_E_smearing` param nuisances.
 - Builder validation is on by default and runs only `text2workspace.py datacard.txt -m 125 -o validation_workspace.root`; use `--skip-validation` for workspace/card generation only.
 - Builder outputs are `workspace.root`, `datacard.txt`, `bundle_summary.html`, `bundle_summary.json`, plus `validation.log` and `validation_workspace.root` when validation is enabled.
+- `bundle_summary.*` is a dark persisted-artifact validation report: it reopens the written workspace and parses the written datacard before summarizing objects, nuisances, and consistency checks.
 - The builder requires `plots/fit_2d_data/non_resonant_fit_summary.json` to contain strict/relaxed selections and candidate normalization estimates; if those keys are missing, rerun `scripts/non_resonant_background.py`.
 - `from_mauricio/.../combine_helpers.py` is not a runtime input to the builder; legacy `lnN` values are embedded in `scripts/build_bundled_workspace.py`.
 

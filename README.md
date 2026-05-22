@@ -216,6 +216,10 @@ The default `datacards/` output directory is cleared before writing. Custom `--o
 
 The builder also requires `inputs/yields_nevents.json`; it derives asymmetric `lnN` rows for `pu_r`, `trg`, `muon_id`, `muon_iso`, `ph_id`, `ele_veto`, `pdf_alpha_s_weight`, and `l1_prefiring` from the selected-event yield variations. `lumi` and `HZ_xs_sc` remain embedded constants.
 
+The builder requires `inputs/mass_systematics_summary.json`; it converts signal `mean_boson` and DCB `sigma_boson` into functions of `CMS_sig_mmg_muon_cor`, `CMS_sig_mmg_photon_E_scale`, and `CMS_sig_mmg_photon_E_smearing` param nuisances.
+
+`bundle_summary.html` and `bundle_summary.json` are validation reports: after writing the card and workspace, the builder reopens `workspace.root` and parses `datacard.txt` to summarize persisted objects, nuisances, and consistency checks. The HTML report uses a dark theme.
+
 By default the builder also validates the produced card by running:
 
 - `text2workspace.py datacard.txt -m 125 -o validation_workspace.root`

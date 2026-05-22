@@ -67,6 +67,7 @@ RESONANT_SUMMARY_PATH = (
     REPO_ROOT / "plots" / "resonant_background" / "resonant_background_summary.json"
 )
 YIELD_SYSTEMATICS_PATH = REPO_ROOT / "inputs" / "yields_nevents.json"
+MASS_SYSTEMATICS_PATH = REPO_ROOT / "inputs" / "mass_systematics_summary.json"
 LEGACY_SYSTEMATICS_SOURCE = (
     REPO_ROOT
     / "from_mauricio"
@@ -114,6 +115,12 @@ YIELD_VARIATION_TO_NUISANCE: tuple[tuple[str, str], ...] = (
     ("photon_electron_veto", "ele_veto"),
     ("pdf_alpha_s_weight", "pdf_alpha_s_weight"),
     ("l1_prefiring", "l1_prefiring"),
+)
+
+SIGNAL_MASS_SYSTEMATICS: tuple[tuple[str, str], ...] = (
+    ("muon_cor", "CMS_sig_mmg_muon_cor"),
+    ("photon_E_scale", "CMS_sig_mmg_photon_E_scale"),
+    ("photon_E_smearing", "CMS_sig_mmg_photon_E_smearing"),
 )
 
 
@@ -269,15 +276,17 @@ def html_page(title: str, subtitle: str, body: str) -> str:
 <title>{html_escape(title)}</title>
 <style>
 :root {{
-  color-scheme: light;
-  --bg: #f5f7fb;
-  --bg-accent: #e7efff;
-  --card: #ffffff;
-  --text: #172033;
-  --muted: #667085;
-  --line: #dde5f2;
-  --accent: #3b82f6;
-  --shadow: 0 20px 55px rgba(15, 23, 42, 0.11);
+  color-scheme: dark;
+  --bg: #08111f;
+  --bg-accent: #12305c;
+  --card: #101b2d;
+  --card-strong: #14233a;
+  --text: #e6edf7;
+  --muted: #99a8bc;
+  --line: #263750;
+  --accent: #7dd3fc;
+  --accent-strong: #38bdf8;
+  --shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }}
@@ -285,8 +294,9 @@ def html_page(title: str, subtitle: str, body: str) -> str:
 body {{
   margin: 0;
   background:
-    radial-gradient(circle at top left, var(--bg-accent), transparent 34rem),
-    linear-gradient(180deg, #ffffff 0%, var(--bg) 28rem);
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.20), transparent 34rem),
+    radial-gradient(circle at top right, rgba(99, 102, 241, 0.16), transparent 30rem),
+    linear-gradient(180deg, #0b1324 0%, var(--bg) 32rem);
   color: var(--text);
   font-family: var(--sans);
 }}
@@ -294,38 +304,39 @@ body {{
 .hero {{
   border-radius: 28px;
   padding: 34px;
-  color: #ffffff;
+  color: var(--text);
   background:
-    linear-gradient(135deg, rgba(29, 78, 216, 0.96), rgba(14, 116, 144, 0.9)),
-    radial-gradient(circle at top right, rgba(255, 255, 255, 0.32), transparent 26rem);
+    linear-gradient(135deg, rgba(14, 30, 55, 0.96), rgba(12, 74, 110, 0.82)),
+    radial-gradient(circle at top right, rgba(125, 211, 252, 0.28), transparent 26rem);
+  border: 1px solid rgba(125, 211, 252, 0.22);
   box-shadow: var(--shadow);
 }}
 .eyebrow {{ margin: 0 0 10px; font-size: 0.77rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.82; }}
 h1 {{ margin: 0; font-size: clamp(2rem, 4vw, 3.8rem); line-height: 1.02; letter-spacing: -0.045em; }}
-.subtitle {{ max-width: 860px; margin: 16px 0 0; color: rgba(255, 255, 255, 0.86); font-size: 1.04rem; line-height: 1.65; }}
+.subtitle {{ max-width: 860px; margin: 16px 0 0; color: #c8d6e8; font-size: 1.04rem; line-height: 1.65; }}
 .metric-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-top: 18px; }}
 .metric-grid + ul {{ margin-top: 18px; }}
-.metric-card {{ border: 1px solid var(--line); border-radius: 18px; background: #ffffff; padding: 16px 18px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06); }}
+.metric-card {{ border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(180deg, var(--card-strong), var(--card)); padding: 16px 18px; box-shadow: 0 14px 35px rgba(0, 0, 0, 0.22); }}
 .metric-label {{ color: var(--muted); font-size: 0.74rem; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }}
 .metric-value {{ margin-top: 8px; color: var(--text); font-size: 1.08rem; font-weight: 750; overflow-wrap: anywhere; }}
-.section-card {{ margin-top: 22px; padding: 24px; background: rgba(255, 255, 255, 0.92); border: 1px solid var(--line); border-radius: 24px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.07); }}
+.section-card {{ margin-top: 22px; padding: 24px; background: rgba(16, 27, 45, 0.88); border: 1px solid var(--line); border-radius: 24px; box-shadow: 0 18px 46px rgba(0, 0, 0, 0.28); backdrop-filter: blur(10px); }}
 .section-heading {{ display: flex; align-items: baseline; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }}
 h2 {{ margin: 0; font-size: 1.22rem; letter-spacing: -0.02em; }}
-h3 {{ margin: 22px 0 10px; font-size: 1rem; color: #344054; }}
+h3 {{ margin: 22px 0 10px; font-size: 1rem; color: #c8d6e8; }}
 .section-intro {{ margin: 0; color: var(--muted); line-height: 1.6; max-width: 820px; }}
-ul {{ margin: 0; padding-left: 1.2rem; color: #344054; line-height: 1.7; }}
+ul {{ margin: 0; padding-left: 1.2rem; color: #c8d6e8; line-height: 1.7; }}
 .table-wrap {{ width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--card); }}
 table {{ width: 100%; min-width: 760px; border-collapse: separate; border-spacing: 0; font-size: 0.9rem; }}
-th {{ position: sticky; top: 0; z-index: 1; background: #f8fbff; color: #475467; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-align: left; text-transform: uppercase; }}
+th {{ position: sticky; top: 0; z-index: 1; background: #152238; color: #b6c5d9; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-align: left; text-transform: uppercase; }}
 th, td {{ padding: 11px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }}
-td {{ color: #263247; overflow-wrap: anywhere; }}
-tbody tr:hover td {{ background: #f8fbff; }}
+td {{ color: #d8e2f0; overflow-wrap: anywhere; }}
+tbody tr:hover td {{ background: rgba(125, 211, 252, 0.08); }}
 tbody tr:last-child td {{ border-bottom: 0; }}
 .empty {{ color: var(--muted); text-align: center; }}
 code {{ font-family: var(--mono); font-size: 0.88em; }}
-pre {{ margin: 0; max-height: 540px; overflow: auto; border-radius: 16px; border: 1px solid #172033; background: #0f172a; color: #dbeafe; padding: 18px; line-height: 1.55; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06); }}
+pre {{ margin: 0; max-height: 540px; overflow: auto; border-radius: 16px; border: 1px solid #314563; background: #050b15; color: #dbeafe; padding: 18px; line-height: 1.55; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06); }}
 .split-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }}
-.subcard {{ border: 1px solid var(--line); border-radius: 18px; background: #ffffff; padding: 18px; }}
+.subcard {{ border: 1px solid var(--line); border-radius: 18px; background: var(--card); padding: 18px; }}
 .footer {{ color: var(--muted); font-size: 0.84rem; margin-top: 28px; text-align: center; }}
 @media (max-width: 720px) {{
   .page {{ width: min(100% - 28px, 1480px); padding-top: 18px; }}
@@ -512,6 +523,169 @@ def make_signal_specs() -> list[SignalProcessSpec]:
     ]
 
 
+def signal_mass_state_key(signal_spec: SignalProcessSpec) -> str:
+    return signal_spec.state.lower()
+
+
+def signal_mass_shape_nuisance_name(source_name: str) -> str:
+    for configured_source, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
+        if source_name == configured_source:
+            return nuisance_name
+    raise RuntimeError(f"Unsupported signal mass systematic source {source_name!r}")
+
+
+def validate_signal_mass_systematics(
+    mass_summary: dict[str, Any],
+    signal_specs: list[SignalProcessSpec],
+) -> None:
+    for signal_spec in signal_specs:
+        process_info = mass_summary.get(signal_spec.process)
+        if not isinstance(process_info, dict):
+            raise RuntimeError(
+                f"Mass systematic summary is missing process {signal_spec.process!r}"
+            )
+        state_key = signal_mass_state_key(signal_spec)
+        state_info = process_info.get(state_key)
+        if not isinstance(state_info, dict):
+            raise RuntimeError(
+                f"Mass systematic summary is missing state {signal_spec.process}/{state_key}"
+            )
+        for source_name, _ in SIGNAL_MASS_SYSTEMATICS:
+            source_info = state_info.get(source_name)
+            if not isinstance(source_info, dict):
+                raise RuntimeError(
+                    f"Mass systematic summary is missing source {signal_spec.process}/{state_key}/{source_name}"
+                )
+            for key in ("mean_diff_percent", "sigma_diff_percent"):
+                value = float(source_info.get(key, float("nan")))
+                if not math.isfinite(value) or value < 0.0:
+                    raise RuntimeError(
+                        f"Mass systematic {signal_spec.process}/{state_key}/{source_name}/{key} is invalid: {value!r}"
+                    )
+
+
+def ensure_signal_mass_nuisance_vars(workspace: RooWorkspace) -> None:
+    for _, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
+        nuisance = workspace.var(nuisance_name)
+        if not nuisance:
+            workspace.factory(f"{nuisance_name}[0,-5,5]")
+            nuisance = workspace.var(nuisance_name)
+        if not nuisance:
+            raise RuntimeError(f"Failed to create signal mass nuisance {nuisance_name}")
+        nuisance.setConstant(False)
+
+
+def make_relative_signal_mass_terms(
+    mass_summary: dict[str, Any],
+    signal_spec: SignalProcessSpec,
+    field_name: str,
+) -> list[tuple[str, str, float]]:
+    state_info = mass_summary[signal_spec.process][signal_mass_state_key(signal_spec)]
+    terms = []
+    for source_name, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
+        percent = float(state_info[source_name][field_name])
+        terms.append((source_name, nuisance_name, percent / 100.0))
+    return terms
+
+
+def formula_expression_for_relative_shifts(terms: list[tuple[str, str, float]]) -> str:
+    expression_terms = []
+    for index, (_, _, coefficient) in enumerate(terms, start=1):
+        sign = "+" if coefficient >= 0.0 else "-"
+        expression_terms.append(f" {sign} {abs(coefficient):.12g}*@{index}")
+    return "@0*(1" + "".join(expression_terms) + ")"
+
+
+def create_signal_mass_syst_function(
+    workspace: RooWorkspace,
+    function_name: str,
+    nominal_var_name: str,
+    terms: list[tuple[str, str, float]],
+) -> str:
+    nominal_var = workspace.var(nominal_var_name)
+    if nominal_var is None:
+        raise RuntimeError(f"Could not find signal mass parameter {nominal_var_name!r}")
+
+    args = [nominal_var_name] + [nuisance_name for _, nuisance_name, _ in terms]
+    expression = formula_expression_for_relative_shifts(terms)
+    workspace.factory(f"expr::{function_name}(\"{expression}\", {', '.join(args)})")
+    if workspace.function(function_name) is None:
+        raise RuntimeError(f"Failed to create signal mass function {function_name}")
+    return function_name
+
+
+def apply_signal_mass_shape_systematics(
+    workspace: RooWorkspace,
+    signal_spec: SignalProcessSpec,
+    raw_pdf_name: str,
+    mass_summary: dict[str, Any],
+) -> dict[str, Any]:
+    ensure_signal_mass_nuisance_vars(workspace)
+    process_name = signal_spec.combine_name
+    role_suffix = f"___{process_name}__signal"
+    mean_var_name = f"mean_boson{role_suffix}"
+    sigma_var_name = f"sigma_boson{role_suffix}"
+    mean_function_name = f"mean_boson_syst{role_suffix}"
+    sigma_function_name = f"sigma_boson_syst{role_suffix}"
+
+    mean_terms = make_relative_signal_mass_terms(
+        mass_summary,
+        signal_spec,
+        "mean_diff_percent",
+    )
+    sigma_terms = make_relative_signal_mass_terms(
+        mass_summary,
+        signal_spec,
+        "sigma_diff_percent",
+    )
+    create_signal_mass_syst_function(
+        workspace,
+        mean_function_name,
+        mean_var_name,
+        mean_terms,
+    )
+    create_signal_mass_syst_function(
+        workspace,
+        sigma_function_name,
+        sigma_var_name,
+        sigma_terms,
+    )
+
+    edited_pdf = workspace.factory(
+        f"EDIT::{process_name}("
+        f"{raw_pdf_name},"
+        f"{mean_var_name}={mean_function_name},"
+        f"{sigma_var_name}={sigma_function_name})"
+    )
+    if edited_pdf is None or workspace.pdf(process_name) is None:
+        raise RuntimeError(f"Failed to create signal PDF {process_name} with mass systematics")
+
+    return {
+        "source": relative_to_repo(MASS_SYSTEMATICS_PATH),
+        "raw_pdf": raw_pdf_name,
+        "mean_nominal_var": mean_var_name,
+        "sigma_nominal_var": sigma_var_name,
+        "mean_function": mean_function_name,
+        "sigma_function": sigma_function_name,
+        "mean_terms": [
+            {
+                "source": source_name,
+                "nuisance": nuisance_name,
+                "relative_uncertainty": coefficient,
+            }
+            for source_name, nuisance_name, coefficient in mean_terms
+        ],
+        "sigma_terms": [
+            {
+                "source": source_name,
+                "nuisance": nuisance_name,
+                "relative_uncertainty": coefficient,
+            }
+            for source_name, nuisance_name, coefficient in sigma_terms
+        ],
+    }
+
+
 def build_nonres_candidate_selection(
     nonres_summary: dict[str, Any],
     relaxed_mode: bool,
@@ -636,6 +810,7 @@ def nonres_candidate_alias_name(candidate: dict[str, Any]) -> str:
 def import_signal_artifacts(
     target_workspace: RooWorkspace,
     signal_spec: SignalProcessSpec,
+    mass_summary: dict[str, Any],
 ) -> dict[str, Any]:
     log(f"Importing signal PDF for {signal_spec.combine_name}")
     root_file, source_workspace = open_workspace(
@@ -643,12 +818,19 @@ def import_signal_artifacts(
         SIGNAL_WORKSPACE_NAME,
     )
     ensure_shared_observables(target_workspace)
+    raw_pdf_name = f"{signal_spec.combine_name}_nominal_pdf"
     import_pdf_with_shared_observables(
         target_workspace,
         source_workspace,
         SIGNAL_SOURCE_PDF_NAME,
-        signal_spec.combine_name,
+        raw_pdf_name,
         f"__{signal_spec.combine_name}__signal",
+    )
+    mass_systematics = apply_signal_mass_shape_systematics(
+        target_workspace,
+        signal_spec,
+        raw_pdf_name,
+        mass_summary,
     )
 
     signal_norm = RooRealVar(
@@ -665,6 +847,8 @@ def import_signal_artifacts(
         "channel_label": signal_spec.channel_label,
         "source_workspace": relative_to_repo(signal_spec.signal_workspace_path),
         "pdf": signal_spec.combine_name,
+        "raw_pdf": raw_pdf_name,
+        "mass_systematics": mass_systematics,
         "norm_name": signal_norm.GetName(),
         "norm": float(signal_norm.getVal()),
         "norm_status": "fixed",
@@ -1026,7 +1210,11 @@ def build_systematics_rows(
 ) -> tuple[list[tuple[str, str, list[str]]], dict[str, Any]]:
     hardcoded_rows = build_hardcoded_systematics_rows(signal_specs)
     yield_rows, yield_report = build_yield_systematics_rows(signal_specs, yield_summary)
-    return hardcoded_rows + yield_rows, yield_report
+    mass_param_rows = [
+        (nuisance_name, "param", ["0", "1"])
+        for _, nuisance_name in SIGNAL_MASS_SYSTEMATICS
+    ]
+    return hardcoded_rows + yield_rows + mass_param_rows, yield_report
 
 
 def format_aligned_datacard_rows(rows: Iterable[Iterable[Any]]) -> list[str]:
@@ -1245,58 +1433,314 @@ def collect_parameter_rows(workspace: RooWorkspace) -> list[list[Any]]:
     return rows
 
 
+def read_datacard_lines(datacard_path: Path) -> list[str]:
+    ensure_file(datacard_path)
+    return datacard_path.read_text(encoding="ascii").splitlines()
+
+
+def is_integer_token(value: str) -> bool:
+    try:
+        int(value)
+    except ValueError:
+        return False
+    return True
+
+
+def parse_shape_reference(reference: str) -> tuple[str | None, str]:
+    if ":" not in reference:
+        return None, reference
+    workspace_name, object_name = reference.split(":", 1)
+    return workspace_name, object_name
+
+
+def parse_datacard(datacard_lines: list[str]) -> dict[str, Any]:
+    shapes: dict[str, dict[str, Any]] = {}
+    process_rows: list[list[str]] = []
+    process_bins: list[str] = []
+    observation_bin = ""
+    observation: list[str] = []
+    rates: list[str] = []
+    nuisance_rows: list[dict[str, Any]] = []
+    discrete_rows: list[dict[str, Any]] = []
+
+    for line_number, line in enumerate(datacard_lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or set(stripped) == {"-"}:
+            continue
+        parts = stripped.split()
+        if not parts:
+            continue
+
+        keyword = parts[0]
+        if keyword == "shapes" and len(parts) >= 5:
+            workspace_ref, object_name = parse_shape_reference(parts[4])
+            shapes[parts[1]] = {
+                "process": parts[1],
+                "bin": parts[2],
+                "file": parts[3],
+                "workspace": workspace_ref,
+                "object": object_name,
+                "reference": parts[4],
+                "line": line_number,
+            }
+            continue
+
+        if keyword == "bin":
+            if len(parts) == 2 and not observation:
+                observation_bin = parts[1]
+            elif len(parts) > 2:
+                process_bins = parts[1:]
+            continue
+
+        if keyword == "observation":
+            observation = parts[1:]
+            continue
+
+        if keyword == "process":
+            process_rows.append(parts[1:])
+            continue
+
+        if keyword == "rate":
+            rates = parts[1:]
+            continue
+
+        if len(parts) >= 2 and parts[1] in {"lnN", "param", "discrete"}:
+            row = {
+                "name": parts[0],
+                "type": parts[1],
+                "values": parts[2:],
+                "line": line_number,
+                "raw": stripped,
+            }
+            if parts[1] == "discrete":
+                discrete_rows.append(row)
+            else:
+                nuisance_rows.append(row)
+
+    process_names: list[str] = []
+    process_ids: list[str] = []
+    for row in process_rows:
+        if row and all(is_integer_token(value) for value in row):
+            process_ids = row
+        elif row:
+            process_names = row
+
+    return {
+        "shapes": shapes,
+        "observation_bin": observation_bin,
+        "observation": observation,
+        "process_bins": process_bins,
+        "process_names": process_names,
+        "process_ids": process_ids,
+        "rates": rates,
+        "nuisance_rows": nuisance_rows,
+        "lnn_rows": [row for row in nuisance_rows if row["type"] == "lnN"],
+        "param_rows": [row for row in nuisance_rows if row["type"] == "param"],
+        "discrete_rows": discrete_rows,
+    }
+
+
+def workspace_has_shape_object(
+    workspace: RooWorkspace,
+    process_name: str,
+    object_name: str,
+) -> bool:
+    if process_name == "data_obs":
+        return bool(workspace.data(object_name))
+    return bool(workspace.pdf(object_name))
+
+
+def validation_row(check: str, ok: bool, detail: str) -> list[str]:
+    return [check, "ok" if ok else "failed", detail]
+
+
+def validate_persisted_bundle(
+    workspace: RooWorkspace,
+    workspace_path: Path,
+    datacard_path: Path,
+    workspace_name: str,
+    datacard_info: dict[str, Any],
+) -> tuple[list[list[str]], str]:
+    rows: list[list[str]] = []
+    shapes = datacard_info["shapes"]
+    process_names = datacard_info["process_names"]
+
+    rows.append(
+        validation_row(
+            "workspace file",
+            workspace_path.exists(),
+            relative_to_repo(workspace_path),
+        )
+    )
+    rows.append(
+        validation_row(
+            "datacard file",
+            datacard_path.exists(),
+            relative_to_repo(datacard_path),
+        )
+    )
+    rows.append(
+        validation_row(
+            "workspace name",
+            workspace.GetName() == workspace_name,
+            workspace.GetName(),
+        )
+    )
+
+    expected_shape_processes = ["data_obs", *process_names]
+    for process_name in expected_shape_processes:
+        shape = shapes.get(process_name)
+        if shape is None:
+            rows.append(validation_row(f"shape {process_name}", False, "missing from datacard"))
+            continue
+        file_ok = shape["file"] == workspace_path.name
+        workspace_ok = shape["workspace"] == workspace_name
+        object_ok = workspace_has_shape_object(workspace, process_name, shape["object"])
+        rows.append(
+            validation_row(
+                f"shape {process_name}",
+                file_ok and workspace_ok and object_ok,
+                f"{shape['file']} {shape['reference']}",
+            )
+        )
+
+    for process_name in process_names:
+        norm_name = f"{process_name}_norm"
+        norm = workspace.var(norm_name)
+        rows.append(
+            validation_row(
+                f"norm {process_name}",
+                bool(norm),
+                norm_name if norm else "missing",
+            )
+        )
+
+    for row in datacard_info["param_rows"]:
+        param = workspace.var(row["name"])
+        rows.append(
+            validation_row(
+                f"param {row['name']}",
+                bool(param),
+                "workspace variable found" if param else "missing from workspace",
+            )
+        )
+
+    for row in datacard_info["discrete_rows"]:
+        category = workspace.cat(row["name"])
+        rows.append(
+            validation_row(
+                f"discrete {row['name']}",
+                bool(category),
+                "workspace category found" if category else "missing from workspace",
+            )
+        )
+
+    row_lengths_ok = True
+    for row_name, values in (
+        ("process bins", datacard_info["process_bins"]),
+        ("process ids", datacard_info["process_ids"]),
+        ("rates", datacard_info["rates"]),
+    ):
+        ok = len(values) == len(process_names)
+        row_lengths_ok = row_lengths_ok and ok
+        rows.append(
+            validation_row(
+                row_name,
+                ok,
+                f"{len(values)} values for {len(process_names)} processes",
+            )
+        )
+
+    status = "ok" if all(row[1] == "ok" for row in rows) and row_lengths_ok else "failed"
+    return rows, status
+
+
 def write_summary_report(
     output_dir: Path,
     workspace_name: str,
-    workspace_file_name: str,
-    datacard_file_name: str,
-    workspace: RooWorkspace,
+    workspace_path: Path,
+    datacard_path: Path,
     signal_specs: list[SignalProcessSpec],
     signal_reports: list[dict[str, Any]],
     resonant_reports: list[dict[str, Any]],
     nonres_report: dict[str, Any],
     nonres_selection: dict[str, Any],
-    systematics_rows: list[tuple[str, str, list[str]]],
     yield_systematics_report: dict[str, Any],
-    datacard_lines: list[str],
     validation_result: dict[str, Any] | None,
     produced_files: list[Path],
 ) -> None:
-    object_lists = collect_workspace_objects(workspace)
-    parameter_rows = collect_parameter_rows(workspace)
+    workspace_file_name = workspace_path.name
+    datacard_file_name = datacard_path.name
+    datacard_lines = read_datacard_lines(datacard_path)
+    datacard_info = parse_datacard(datacard_lines)
+    root_file, persisted_workspace = open_workspace(workspace_path, workspace_name)
+    object_lists = collect_workspace_objects(persisted_workspace)
+    parameter_rows = collect_parameter_rows(persisted_workspace)
+    bundle_validation_rows, bundle_validation_status = validate_persisted_bundle(
+        persisted_workspace,
+        workspace_path,
+        datacard_path,
+        workspace_name,
+        datacard_info,
+    )
+
+    signal_report_by_process = {report["process"]: report for report in signal_reports}
+    background_report_by_process = {
+        nonres_report["process"]: nonres_report,
+        **{report["process"]: report for report in resonant_reports},
+    }
+
+    def norm_row_details(process_name: str) -> tuple[str, str, str]:
+        norm_name = f"{process_name}_norm"
+        norm = persisted_workspace.var(norm_name)
+        if not norm:
+            return norm_name, "missing", "missing"
+        return (
+            norm_name,
+            f"{norm.getVal():.8g}",
+            "fixed" if norm.isConstant() else "floating",
+        )
 
     signal_rows = [
         [
-            report["process"],
-            report["channel_label"],
-            report["pdf"],
-            report["norm_name"],
-            f"{report['norm']:.8g}",
-            report["norm_status"],
-            report["source_workspace"],
+            process_name,
+            signal_report_by_process[process_name]["channel_label"],
+            datacard_info["shapes"].get(process_name, {}).get("object", "missing"),
+            *norm_row_details(process_name),
+            signal_report_by_process[process_name]["source_workspace"],
         ]
-        for report in signal_reports
+        for process_name in datacard_info["process_names"]
+        if process_name in signal_report_by_process
     ]
+    signal_mass_systematics_rows = []
+    for report in signal_reports:
+        mass_report = report["mass_systematics"]
+        mean_terms = {item["source"]: item for item in mass_report["mean_terms"]}
+        sigma_terms = {item["source"]: item for item in mass_report["sigma_terms"]}
+        for source_name, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
+            signal_mass_systematics_rows.append(
+                [
+                    report["process"],
+                    source_name,
+                    nuisance_name,
+                    f"{100.0 * mean_terms[source_name]['relative_uncertainty']:.6g}",
+                    f"{100.0 * sigma_terms[source_name]['relative_uncertainty']:.6g}",
+                    mass_report["mean_function"],
+                    mass_report["sigma_function"],
+                ]
+            )
     background_rows = [
         [
-            nonres_report["process"],
-            nonres_report["pdf"],
-            nonres_report["norm_name"],
-            f"{nonres_report['norm']:.8g}",
-            nonres_report["norm_status"],
-            nonres_report["source_workspace"],
+            process_name,
+            datacard_info["shapes"].get(process_name, {}).get("object", "missing"),
+            *norm_row_details(process_name),
+            background_report_by_process.get(process_name, {}).get("source_workspace", "-"),
         ]
-    ] + [
-        [
-            report["process"],
-            report["pdf"],
-            report["norm_name"],
-            f"{report['norm']:.8g}",
-            report["norm_status"],
-            report["source_workspace"],
-        ]
-        for report in resonant_reports
+        for process_name in datacard_info["process_names"]
+        if process_name not in signal_report_by_process
     ]
+    root_file.Close()
+
     state_mapping_rows = [
         [
             state["index"],
@@ -1309,9 +1753,18 @@ def write_summary_report(
         for state in nonres_report["state_mappings"]
     ]
     systematics_table_rows = [
-        [name, pdf_type, *values] for name, pdf_type, values in systematics_rows
+        [row["name"], row["type"], *row["values"]]
+        for row in datacard_info["lnn_rows"]
     ]
-    process_order = combined_process_names(signal_specs)
+    param_table_rows = [
+        [row["name"], row["type"], *row["values"]]
+        for row in datacard_info["param_rows"]
+    ]
+    discrete_table_rows = [
+        [row["name"], row["type"], *row["values"]]
+        for row in datacard_info["discrete_rows"]
+    ]
+    process_order = datacard_info["process_names"]
     yield_process_rows = [
         [process_name, yield_systematics_report["process_samples"][process_name]]
         for process_name in process_order
@@ -1334,11 +1787,21 @@ def write_summary_report(
 
     summary_json_payload = {
         "schema_version": 1,
+        "summary_source": "persisted_workspace_and_datacard",
         "workspace_name": workspace_name,
         "workspace_file_name": workspace_file_name,
         "datacard_file_name": datacard_file_name,
         "analysis_bin": ANALYSIS_BIN_NAME,
         "non_resonant_mode": nonres_selection["mode_key"],
+        "datacard": datacard_info,
+        "workspace_objects": object_lists,
+        "bundle_validation": {
+            "status": bundle_validation_status,
+            "checks": [
+                {"check": row[0], "status": row[1], "detail": row[2]}
+                for row in bundle_validation_rows
+            ],
+        },
         "signals": signal_reports,
         "backgrounds": [nonres_report, *resonant_reports],
         "non_resonant_selection": {
@@ -1348,6 +1811,17 @@ def write_summary_report(
         },
         "non_resonant_state_mappings": nonres_report["state_mappings"],
         "yield_systematics": yield_systematics_report,
+        "signal_mass_systematics": {
+            "source": relative_to_repo(MASS_SYSTEMATICS_PATH),
+            "nuisance_parameters": [
+                {"source": source_name, "nuisance": nuisance_name}
+                for source_name, nuisance_name in SIGNAL_MASS_SYSTEMATICS
+            ],
+            "signals": {
+                report["process"]: report["mass_systematics"]
+                for report in signal_reports
+            },
+        },
         "validation": (
             {
                 **validation_result,
@@ -1370,12 +1844,14 @@ def write_summary_report(
         ("Workspace", workspace_name),
         ("Datacard", datacard_file_name),
         ("Analysis bin", ANALYSIS_BIN_NAME),
-        ("Signal PDFs", len(signal_reports)),
+        ("Signal PDFs", len(signal_rows)),
         ("Background PDFs", len(background_rows)),
         ("Parameters", len(parameter_rows)),
+        ("Bundle validation", bundle_validation_status),
         ("Non-resonant mode", nonres_selection["mode_key"]),
     ]
     summary_notes = [
+        "This report reopens the written ROOT workspace and rereads the written datacard before summarizing them.",
         "One shared observed dataset is used for the full simultaneous model.",
         "The six public signal processes are H_1S, H_2S, H_3S, Z_1S, Z_2S, and Z_3S.",
         "Background processes are non_resonant_bkg, resonant_H_bkg, and resonant_Z_bkg.",
@@ -1403,7 +1879,12 @@ def write_summary_report(
         html_section(
             "Summary",
             html_metric_grid(summary_metrics) + html_list(summary_notes),
-            "Single-card Combine package produced from the persisted upstream fits.",
+            "Single-card Combine package inspected from persisted artifacts after generation.",
+        ),
+        html_section(
+            "Bundle Validation",
+            html_table(["Check", "Status", "Detail"], bundle_validation_rows),
+            "These checks compare datacard references with objects found in the written RooWorkspace.",
         ),
         html_section(
             "Observable Layout",
@@ -1415,7 +1896,7 @@ def write_summary_report(
                 [
                     "Process",
                     "Legacy channel label",
-                    "PDF",
+                    "PDF from datacard",
                     "Norm",
                     "Norm value",
                     "Status",
@@ -1425,9 +1906,25 @@ def write_summary_report(
             ),
         ),
         html_section(
+            "Signal Mass Shape Systematics",
+            html_table(
+                [
+                    "Process",
+                    "Source",
+                    "Nuisance",
+                    "Mean rel. unc. (%)",
+                    "Sigma rel. unc. (%)",
+                    "Mean function",
+                    "Sigma function",
+                ],
+                signal_mass_systematics_rows,
+            ),
+            "Gaussian-constrained param nuisances modify the imported signal boson DCB mean and sigma through RooFormulaVar replacements.",
+        ),
+        html_section(
             "Background Processes",
             html_table(
-                ["Process", "PDF", "Norm", "Norm value", "Status", "Source workspace"],
+                ["Process", "PDF from datacard", "Norm", "Norm value", "Status", "Source workspace"],
                 background_rows,
             ),
         ),
@@ -1462,7 +1959,7 @@ def write_summary_report(
             ),
         ),
         html_section(
-            "Systematics Written To The Single Card",
+            "lnN Nuisances From Datacard",
             html_table(
                 [
                     "Nuisance",
@@ -1479,6 +1976,14 @@ def write_summary_report(
                 ],
                 systematics_table_rows,
             ),
+        ),
+        html_section(
+            "Param Nuisances From Datacard",
+            html_table(["Nuisance", "Type", "Mean", "Sigma"], param_table_rows),
+        ),
+        html_section(
+            "Discrete Nuisances From Datacard",
+            html_table(["Nuisance", "Type"], discrete_table_rows),
         ),
         html_section(
             "Yield Systematics Input",
@@ -1511,6 +2016,7 @@ def write_summary_report(
                     f"Resonant background workspaces come from python3 scripts/resonant_background.py and summary {relative_to_repo(RESONANT_SUMMARY_PATH)}.",
                     f"The shared observed dataset and non-resonant candidate PDFs come from {relative_to_repo(NON_RESONANT_WORKSPACE_PATH)} and summary {relative_to_repo(NON_RESONANT_SUMMARY_PATH)}.",
                     f"Yield-based asymmetric lnN values come from {relative_to_repo(YIELD_SYSTEMATICS_PATH)}; lumi and HZ_xs_sc remain embedded in this script.",
+                    f"Signal mean/sigma shape params come from {relative_to_repo(MASS_SYSTEMATICS_PATH)} and are constrained by datacard param rows.",
                     f"Original legacy lnN reference path: {relative_to_repo(LEGACY_SYSTEMATICS_SOURCE)}.",
                 ]
             ),
@@ -1536,7 +2042,7 @@ def write_summary_report(
     ]
     report_html = html_page(
         "Bundled Single Datacard",
-        "A clean overview of the simultaneous H/Z to Upsilon(nS)+photon Combine workspace, datacard, imported objects, nuisance layout, and validation status.",
+        "A persisted-artifact validation report for the simultaneous H/Z to Upsilon(nS)+photon Combine workspace, datacard, imported objects, nuisance layout, and validation status.",
         "\n".join(sections),
     )
     (output_dir / "bundle_summary.html").write_text(report_html, encoding="ascii")
@@ -1574,6 +2080,10 @@ def verify_required_outputs(signal_specs: list[SignalProcessSpec]) -> None:
         YIELD_SYSTEMATICS_PATH,
         "Provide selected-event nominal/variation yields for datacard lnN nuisances.",
     )
+    ensure_file(
+        MASS_SYSTEMATICS_PATH,
+        "Provide signal mass mean/sigma percent variations for datacard param nuisances.",
+    )
     log_kv(
         "resonant workspace (H)", relative_to_repo(RESONANT_CONFIG["H"]["root_path"])
     )
@@ -1584,6 +2094,7 @@ def verify_required_outputs(signal_specs: list[SignalProcessSpec]) -> None:
     log_kv("non-resonant workspace", relative_to_repo(NON_RESONANT_WORKSPACE_PATH))
     log_kv("non-resonant summary", relative_to_repo(NON_RESONANT_SUMMARY_PATH))
     log_kv("yield systematics", relative_to_repo(YIELD_SYSTEMATICS_PATH))
+    log_kv("signal mass systematics", relative_to_repo(MASS_SYSTEMATICS_PATH))
 
 
 def validate_summary_shapes(
@@ -1642,7 +2153,9 @@ def main() -> int:
     nonres_summary = load_json(NON_RESONANT_SUMMARY_PATH)
     resonant_summary = load_json(RESONANT_SUMMARY_PATH)
     yield_summary = load_json(YIELD_SYSTEMATICS_PATH)
+    mass_summary = load_json(MASS_SYSTEMATICS_PATH)
     validate_summary_shapes(nonres_summary, resonant_summary)
+    validate_signal_mass_systematics(mass_summary, signal_specs)
     nonres_selection = build_nonres_candidate_selection(
         nonres_summary, relaxed_mode=not args.strict_mode
     )
@@ -1663,6 +2176,9 @@ def main() -> int:
             variation_mapping["nuisance"],
             f"from {variation_mapping['variation']} in {relative_to_repo(YIELD_SYSTEMATICS_PATH)}",
         )
+    log("Configured signal mass shape nuisance parameters")
+    for source_name, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
+        log_kv(nuisance_name, f"from {source_name} in {relative_to_repo(MASS_SYSTEMATICS_PATH)}")
 
     bundled_workspace = RooWorkspace(args.workspace_name)
     ensure_shared_observables(bundled_workspace)
@@ -1682,7 +2198,7 @@ def main() -> int:
 
     signal_reports: list[dict[str, Any]] = []
     for signal_spec in signal_specs:
-        report = import_signal_artifacts(bundled_workspace, signal_spec)
+        report = import_signal_artifacts(bundled_workspace, signal_spec, mass_summary)
         signal_reports.append(report)
         log_kv("signal pdf", report["pdf"])
         log_kv("signal norm", f"{report['norm_name']}={report['norm']:.8g}")
@@ -1732,17 +2248,14 @@ def main() -> int:
     write_summary_report(
         output_dir=output_dir,
         workspace_name=args.workspace_name,
-        workspace_file_name=args.workspace_file_name,
-        datacard_file_name=args.datacard_file_name,
-        workspace=bundled_workspace,
+        workspace_path=workspace_path,
+        datacard_path=datacard_path,
         signal_specs=signal_specs,
         signal_reports=signal_reports,
         resonant_reports=resonant_reports,
         nonres_report=nonres_report,
         nonres_selection=nonres_selection,
-        systematics_rows=systematics_rows,
         yield_systematics_report=yield_systematics_report,
-        datacard_lines=datacard_lines,
         validation_result=validation_result,
         produced_files=produced_files,
     )
