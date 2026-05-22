@@ -204,20 +204,23 @@ python3 scripts/build_bundled_workspace.py --strict-mode --output-dir datacards
 
 CLI options:
 
-- `--output-dir PATH`: directory where `workspace.root`, `datacard.txt`, and a generated `README.html` summary are written
+- `--output-dir PATH`: directory where `workspace.root`, `datacard.txt`, and generated `bundle_summary.html` / `bundle_summary.json` summaries are written
 - `--workspace-name STR`: RooWorkspace name stored in the ROOT file; default is `combined_workspace`
 - `--workspace-file-name STR`: bundled ROOT filename; default is `workspace.root`
 - `--datacard-file-name STR`: datacard filename; default is `datacard.txt`
 - `--strict-mode`: require strict non-resonant family selection instead of the default relaxed selection
 - `--skip-validation`: skip the validation step
-- `--signal-mass-label STR`: mass label passed to `text2workspace.py` and `combine` during validation; default is `125`
+- `--signal-mass-label STR`: mass label passed to `text2workspace.py` during validation; default is `125`
+
+The default `datacards/` output directory is cleared before writing. Custom `--output-dir` locations are not cleared automatically.
+
+The builder also requires `inputs/yields_nevents.json`; it derives asymmetric `lnN` rows for `pu_r`, `trg`, `muon_id`, `muon_iso`, `ph_id`, `ele_veto`, `pdf_alpha_s_weight`, and `l1_prefiring` from the selected-event yield variations. `lumi` and `HZ_xs_sc` remain embedded constants.
 
 By default the builder also validates the produced card by running:
 
-- `text2workspace.py`
-- `combine -M AsymptoticLimits --run blind`
+- `text2workspace.py datacard.txt -m 125 -o validation_workspace.root`
 
-Validation outputs are written next to the datacard as `validation.log`, `validation_workspace.root`, and the usual `higgsCombine*.root` file when the smoke run succeeds.
+Validation outputs are written next to the datacard as `validation.log` and `validation_workspace.root`.
 
 ### Limit Driver
 

@@ -1,0 +1,90 @@
+{
+  "H": {
+    "1s": {
+      "muon_cor": {
+        "mean_diff_percent": 0.0249218,
+        "sigma_diff_percent": 0.461367
+      },
+      "photon_E_scale": {
+        "mean_diff_percent": 0.0324127,
+        "sigma_diff_percent": 0.341538
+      },
+      "photon_E_smearing": {
+        "mean_diff_percent": 0.000124078,
+        "sigma_diff_percent": 0.122198
+      }
+    },
+    "2s": {
+      "muon_cor": {
+        "mean_diff_percent": 0.0248358,
+        "sigma_diff_percent": 0.470086
+      },
+      "photon_E_scale": {
+        "mean_diff_percent": 0.0325411,
+        "sigma_diff_percent": 0.37457
+      },
+      "photon_E_smearing": {
+        "mean_diff_percent": 0.000112104,
+        "sigma_diff_percent": 0.126246
+      }
+    },
+    "3s": {
+      "muon_cor": {
+        "mean_diff_percent": 0.0250755,
+        "sigma_diff_percent": 0.457902
+      },
+      "photon_E_scale": {
+        "mean_diff_percent": 0.03197,
+        "sigma_diff_percent": 0.327105
+      },
+      "photon_E_smearing": {
+        "mean_diff_percent": 0.000123034,
+        "sigma_diff_percent": 0.111897
+      }
+    }
+  },
+  "Z": {
+    "1s": {
+      "muon_cor": {
+        "mean_diff_percent": 0.0239549,
+        "sigma_diff_percent": 0.371037
+      },
+      "photon_E_scale": {
+        "mean_diff_percent": 0.0494223,
+        "sigma_diff_percent": 0.834578
+      },
+      "photon_E_smearing": {
+        "mean_diff_percent": 0.00026443,
+        "sigma_diff_percent": 0.117023
+      }
+    },
+    "2s": {
+      "muon_cor": {
+        "mean_diff_percent": 0.0237188,
+        "sigma_diff_percent": 0.362468
+      },
+      "photon_E_scale": {
+        "mean_diff_percent": 0.0330674,
+        "sigma_diff_percent": 0.274002
+      },
+      "photon_E_smearing": {
+        "mean_diff_percent": 0.000181253,
+        "sigma_diff_percent": 0.107632
+      }
+    },
+    "3s": {
+      "muon_cor": {
+        "mean_diff_percent": 0.0418877,
+        "sigma_diff_percent": 0.887021
+      },
+      "photon_E_scale": {
+        "mean_diff_percent": 0.0499617,
+        "sigma_diff_percent": 0.914947
+      },
+      "photon_E_smearing": {
+        "mean_diff_percent": 0.000253899,
+        "sigma_diff_percent": 0.115695
+      }
+    }
+  }
+}

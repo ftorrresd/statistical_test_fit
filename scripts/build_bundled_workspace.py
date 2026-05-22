@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -64,6 +66,7 @@ NON_RESONANT_SUMMARY_PATH = (
 RESONANT_SUMMARY_PATH = (
     REPO_ROOT / "plots" / "resonant_background" / "resonant_background_summary.json"
 )
+YIELD_SYSTEMATICS_PATH = REPO_ROOT / "inputs" / "yields_nevents.json"
 LEGACY_SYSTEMATICS_SOURCE = (
     REPO_ROOT
     / "from_mauricio"
@@ -91,30 +94,27 @@ RESONANT_CONFIG = {
     },
 }
 
-COPIED_SYSTEMATICS: dict[str, list[tuple[str, str, str, str, str]]] = {
+HARDCODED_SYSTEMATICS: dict[str, list[tuple[str, str, str, str, str]]] = {
     "H": [
         ("lumi", "lnN", "1.025", "-", "1.025"),
         ("HZ_xs_sc", "lnN", "0.933/1.046", "-", "0.933/1.046"),
-        ("HZ_xs_pdf", "lnN", "1.032", "-", "1.032"),
-        ("br_peak", "lnN", "-", "-", "1.06"),
-        ("pu_r", "lnN", "1.006", "-", "1.009"),
-        ("trg", "lnN", "1.055", "-", "1.061"),
-        ("muon_id", "lnN", "1.0435", "-", "1.0435"),
-        ("ph_id", "lnN", "1.012", "-", "1.012"),
-        ("ele_veto", "lnN", "1.0104", "-", "1.0104"),
     ],
     "Z": [
         ("lumi", "lnN", "1.025", "-", "1.025"),
         ("HZ_xs_sc", "lnN", "1.033", "-", "1.05"),
-        ("HZ_xs_pdf", "lnN", "1.0173", "-", "1.05"),
-        ("br_peak", "lnN", "-", "-", "1.0"),
-        ("pu_r", "lnN", "1.0065", "-", "1.0062"),
-        ("trg", "lnN", "1.045", "-", "1.047"),
-        ("muon_id", "lnN", "1.048", "-", "1.045"),
-        ("ph_id", "lnN", "1.011", "-", "1.011"),
-        ("ele_veto", "lnN", "1.0102", "-", "1.0102"),
     ],
 }
+
+YIELD_VARIATION_TO_NUISANCE: tuple[tuple[str, str], ...] = (
+    ("pileup", "pu_r"),
+    ("trigger_sf", "trg"),
+    ("muon_id", "muon_id"),
+    ("muon_iso", "muon_iso"),
+    ("photon_id", "ph_id"),
+    ("photon_electron_veto", "ele_veto"),
+    ("pdf_alpha_s_weight", "pdf_alpha_s_weight"),
+    ("l1_prefiring", "l1_prefiring"),
+)
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Bundle the persisted H/Z -> Upsilon(nS)+Photon workspaces into one "
             "Combine-ready RooWorkspace and write a single simultaneous parametric datacard."
-        )
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--output-dir",
@@ -173,12 +174,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-validation",
         action="store_true",
-        help="Skip text2workspace.py and combine validation commands.",
+        help="Skip the text2workspace.py validation command.",
     )
     parser.add_argument(
         "--signal-mass-label",
         default="125",
-        help="Mass label passed to text2workspace.py and combine during validation.",
+        help="Mass label passed to text2workspace.py during validation.",
     )
     return parser
 
@@ -355,6 +356,22 @@ def ensure_file(path: Path, hint: str | None = None) -> None:
     if hint:
         message += f". {hint}"
     raise FileNotFoundError(message)
+
+
+def clear_default_datacards_dir(output_dir: Path) -> bool:
+    if output_dir != DEFAULT_OUTPUT_DIR.resolve():
+        return False
+    if DEFAULT_OUTPUT_DIR.exists() and DEFAULT_OUTPUT_DIR.is_symlink():
+        raise RuntimeError(
+            f"Refusing to clear symlinked output directory: {relative_to_repo(DEFAULT_OUTPUT_DIR)}"
+        )
+    DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for child in DEFAULT_OUTPUT_DIR.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            child.unlink()
+        else:
+            shutil.rmtree(child)
+    return True
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -805,7 +822,7 @@ def combined_process_ids(signal_specs: list[SignalProcessSpec]) -> list[int]:
     return signal_ids + [1, 2, 3]
 
 
-def build_systematics_rows(
+def build_hardcoded_systematics_rows(
     signal_specs: list[SignalProcessSpec],
 ) -> list[tuple[str, str, list[str]]]:
     h_signals = [spec.combine_name for spec in signal_specs if spec.process == "H"]
@@ -813,13 +830,13 @@ def build_systematics_rows(
     process_order = combined_process_names(signal_specs)
     h_systematics = {
         name: (pdf_type, signal_value, nonres_value, resonant_value)
-        for name, pdf_type, signal_value, nonres_value, resonant_value in COPIED_SYSTEMATICS[
+        for name, pdf_type, signal_value, nonres_value, resonant_value in HARDCODED_SYSTEMATICS[
             "H"
         ]
     }
     z_systematics = {
         name: (pdf_type, signal_value, nonres_value, resonant_value)
-        for name, pdf_type, signal_value, nonres_value, resonant_value in COPIED_SYSTEMATICS[
+        for name, pdf_type, signal_value, nonres_value, resonant_value in HARDCODED_SYSTEMATICS[
             "Z"
         ]
     }
@@ -831,7 +848,7 @@ def build_systematics_rows(
         h_signal_value,
         _,
         h_resonant_value,
-    ) in COPIED_SYSTEMATICS["H"]:
+    ) in HARDCODED_SYSTEMATICS["H"]:
         if nuisance_name not in z_systematics:
             raise RuntimeError(f"Missing Z systematic row for {nuisance_name!r}")
         z_pdf_type, z_signal_value, _, z_resonant_value = z_systematics[nuisance_name]
@@ -883,49 +900,253 @@ def build_systematics_rows(
     return rows
 
 
+def find_yield_sample(
+    yield_summary: dict[str, Any],
+    process_name: str,
+    prefixes: tuple[str, ...],
+) -> str:
+    matches = [
+        sample_name
+        for sample_name in yield_summary
+        if any(sample_name.startswith(prefix) for prefix in prefixes)
+    ]
+    if len(matches) != 1:
+        prefix_text = ", ".join(prefixes)
+        raise RuntimeError(
+            f"Expected exactly one yield entry for {process_name} matching {prefix_text}; found {len(matches)}."
+        )
+    return matches[0]
+
+
+def build_yield_process_sample_map(
+    yield_summary: dict[str, Any],
+    signal_specs: list[SignalProcessSpec],
+) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for signal_spec in signal_specs:
+        if signal_spec.process == "H":
+            prefixes = (f"selected_ggH_HToUps{signal_spec.state}G",)
+        elif signal_spec.process == "Z":
+            prefixes = (f"selected_ZToUpsilon{signal_spec.state}Gamma",)
+        else:
+            raise RuntimeError(f"Unsupported signal process {signal_spec.process!r}")
+        mapping[signal_spec.combine_name] = find_yield_sample(
+            yield_summary,
+            signal_spec.combine_name,
+            prefixes,
+        )
+
+    mapping[RESONANT_H_PROCESS_NAME] = find_yield_sample(
+        yield_summary,
+        RESONANT_H_PROCESS_NAME,
+        ("selected_GluGluHToMuMuG",),
+    )
+    mapping[RESONANT_Z_PROCESS_NAME] = find_yield_sample(
+        yield_summary,
+        RESONANT_Z_PROCESS_NAME,
+        ("selected_ZGTo2MuG",),
+    )
+    return mapping
+
+
+def format_lnn_ratio(value: float) -> str:
+    if not math.isfinite(value) or value <= 0.0:
+        raise RuntimeError(f"Invalid lnN ratio from yield variations: {value!r}")
+    return f"{value:.6g}"
+
+
+def yield_variation_lnn(
+    yield_summary: dict[str, Any],
+    sample_name: str,
+    variation_name: str,
+) -> str:
+    sample_info = yield_summary.get(sample_name)
+    if not isinstance(sample_info, dict):
+        raise RuntimeError(f"Yield entry {sample_name!r} is missing or malformed")
+
+    nominal = float(sample_info.get("n_wgt", 0.0))
+    if not math.isfinite(nominal) or nominal <= 0.0:
+        raise RuntimeError(f"Yield entry {sample_name!r} has invalid nominal n_wgt={nominal!r}")
+
+    variations = sample_info.get("variations")
+    if not isinstance(variations, dict) or variation_name not in variations:
+        raise RuntimeError(f"Yield entry {sample_name!r} is missing variation {variation_name!r}")
+    variation = variations[variation_name]
+    if not isinstance(variation, dict) or "up" not in variation or "down" not in variation:
+        raise RuntimeError(
+            f"Yield variation {variation_name!r} for {sample_name!r} must contain up/down values"
+        )
+
+    down_ratio = float(variation["down"]) / nominal
+    up_ratio = float(variation["up"]) / nominal
+    return f"{format_lnn_ratio(down_ratio)}/{format_lnn_ratio(up_ratio)}"
+
+
+def build_yield_systematics_rows(
+    signal_specs: list[SignalProcessSpec],
+    yield_summary: dict[str, Any],
+) -> tuple[list[tuple[str, str, list[str]]], dict[str, Any]]:
+    process_order = combined_process_names(signal_specs)
+    process_sample_map = build_yield_process_sample_map(yield_summary, signal_specs)
+    rows: list[tuple[str, str, list[str]]] = []
+    row_reports: list[dict[str, Any]] = []
+
+    for variation_name, nuisance_name in YIELD_VARIATION_TO_NUISANCE:
+        values: list[str] = []
+        for process_name in process_order:
+            if process_name == NON_RESONANT_PROCESS_NAME:
+                values.append("-")
+                continue
+            sample_name = process_sample_map[process_name]
+            values.append(yield_variation_lnn(yield_summary, sample_name, variation_name))
+
+        rows.append((nuisance_name, "lnN", values))
+        row_reports.append(
+            {
+                "nuisance": nuisance_name,
+                "variation": variation_name,
+                "values": dict(zip(process_order, values)),
+            }
+        )
+
+    return rows, {
+        "source": relative_to_repo(YIELD_SYSTEMATICS_PATH),
+        "process_samples": process_sample_map,
+        "variation_mappings": [
+            {"variation": variation_name, "nuisance": nuisance_name}
+            for variation_name, nuisance_name in YIELD_VARIATION_TO_NUISANCE
+        ],
+        "rows": row_reports,
+    }
+
+
+def build_systematics_rows(
+    signal_specs: list[SignalProcessSpec],
+    yield_summary: dict[str, Any],
+) -> tuple[list[tuple[str, str, list[str]]], dict[str, Any]]:
+    hardcoded_rows = build_hardcoded_systematics_rows(signal_specs)
+    yield_rows, yield_report = build_yield_systematics_rows(signal_specs, yield_summary)
+    return hardcoded_rows + yield_rows, yield_report
+
+
+def format_aligned_datacard_rows(rows: Iterable[Iterable[Any]]) -> list[str]:
+    normalized_rows = [[str(cell) for cell in row] for row in rows]
+    if not normalized_rows:
+        return []
+
+    column_count = max(len(row) for row in normalized_rows)
+    widths = [0] * column_count
+    for row in normalized_rows:
+        for index in range(column_count):
+            cell = row[index] if index < len(row) else ""
+            widths[index] = max(widths[index], len(cell))
+
+    formatted_rows = []
+    for row in normalized_rows:
+        padded_row = row + [""] * (column_count - len(row))
+        formatted_rows.append(
+            "  ".join(
+                cell.ljust(widths[index])
+                for index, cell in enumerate(padded_row)
+            ).rstrip()
+        )
+    return formatted_rows
+
+
 def write_datacard(
     output_dir: Path,
     datacard_file_name: str,
     workspace_file_name: str,
     workspace_name: str,
     signal_specs: list[SignalProcessSpec],
+    systematics_rows: list[tuple[str, str, list[str]]],
 ) -> tuple[Path, list[str]]:
     process_names = combined_process_names(signal_specs)
     process_ids = combined_process_ids(signal_specs)
-    systematics_rows = build_systematics_rows(signal_specs)
+
+    header_rows = [
+        ["imax", "1", "number of channels"],
+        ["jmax", str(len(process_names) - 1), "number of processes minus 1"],
+        ["kmax", "*", "number of nuisance parameters"],
+    ]
+    shape_rows = [
+        [
+            "shapes",
+            "data_obs",
+            ANALYSIS_BIN_NAME,
+            workspace_file_name,
+            f"{workspace_name}:data_obs",
+        ]
+    ]
+    for signal_spec in signal_specs:
+        shape_rows.append(
+            [
+                "shapes",
+                signal_spec.combine_name,
+                ANALYSIS_BIN_NAME,
+                workspace_file_name,
+                f"{workspace_name}:{signal_spec.combine_name}",
+            ]
+        )
+    shape_rows.extend(
+        [
+            [
+                "shapes",
+                NON_RESONANT_PROCESS_NAME,
+                ANALYSIS_BIN_NAME,
+                workspace_file_name,
+                f"{workspace_name}:{NON_RESONANT_PROCESS_NAME}",
+            ],
+            [
+                "shapes",
+                RESONANT_H_PROCESS_NAME,
+                ANALYSIS_BIN_NAME,
+                workspace_file_name,
+                f"{workspace_name}:{RESONANT_H_PROCESS_NAME}",
+            ],
+            [
+                "shapes",
+                RESONANT_Z_PROCESS_NAME,
+                ANALYSIS_BIN_NAME,
+                workspace_file_name,
+                f"{workspace_name}:{RESONANT_Z_PROCESS_NAME}",
+            ],
+        ]
+    )
+    observation_rows = [
+        ["bin", ANALYSIS_BIN_NAME],
+        ["observation", "-1"],
+    ]
+    model_rows = [
+        ["bin", "", *([ANALYSIS_BIN_NAME] * len(process_names))],
+        ["process", "", *process_names],
+        ["process", "", *(str(process_id) for process_id in process_ids)],
+        ["rate", "", *("1" for _ in process_names)],
+        *(
+            [nuisance_name, nuisance_pdf, *values]
+            for nuisance_name, nuisance_pdf, values in systematics_rows
+        ),
+        ["pdfindex", "discrete"],
+    ]
+    formatted_model_rows = format_aligned_datacard_rows(model_rows)
+    rate_row_count = 4
 
     lines = [
         "# Single simultaneous datacard for H/Z -> Upsilon(nS) + photon",
         f"# Bin: {ANALYSIS_BIN_NAME}",
-        "imax 1 number of channels",
-        f"jmax {len(process_names) - 1} number of processes minus 1",
-        "kmax * number of nuisance parameters",
+        *format_aligned_datacard_rows(header_rows),
         "------------",
-        f"shapes data_obs {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:data_obs",
+        *format_aligned_datacard_rows(shape_rows),
+        "------------",
+        *format_aligned_datacard_rows(observation_rows),
+        "------------",
+        *formatted_model_rows[:rate_row_count],
+        "------------",
+        *formatted_model_rows[rate_row_count:-1],
+        "------------",
+        formatted_model_rows[-1],
+        "",
     ]
-    for signal_spec in signal_specs:
-        lines.append(
-            f"shapes {signal_spec.combine_name} {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:{signal_spec.combine_name}"
-        )
-    lines.extend(
-        [
-            f"shapes {NON_RESONANT_PROCESS_NAME} {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:{NON_RESONANT_PROCESS_NAME}",
-            f"shapes {RESONANT_H_PROCESS_NAME} {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:{RESONANT_H_PROCESS_NAME}",
-            f"shapes {RESONANT_Z_PROCESS_NAME} {ANALYSIS_BIN_NAME} {workspace_file_name} {workspace_name}:{RESONANT_Z_PROCESS_NAME}",
-            "------------",
-            f"bin {ANALYSIS_BIN_NAME}",
-            "observation -1",
-            "------------",
-            "bin " + " ".join([ANALYSIS_BIN_NAME] * len(process_names)),
-            "process " + " ".join(process_names),
-            "process " + " ".join(str(process_id) for process_id in process_ids),
-            "rate " + " ".join(["1"] * len(process_names)),
-            "------------",
-        ]
-    )
-    for nuisance_name, nuisance_pdf, values in systematics_rows:
-        lines.append(f"{nuisance_name} {nuisance_pdf} " + " ".join(values))
-    lines.extend(["------------", "pdfindex discrete", ""])
 
     datacard_path = output_dir / datacard_file_name
     datacard_path.write_text("\n".join(lines), encoding="ascii")
@@ -953,35 +1174,8 @@ def validate_datacard(
         text=True,
     )
 
-    combine_status = "blocked"
-    combine_cmd: list[str] | None = None
-    combine_output = "combine step skipped because text2workspace.py failed."
-    combine_returncode = None
-    if text2workspace_res.returncode == 0:
-        combine_cmd = [
-            "combine",
-            "-M",
-            "AsymptoticLimits",
-            "validation_workspace.root",
-            "--run",
-            "blind",
-            "-m",
-            mass_label,
-            "-n",
-            ".validate",
-        ]
-        combine_res = subprocess.run(
-            combine_cmd,
-            cwd=output_dir,
-            capture_output=True,
-            text=True,
-        )
-        combine_status = "ok" if combine_res.returncode == 0 else "failed"
-        combine_output = (combine_res.stdout or "") + (combine_res.stderr or "")
-        combine_returncode = combine_res.returncode
-
     log_lines = [
-        "# Validation log for single simultaneous datacard",
+        "# text2workspace.py validation log for single simultaneous datacard",
         "",
         "## text2workspace.py",
         f"Command: {' '.join(text2workspace_cmd)}",
@@ -989,14 +1183,6 @@ def validate_datacard(
         "",
         "```text",
         (text2workspace_res.stdout or "") + (text2workspace_res.stderr or ""),
-        "```",
-        "",
-        "## combine -M AsymptoticLimits",
-        f"Command: {' '.join(combine_cmd) if combine_cmd else '(skipped)'}",
-        f"Status: {combine_status}",
-        "",
-        "```text",
-        combine_output,
         "```",
         "",
     ]
@@ -1007,19 +1193,11 @@ def validate_datacard(
     validation_workspace_path = output_dir / "validation_workspace.root"
     if validation_workspace_path.exists():
         produced_files.append(validation_workspace_path)
-    combine_root_path = (
-        output_dir / f"higgsCombine.validate.AsymptoticLimits.mH{mass_label}.root"
-    )
-    if combine_root_path.exists():
-        produced_files.append(combine_root_path)
-
     return {
         "text2workspace_status": "ok"
         if text2workspace_res.returncode == 0
         else "failed",
-        "combine_status": combine_status,
         "text2workspace_returncode": text2workspace_res.returncode,
-        "combine_returncode": combine_returncode,
         "log": relative_to_repo(log_path),
         "produced_files": produced_files,
     }
@@ -1078,13 +1256,14 @@ def write_summary_report(
     resonant_reports: list[dict[str, Any]],
     nonres_report: dict[str, Any],
     nonres_selection: dict[str, Any],
+    systematics_rows: list[tuple[str, str, list[str]]],
+    yield_systematics_report: dict[str, Any],
     datacard_lines: list[str],
     validation_result: dict[str, Any] | None,
     produced_files: list[Path],
 ) -> None:
     object_lists = collect_workspace_objects(workspace)
     parameter_rows = collect_parameter_rows(workspace)
-    systematics_rows = build_systematics_rows(signal_specs)
 
     signal_rows = [
         [
@@ -1132,16 +1311,25 @@ def write_summary_report(
     systematics_table_rows = [
         [name, pdf_type, *values] for name, pdf_type, values in systematics_rows
     ]
+    process_order = combined_process_names(signal_specs)
+    yield_process_rows = [
+        [process_name, yield_systematics_report["process_samples"][process_name]]
+        for process_name in process_order
+        if process_name in yield_systematics_report["process_samples"]
+    ]
+    yield_mapping_rows = [
+        [item["variation"], item["nuisance"]]
+        for item in yield_systematics_report["variation_mappings"]
+    ]
     validation_rows = (
         [
             [
                 validation_result["text2workspace_status"],
-                validation_result["combine_status"],
                 validation_result["log"],
             ]
         ]
         if validation_result
-        else [["skipped", "skipped", "-"]]
+        else [["skipped", "-"]]
     )
 
     summary_json_payload = {
@@ -1159,6 +1347,7 @@ def write_summary_report(
             if key != "selected_candidates"
         },
         "non_resonant_state_mappings": nonres_report["state_mappings"],
+        "yield_systematics": yield_systematics_report,
         "validation": (
             {
                 **validation_result,
@@ -1291,6 +1480,20 @@ def write_summary_report(
                 systematics_table_rows,
             ),
         ),
+        html_section(
+            "Yield Systematics Input",
+            html_metric_grid(
+                [
+                    ("Source", yield_systematics_report["source"]),
+                    ("Derived nuisances", len(yield_systematics_report["variation_mappings"])),
+                ]
+            )
+            + "<h3>Process mapping</h3>"
+            + html_table(["Process", "Yield sample"], yield_process_rows)
+            + "<h3>Variation mapping</h3>"
+            + html_table(["Yield variation", "Datacard nuisance"], yield_mapping_rows),
+            "Asymmetric lnN values are formatted as (variation_down / nominal)/(variation_up / nominal).",
+        ),
         html_section("Datacard Contents", html_code_block(datacard_lines)),
         html_section("Imported Objects", imported_objects_html),
         html_section(
@@ -1307,7 +1510,8 @@ def write_summary_report(
                     "Signal workspaces come from the outputs of python3 scripts/signal.py.",
                     f"Resonant background workspaces come from python3 scripts/resonant_background.py and summary {relative_to_repo(RESONANT_SUMMARY_PATH)}.",
                     f"The shared observed dataset and non-resonant candidate PDFs come from {relative_to_repo(NON_RESONANT_WORKSPACE_PATH)} and summary {relative_to_repo(NON_RESONANT_SUMMARY_PATH)}.",
-                    f"Legacy lnN values were copied from {relative_to_repo(LEGACY_SYSTEMATICS_SOURCE)} and expanded onto the single-card process layout.",
+                    f"Yield-based asymmetric lnN values come from {relative_to_repo(YIELD_SYSTEMATICS_PATH)}; lumi and HZ_xs_sc remain embedded in this script.",
+                    f"Original legacy lnN reference path: {relative_to_repo(LEGACY_SYSTEMATICS_SOURCE)}.",
                 ]
             ),
         ),
@@ -1319,7 +1523,7 @@ def write_summary_report(
             "Notes",
             html_list(
                 [
-                    "Validation runs text2workspace.py and then a blind combine -M AsymptoticLimits smoke test by default.",
+                    "Validation runs text2workspace.py by default.",
                     "Use --skip-validation to write only the workspace and parametric datacard.",
                     "The six public signal process names are ready to be mapped to six independent POIs in a later Combine step.",
                 ]
@@ -1327,7 +1531,7 @@ def write_summary_report(
         ),
         html_section(
             "Validation",
-            html_table(["text2workspace.py", "combine -M AsymptoticLimits", "Log"], validation_rows),
+            html_table(["text2workspace.py", "Log"], validation_rows),
         ),
     ]
     report_html = html_page(
@@ -1366,7 +1570,10 @@ def verify_required_outputs(signal_specs: list[SignalProcessSpec]) -> None:
         NON_RESONANT_SUMMARY_PATH,
         "Run `python3 scripts/non_resonant_background.py` with the updated code so the non-resonant summary is written.",
     )
-    ensure_file(LEGACY_SYSTEMATICS_SOURCE)
+    ensure_file(
+        YIELD_SYSTEMATICS_PATH,
+        "Provide selected-event nominal/variation yields for datacard lnN nuisances.",
+    )
     log_kv(
         "resonant workspace (H)", relative_to_repo(RESONANT_CONFIG["H"]["root_path"])
     )
@@ -1376,6 +1583,7 @@ def verify_required_outputs(signal_specs: list[SignalProcessSpec]) -> None:
     log_kv("resonant summary", relative_to_repo(RESONANT_SUMMARY_PATH))
     log_kv("non-resonant workspace", relative_to_repo(NON_RESONANT_WORKSPACE_PATH))
     log_kv("non-resonant summary", relative_to_repo(NON_RESONANT_SUMMARY_PATH))
+    log_kv("yield systematics", relative_to_repo(YIELD_SYSTEMATICS_PATH))
 
 
 def validate_summary_shapes(
@@ -1416,11 +1624,13 @@ def main() -> int:
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
     signal_specs = make_signal_specs()
     produced_files: list[Path] = []
 
     log("Starting single-card workspace build")
+    if clear_default_datacards_dir(output_dir):
+        log(f"Cleared generated output directory: {relative_to_repo(DEFAULT_OUTPUT_DIR)}")
+    output_dir.mkdir(parents=True, exist_ok=True)
     log_kv("output directory", relative_to_repo(output_dir))
     log_kv("workspace name", args.workspace_name)
     log_kv("workspace file name", args.workspace_file_name)
@@ -1431,9 +1641,14 @@ def main() -> int:
     verify_required_outputs(signal_specs)
     nonres_summary = load_json(NON_RESONANT_SUMMARY_PATH)
     resonant_summary = load_json(RESONANT_SUMMARY_PATH)
+    yield_summary = load_json(YIELD_SYSTEMATICS_PATH)
     validate_summary_shapes(nonres_summary, resonant_summary)
     nonres_selection = build_nonres_candidate_selection(
         nonres_summary, relaxed_mode=not args.strict_mode
+    )
+    systematics_rows, yield_systematics_report = build_systematics_rows(
+        signal_specs,
+        yield_summary,
     )
 
     log("Selected non-resonant candidates for the final RooMultiPdf")
@@ -1441,6 +1656,12 @@ def main() -> int:
         log_kv(
             f"{row[0]} {row[2]}",
             f"model={row[3]}, order={row[4]}, init_norm={row[5]}",
+        )
+    log("Built datacard lnN nuisance rows")
+    for variation_mapping in yield_systematics_report["variation_mappings"]:
+        log_kv(
+            variation_mapping["nuisance"],
+            f"from {variation_mapping['variation']} in {relative_to_repo(YIELD_SYSTEMATICS_PATH)}",
         )
 
     bundled_workspace = RooWorkspace(args.workspace_name)
@@ -1488,13 +1709,14 @@ def main() -> int:
         workspace_file_name=args.workspace_file_name,
         workspace_name=args.workspace_name,
         signal_specs=signal_specs,
+        systematics_rows=systematics_rows,
     )
     produced_files.append(datacard_path)
     log(f"Wrote simultaneous datacard: {relative_to_repo(datacard_path)}")
 
     validation_result: dict[str, Any] | None = None
     if not args.skip_validation:
-        log("Running validation commands")
+        log("Running text2workspace.py validation")
         validation_result = validate_datacard(
             output_dir=output_dir,
             datacard_file_name=args.datacard_file_name,
@@ -1502,7 +1724,6 @@ def main() -> int:
         )
         produced_files.extend(validation_result["produced_files"])
         log_kv("text2workspace.py", validation_result["text2workspace_status"])
-        log_kv("combine -M AsymptoticLimits", validation_result["combine_status"])
 
     summary_json_path = output_dir / DEFAULT_SUMMARY_JSON_FILENAME
     produced_files.append(summary_json_path)
@@ -1519,6 +1740,8 @@ def main() -> int:
         resonant_reports=resonant_reports,
         nonres_report=nonres_report,
         nonres_selection=nonres_selection,
+        systematics_rows=systematics_rows,
+        yield_systematics_report=yield_systematics_report,
         datacard_lines=datacard_lines,
         validation_result=validation_result,
         produced_files=produced_files,
