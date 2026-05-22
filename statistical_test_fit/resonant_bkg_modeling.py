@@ -48,7 +48,7 @@ def build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=80):
     Resonant Background Modeling
     """
 
-    input_file = "inputs/mass_H_GluGluHToMuMuG_M125_MLL-0To60_Dalitz_012j_Run2.root"
+    input_file = "inputs/preselected_GluGluHToMuMuG_M125_MLL-0To60_Dalitz_012j_13TeV_amcatnloFXFX_pythia8_PSWeight_Run2.root"
 
     w = RooWorkspace("resonant_background_Higgs_ws")
 
@@ -156,7 +156,7 @@ def build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=80):
     Resonant Background Modeling
     """
 
-    input_file = "inputs/mass_Z_ZGTo2MuG_MMuMu-2To15_Run2.root"
+    input_file = "inputs/preselected_ZGTo2MuG_MMuMu-2To15_TuneCP5_13TeV-madgraph-pythia8_Run2.root"
 
     w = RooWorkspace("resonant_background_Z_ws")
 
@@ -339,7 +339,7 @@ def resonant_background_modeling_Z(load_from_cache=False, plot_dir=PLOT_DIR, nbi
                 f"-- > Cache requested but {RESONANT_Z_PARAMS_CACHE} was not found. Recomputing Z resonant boson parameters."
             )
 
-    input_file = "inputs/mass_Z_ZGTo2MuG_MMuMu-2To15_Run2.root"
+    input_file = "inputs/preselected_ZGTo2MuG_MMuMu-2To15_TuneCP5_13TeV-madgraph-pythia8_Run2.root"
 
     w = RooWorkspace("resonant_background_ws")
 
@@ -466,7 +466,7 @@ def get_normalization_from_CR(
                 f"-- > Cache requested but NormParams_{control_region.value.name}.json was not found. Recomputing {control_region.value.name}."
             )
 
-    input_file = "inputs/selected_Run2_resonant_background_modeling_MC_data_.root"
+    input_file = "inputs/preselected_Run2.root"
 
     w = RooWorkspace("resonant_background_ws")
 
