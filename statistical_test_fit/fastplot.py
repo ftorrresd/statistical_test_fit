@@ -368,7 +368,8 @@ def fastplot(
                 ROOT.RooFit.LineWidth(component_spec["line_width"]),
                 ROOT.RooFit.Name(line_name),
             )
-            legend_object_name = line_name
+            if not component_spec["fill"]:
+                legend_object_name = line_name
 
         return legend_object_name
 
