@@ -80,6 +80,7 @@ def fastplot(
     label_scale=1.0,
     legend=False,
     legend_columns=1,
+    legend_text_size=None,
     extra_text=None,
     round_bins=5,
     tick_len=30,
@@ -147,6 +148,8 @@ def fastplot(
             Vector with four coordinates for the TLegend position
         legend_columns (int):
             Number of legend columns.
+        legend_text_size (float):
+            Optional override for legend text size.
         extra_text (list of ROOT.TPaveText or ROOT.TPaveText):
             Extra text to be drawn on the plot
         round_bins (int) :
@@ -365,8 +368,7 @@ def fastplot(
                 ROOT.RooFit.LineWidth(component_spec["line_width"]),
                 ROOT.RooFit.Name(line_name),
             )
-            if not component_spec["fill"]:
-                legend_object_name = line_name
+            legend_object_name = line_name
 
         return legend_object_name
 
@@ -528,6 +530,8 @@ def fastplot(
     else:
         leg = ROOT.TLegend(0.7, 0.78, 0.93, 0.92)
     leg.SetNColumns(max(1, int(legend_columns)))
+    if legend_text_size is not None:
+        leg.SetTextSize(float(legend_text_size))
 
     _plot_data(frame, "Data")
 
