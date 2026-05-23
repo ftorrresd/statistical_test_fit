@@ -5,6 +5,7 @@
 - There is no repo-local `pyproject.toml`, `requirements*.txt`, CI workflow, pre-commit config, or task runner. Do not invent lint/type/test commands.
 
 ## Entrypoints
+- `python3 scripts/prepare_input_files.py` creates `inputs_weighted/`, rewriting MC `weight` branches to the nominal product, removing data `weight*` branches, and copying other inputs unchanged; export `STATISTICAL_TEST_FIT_INPUT_DIR=inputs_weighted` before downstream real-data/MC workflows to use it.
 - `python3 scripts/pseudodata.py` runs toy 1D/2D scans; default `--fits-to-run all` runs 1D first and 2D second, so a 1D failure blocks 2D.
 - `python3 scripts/signal.py` runs the six signal fits; keep its stdlib `signal` shim because the filename shadows Python's `signal` module.
 - `python3 scripts/resonant_background.py` runs resonant backgrounds; cache is on by default and the recompute flag is `--skip-cache`.
@@ -14,7 +15,7 @@
 - Driver scripts mostly parse args, clear workflow-specific outputs, configure ROOT, and dispatch into `statistical_test_fit/`; keep `statistical_test_fit/__init__.py` lazy so light workflows do not import the heavier real-data stack.
 
 ## Workflow Order
-- Full Combine chain: `scripts/signal.py`, then `scripts/resonant_background.py`, then `scripts/non_resonant_background.py`, then `scripts/build_bundled_workspace.py`, then optional `scripts/limits.py` and `scripts/branching_fraction_table.py` or `scripts/bias_study.py`.
+- Full Combine chain with prepared inputs: `scripts/prepare_input_files.py`, export `STATISTICAL_TEST_FIT_INPUT_DIR=inputs_weighted`, then `scripts/signal.py`, then `scripts/resonant_background.py`, then `scripts/non_resonant_background.py`, then `scripts/build_bundled_workspace.py`, then optional `scripts/limits.py` and `scripts/branching_fraction_table.py` or `scripts/bias_study.py`.
 - Relaxed family selection is default in pseudodata and real-data background scans; pass `--strict-mode` when a failed family should abort instead of falling back to the best fit-quality-passing candidate.
 - `scripts/limits.py` defaults to `limits/`, not `datacards/limits/`; `--run-name` reuses and clears that run directory if it already exists.
 - `scripts/branching_fraction_table.py` defaults to the newest `limits/*/blind_limits_summary.json` and compiles PDF through Singularity unless `--skip-compile-pdf` is used.
@@ -23,9 +24,10 @@
 ## Outputs
 - `scripts/pseudodata.py` and `scripts/non_resonant_background.py` clear only `plots/fit_1d`, `plots/fit_2d`, and `plots/fit_2d_data`; `scripts/signal.py` clears only `plots/signal_fit`; `scripts/resonant_background.py` clears only `plots/resonant_background`.
 - `dimuon_non_correlated()` overwrites `inputs/selected_Run2_dimuon_non_correlated_renamed_branch.root`; `inputs/` is not effectively read-only.
+- With `STATISTICAL_TEST_FIT_INPUT_DIR=inputs_weighted`, `dimuon_non_correlated()` writes the renamed dimuon file inside `inputs_weighted/` instead of touching `inputs/`.
 - `fit_2d_data.py` writes `non_resonant_background_workspace.root` and `plots/fit_2d_data/non_resonant_fit_summary.json`; the final simultaneous Combine card is still produced by `scripts/build_bundled_workspace.py`.
 - `scripts/build_bundled_workspace.py` clears generated `datacards/` contents before writing there by default; custom `--output-dir` locations are not cleared automatically.
-- Treat `datacards/`, `limits/`, `bias_study/`, `plots/`, repo-root generated ROOT files, and repo-root generated JSON files as outputs; inspect with `python3 scripts/clean_outputs.py --dry-run` before wiping with `python3 scripts/clean_outputs.py`.
+- Treat `inputs_weighted/`, `datacards/`, `limits/`, `bias_study/`, `plots/`, repo-root generated ROOT files, and repo-root generated JSON files as outputs; inspect with `python3 scripts/clean_outputs.py --dry-run` before wiping with `python3 scripts/clean_outputs.py`.
 
 ## Combine Packaging
 - The single-card builder writes public processes `H_1S`, `H_2S`, `H_3S`, `Z_1S`, `Z_2S`, `Z_3S`, `non_resonant_bkg`, `resonant_H_bkg`, and `resonant_Z_bkg`.

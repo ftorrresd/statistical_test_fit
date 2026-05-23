@@ -29,6 +29,7 @@ from .bkg_model import (
 from .bkg_pdf_families import BkgPdfFamily
 from .display_names import pdf_state_display
 from .dimuon_non_correlated import dimuon_non_correlated
+from .input_paths import input_path
 from .mass_ranges import (
     BOSON_MASS_LOWER,
     BOSON_MASS_UPPER,
@@ -219,7 +220,7 @@ def _write_non_resonant_summary(
         "summary_path": NON_RESONANT_SUMMARY_PATH,
         "workspace_path": NON_RESONANT_WORKSPACE_PATH,
         "plots_dir": "plots/fit_2d_data",
-        "input_file": "inputs/preselected_Run2.root",
+        "input_file": input_path("preselected_Run2.root"),
         "plot_nbins": args.nbins,
         "chi2_nbins": args.chi2_nbins,
         "workers": getattr(args, "workers", None),
@@ -369,7 +370,7 @@ def run_fit_2d_data(args: Namespace):
     boson_mass.SetTitle("m_{#mu#mu#gamma}")  # LaTeX-style title
     boson_mass.setUnit("GeV")  # physical unit
 
-    f = TFile.Open("inputs/preselected_Run2.root")
+    f = TFile.Open(input_path("preselected_Run2.root"))
     data_full = RooDataSet(
         "data_obs",
         "data_obs",
@@ -407,7 +408,7 @@ def run_fit_2d_data(args: Namespace):
     candidate_specs = build_non_resonant_candidate_specs(
         upsilon_params=upsilon_params,
         chi2_nbins=args.chi2_nbins,
-        input_file="inputs/preselected_Run2.root",
+        input_file=input_path("preselected_Run2.root"),
         upsilon_mass_lower=upsilon_mass_lower,
         upsilon_mass_upper=upsilon_mass_upper,
         boson_mass_lower=BOSON_MASS_LOWER,

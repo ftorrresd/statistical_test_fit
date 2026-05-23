@@ -4,6 +4,10 @@
 
 This repository contains RooFit-based background studies for `H/Z -> Upsilon(nS) + gamma`.
 
+There is one optional preparation step before the fit workflows:
+
+- `scripts/prepare_input_files.py`: creates a workflow-ready input directory with MC `weight` branches rewritten from the nominal scale-factor product and data weight branches removed
+
 There are four top-level workflows:
 
 - `scripts/pseudodata.py`: toy studies for 1D and 2D background-model selection
@@ -54,6 +58,33 @@ The driver scripts load these libraries at runtime:
 ## How To Run
 
 Run from the repository root.
+
+### Input Weight Preparation
+
+Run this first when the downstream fits should use the nominal product weight instead of the persisted `weight` branch in the original MC files:
+
+```bash
+python3 scripts/prepare_input_files.py
+export STATISTICAL_TEST_FIT_INPUT_DIR=inputs_weighted
+```
+
+The script leaves `inputs/` untouched and writes a complete prepared input directory to `inputs_weighted/` by default. MC ROOT files are copied with the `weight` branch replaced by:
+
+```text
+weight_generator
+* weight_l1_prefiring
+* weight_muon_id
+* weight_muon_iso
+* weight_photon_id
+* weight_photon_electron_veto
+* weight_pileup
+* weight_trigger_sf
+* weight_pdf_alpha_s_weight
+```
+
+Data ROOT files are copied without `weight` / `weight_*` branches. Other non-MC files are copied unchanged so the rest of the workflow can run with `STATISTICAL_TEST_FIT_INPUT_DIR=inputs_weighted`.
+
+Use `--n-workers N` to control parallel file preparation; by default it uses `min(number of jobs, nproc)` workers.
 
 ### Pseudodata Workflow
 

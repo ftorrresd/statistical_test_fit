@@ -19,6 +19,7 @@ from ROOT import (  # type: ignore
 )
 
 from .fastplot import fastplot
+from .input_paths import input_path
 from .mass_ranges import (
     BOSON_MASS_LOWER,
     BOSON_MASS_UPPER,
@@ -48,7 +49,9 @@ def build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=80):
     Resonant Background Modeling
     """
 
-    input_file = "inputs/preselected_GluGluHToMuMuG_M125_MLL-0To60_Dalitz_012j_13TeV_amcatnloFXFX_pythia8_PSWeight_Run2.root"
+    input_file = input_path(
+        "preselected_GluGluHToMuMuG_M125_MLL-0To60_Dalitz_012j_13TeV_amcatnloFXFX_pythia8_PSWeight_Run2.root"
+    )
 
     w = RooWorkspace("resonant_background_Higgs_ws")
 
@@ -156,7 +159,9 @@ def build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=80):
     Resonant Background Modeling
     """
 
-    input_file = "inputs/preselected_ZGTo2MuG_MMuMu-2To15_TuneCP5_13TeV-madgraph-pythia8_Run2.root"
+    input_file = input_path(
+        "preselected_ZGTo2MuG_MMuMu-2To15_TuneCP5_13TeV-madgraph-pythia8_Run2.root"
+    )
 
     w = RooWorkspace("resonant_background_Z_ws")
 
@@ -339,7 +344,9 @@ def resonant_background_modeling_Z(load_from_cache=False, plot_dir=PLOT_DIR, nbi
                 f"-- > Cache requested but {RESONANT_Z_PARAMS_CACHE} was not found. Recomputing Z resonant boson parameters."
             )
 
-    input_file = "inputs/preselected_ZGTo2MuG_MMuMu-2To15_TuneCP5_13TeV-madgraph-pythia8_Run2.root"
+    input_file = input_path(
+        "preselected_ZGTo2MuG_MMuMu-2To15_TuneCP5_13TeV-madgraph-pythia8_Run2.root"
+    )
 
     w = RooWorkspace("resonant_background_ws")
 
@@ -466,7 +473,7 @@ def get_normalization_from_CR(
                 f"-- > Cache requested but NormParams_{control_region.value.name}.json was not found. Recomputing {control_region.value.name}."
             )
 
-    input_file = "inputs/preselected_Run2.root"
+    input_file = input_path("preselected_Run2.root")
 
     w = RooWorkspace("resonant_background_ws")
 
@@ -505,15 +512,23 @@ def get_normalization_from_CR(
         f"upsilon_mass[{RESONANT_CR_UPSILON_MASS_LOWER},{RESONANT_CR_UPSILON_MASS_UPPER}]"
     )
 
-    # load data
+    # load data. Prepared data inputs intentionally do not carry weight branches.
     f = TFile.Open(input_file)
-    data_ = RooDataSet(
-        "resonant_background_data",
-        "resonant_background_data",
-        RooArgSet(w.var("boson_mass"), w.var("upsilon_mass"), w.var("weight")),
-        RooFit.Import(f.Events),
-        RooFit.WeightVar(w.var("weight")),
-    )
+    if f.Events.GetBranch("weight"):
+        data_ = RooDataSet(
+            "resonant_background_data",
+            "resonant_background_data",
+            RooArgSet(w.var("boson_mass"), w.var("upsilon_mass"), w.var("weight")),
+            RooFit.Import(f.Events),
+            RooFit.WeightVar(w.var("weight")),
+        )
+    else:
+        data_ = RooDataSet(
+            "resonant_background_data",
+            "resonant_background_data",
+            RooArgSet(w.var("boson_mass"), w.var("upsilon_mass")),
+            RooFit.Import(f.Events),
+        )
 
     data = data_.reduce(
         f"(upsilon_mass < {control_region.value.upper} && upsilon_mass >= {control_region.value.lower} && boson_mass>{BOSON_MASS_LOWER} && boson_mass<{BOSON_MASS_UPPER})"

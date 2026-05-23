@@ -1,6 +1,7 @@
 *.root
 from_mauricio
 inputs/*.root
+inputs_weighted/
 
 
 # Byte-compiled / optimized / DLL files

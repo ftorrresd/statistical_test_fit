@@ -17,6 +17,7 @@ from ROOT import (  # type: ignore
 )
 
 from .fastplot import fastplot
+from .input_paths import input_path
 from .ws_helper import *
 
 
@@ -183,11 +184,11 @@ def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0, load_from_cache=F
         kTRUE,
     )
 
-    in_file = "inputs/selected_Run2_dimuon_non_correlated.root"
+    in_file = input_path("selected_Run2_dimuon_non_correlated.root")
     tree_name = "dimuons_masses"
     old_name = "mass"
     new_name = "upsilon_mass"
-    out_file = "inputs/selected_Run2_dimuon_non_correlated_renamed_branch.root"
+    out_file = input_path("selected_Run2_dimuon_non_correlated_renamed_branch.root")
 
     # Build a dataframe from the original tree
     df = RDataFrame(tree_name, in_file)
@@ -197,8 +198,7 @@ def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0, load_from_cache=F
     df2.Snapshot(tree_name, out_file, snapshot_cols)
 
     # load data
-    f = TFile.Open("inputs/selected_Run2_dimuon_non_correlated_renamed_branch.root")
-    # f = TFile.Open("inputs/selected_Run2_dimuon_non_correlated.root")
+    f = TFile.Open(input_path("selected_Run2_dimuon_non_correlated_renamed_branch.root"))
     f.dimuons_masses.Print()
     # data = RooDataSet("data", "data", f.dimuons_masses, RooArgSet(mass), a)
     data = RooDataSet(

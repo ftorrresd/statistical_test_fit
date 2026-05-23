@@ -32,6 +32,7 @@ TARGET_FILE_GLOBS = [
 
 TARGET_DIRS = [
     REPO_ROOT / "datacards",
+    REPO_ROOT / "inputs_weighted",
     REPO_ROOT / "plots",
     REPO_ROOT / "__pycache__",
 ]

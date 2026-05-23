@@ -12,6 +12,7 @@ from .mass_ranges import (
     get_signal_boson_plot_range,
     get_signal_upsilon_plot_range,
 )
+from .input_paths import input_path
 from .parallel_utils import ParallelJob, resolve_worker_count, run_parallel_jobs
 
 
@@ -58,32 +59,44 @@ SIGNAL_SAMPLES = [
     SignalSample(
         "H",
         "1S",
-        "inputs/preselected_ggH_HToUps1SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root",
+        input_path(
+            "preselected_ggH_HToUps1SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root"
+        ),
     ),
     SignalSample(
         "H",
         "2S",
-        "inputs/preselected_ggH_HToUps2SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root",
+        input_path(
+            "preselected_ggH_HToUps2SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root"
+        ),
     ),
     SignalSample(
         "H",
         "3S",
-        "inputs/preselected_ggH_HToUps3SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root",
+        input_path(
+            "preselected_ggH_HToUps3SG_M125_NNPDF31_TuneCP5_13TeV-powheg-pythia8_Run2.root"
+        ),
     ),
     SignalSample(
         "Z",
         "1S",
-        "inputs/preselected_ZToUpsilon1SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root",
+        input_path(
+            "preselected_ZToUpsilon1SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root"
+        ),
     ),
     SignalSample(
         "Z",
         "2S",
-        "inputs/preselected_ZToUpsilon2SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root",
+        input_path(
+            "preselected_ZToUpsilon2SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root"
+        ),
     ),
     SignalSample(
         "Z",
         "3S",
-        "inputs/preselected_ZToUpsilon3SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root",
+        input_path(
+            "preselected_ZToUpsilon3SGamma_TuneCP5_13TeV-amcatnloFXFX-pythia8_Run2.root"
+        ),
     ),
 ]
 

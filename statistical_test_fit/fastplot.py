@@ -2,6 +2,7 @@
 
 from __future__ import print_function
 
+from array import array
 import math
 from enum import Enum
 
@@ -68,6 +69,7 @@ def fastplot(
     data,
     observable,
     filename,
+    extra_filenames=None,
     components=None,
     nbins=None,
     extra_info=None,
@@ -77,6 +79,7 @@ def fastplot(
     font_scale=1.0,
     label_scale=1.0,
     legend=False,
+    legend_columns=1,
     extra_text=None,
     round_bins=5,
     tick_len=30,
@@ -85,11 +88,19 @@ def fastplot(
     lw=2,
     line_shade=0,
     data_range=None,
+    projection_range=None,
     plot_range=None,
+    plot_bin_edges=None,
+    normalization=None,
+    blind_regions=None,
+    blind_region_color=ROOT.kGray,
+    blind_region_alpha=0.35,
     y_min=0,
     y_max=-999,
     is_data=True,
     model_legend_name="Fit",
+    show_model_curve=True,
+    y_headroom_factor=None,
     show_residuals=True,
     residual_mode=ResidualMode.RELATIVE_DIFF,
     residual_y_range=None,
@@ -107,6 +118,8 @@ def fastplot(
             Observable to be drawn
         filename (str):
             Name of the output file. Suffix determines file type
+        extra_filenames (list):
+            Additional output filenames to save from the same canvas.
         components (list of tuples):
             Normalisation and ROOT.RooAbsPDF to be drawn searately
         nbins (int):
@@ -132,6 +145,8 @@ def fastplot(
             Integer to add to the color cycle for the fill color
         legend (list):
             Vector with four coordinates for the TLegend position
+        legend_columns (int):
+            Number of legend columns.
         extra_text (list of ROOT.TPaveText or ROOT.TPaveText):
             Extra text to be drawn on the plot
         round_bins (int) :
@@ -140,6 +155,15 @@ def fastplot(
             Sets the length of the bins, EQUALLY (yes root. this is possible.), choose between 0-100
         data_range (str) :
             Range to plot
+        projection_range (str):
+            Optional named range for integrating projected observables.
+        plot_bin_edges (list):
+            Optional explicit bin edges for data and residual projections.
+        normalization (float):
+            Optional absolute model normalization, in events. This is useful for
+            plotting models with externally supplied yields.
+        blind_regions (list):
+            Optional list of (low, high) intervals to shade on the x axis.
         show_residuals (bool):
             Draw a residual panel below the main plot
         residual_mode (ResidualMode):
@@ -161,11 +185,35 @@ def fastplot(
     if not isinstance(residual_mode, ResidualMode):
         raise TypeError("residual_mode must be a ResidualMode enum value")
 
-    # Use a slightly finer display binning for plotting only.
-    plot_nbins = max(nbins + 10, int(round(1.5 * nbins)))
+    plot_edges = None
+    plot_binning = None
+    if plot_bin_edges is not None:
+        plot_edges = [float(edge) for edge in plot_bin_edges]
+        if len(plot_edges) < 2:
+            raise ValueError("plot_bin_edges must contain at least two values")
+        for low, high in zip(plot_edges[:-1], plot_edges[1:]):
+            if low >= high:
+                raise ValueError("plot_bin_edges must be strictly increasing")
+        plot_nbins = len(plot_edges) - 1
+        plot_binning = ROOT.RooBinning(
+            plot_nbins,
+            array("d", plot_edges),
+            f"{observable.GetName()}_fastplot_binning",
+        )
+    else:
+        # Use a slightly finer display binning for plotting only.
+        plot_nbins = max(nbins + 10, int(round(1.5 * nbins)))
 
-    x_min = float(plot_range[0]) if plot_range is not None else observable.getMin()
-    x_max = float(plot_range[1]) if plot_range is not None else observable.getMax()
+    x_min = (
+        float(plot_range[0])
+        if plot_range is not None
+        else (plot_edges[0] if plot_edges is not None else observable.getMin())
+    )
+    x_max = (
+        float(plot_range[1])
+        if plot_range is not None
+        else (plot_edges[-1] if plot_edges is not None else observable.getMax())
+    )
     bin_half_width = 0.5 * (x_max - x_min) / float(plot_nbins)
 
     def _build_frame(title="Fit Result"):
@@ -177,14 +225,32 @@ def fastplot(
         return observable.frame(*frame_args)
 
     def _plot_data(target_frame, name):
+        data_binning = plot_binning if plot_binning is not None else plot_nbins
         data.plotOn(
             target_frame,
             ROOT.RooFit.Name(name),
-            ROOT.RooFit.Binning(plot_nbins),
+            ROOT.RooFit.Binning(data_binning),
             ROOT.RooFit.DataError(ROOT.RooAbsData.SumW2),
         )
 
+    def _residual_x_errors(x_value):
+        if plot_edges is None:
+            return bin_half_width, bin_half_width
+        for low, high in zip(plot_edges[:-1], plot_edges[1:]):
+            if low <= x_value <= high:
+                return max(0.0, x_value - low), max(0.0, high - x_value)
+        return bin_half_width, bin_half_width
+
+    def _normalization_args(value):
+        if value is None:
+            return []
+        return [ROOT.RooFit.Normalization(float(value), ROOT.RooAbsReal.NumEvent)]
+
     def _plot_model(target_frame, name):
+        normalization_args = _normalization_args(normalization)
+        projection_args = []
+        if projection_range is not None:
+            projection_args.append(ROOT.RooFit.ProjectionRange(str(projection_range)))
         if data_range is not None:
             model.plotOn(
                 target_frame,
@@ -192,14 +258,148 @@ def fastplot(
                 ROOT.RooFit.LineColor(color_cycle[0]),
                 ROOT.RooFit.Range("full"),
                 ROOT.RooFit.NormRange(data_range),
-                ROOT.RooFit.ProjectionRange("full"),
+                *(projection_args or [ROOT.RooFit.ProjectionRange("full")]),
+                *normalization_args,
             )
         else:
             model.plotOn(
                 target_frame,
                 ROOT.RooFit.Name(name),
                 ROOT.RooFit.LineColor(color_cycle[0]),
+                *projection_args,
+                *normalization_args,
             )
+
+    def _as_component_spec(component, index):
+        default_color = color_cycle[index % len(color_cycle)] + line_shade
+        default_fill = fill_cycle[index % len(fill_cycle)]
+
+        if isinstance(component, dict):
+            pdf = component.get("pdf")
+            selector = component.get("selector")
+            if selector is None and pdf is not None:
+                selector = pdf.GetName()
+            if selector is None:
+                selector = component.get("name")
+            if selector is None:
+                raise ValueError("Component dictionaries require `selector`, `pdf`, or `name`")
+
+            plot_name = component.get("name") or str(selector).replace(",", "_")
+            label = component.get("label")
+            if label is None and pdf is not None:
+                label = pdf.getTitle().Data()
+            if label is None:
+                label = str(selector)
+            fill = bool(component.get("fill", True))
+
+            return {
+                "selector": str(selector),
+                "plot_name": str(plot_name),
+                "label": label,
+                "line_color": component.get("line_color", default_color),
+                "fill_color": component.get("fill_color", default_color),
+                "fill_style": component.get("fill_style", default_fill),
+                "line_style": component.get("line_style", 1),
+                "line_width": component.get("line_width", lw),
+                "fill": fill,
+                "line": bool(component.get("line", True)),
+                "draw_option": component.get("draw_option", "F"),
+                "legend_option": component.get("legend_option", "F" if fill else "L"),
+                "normalization": component.get("normalization", normalization),
+                "draw_after_model": bool(component.get("draw_after_model", False)),
+            }
+
+        c, component_label = component
+        if not isinstance(component_label, str):
+            component_label = c.getTitle().Data()
+        return {
+            "selector": c.GetName(),
+            "plot_name": c.GetName(),
+            "label": component_label,
+            "line_color": default_color,
+            "fill_color": color_cycle[index % len(color_cycle)],
+            "fill_style": default_fill,
+            "line_style": 1,
+            "line_width": lw,
+            "fill": True,
+            "line": True,
+            "draw_option": "F",
+            "legend_option": "F",
+            "normalization": normalization,
+            "draw_after_model": False,
+        }
+
+    def _plot_component(target_frame, component_spec):
+        selector_args = [
+            ROOT.RooFit.Components(component_spec["selector"]),
+            *_normalization_args(component_spec["normalization"]),
+        ]
+        if data_range is not None:
+            selector_args.append(ROOT.RooFit.NormRange(data_range))
+        if projection_range is not None:
+            selector_args.append(ROOT.RooFit.ProjectionRange(str(projection_range)))
+
+        legend_object_name = component_spec["plot_name"]
+        if component_spec["fill"]:
+            model.plotOn(
+                target_frame,
+                *selector_args,
+                ROOT.RooFit.LineColor(component_spec["line_color"]),
+                ROOT.RooFit.LineWidth(component_spec.get("fill_line_width", 0)),
+                ROOT.RooFit.FillColor(component_spec["fill_color"]),
+                ROOT.RooFit.FillStyle(component_spec["fill_style"]),
+                ROOT.RooFit.Name(component_spec["plot_name"]),
+                ROOT.RooFit.DrawOption(component_spec["draw_option"]),
+            )
+        if component_spec["line"]:
+            line_name = (
+                f"{component_spec['plot_name']}_line"
+                if component_spec["fill"]
+                else component_spec["plot_name"]
+            )
+            model.plotOn(
+                target_frame,
+                *selector_args,
+                ROOT.RooFit.LineColor(component_spec["line_color"]),
+                ROOT.RooFit.LineStyle(component_spec["line_style"]),
+                ROOT.RooFit.LineWidth(component_spec["line_width"]),
+                ROOT.RooFit.Name(line_name),
+            )
+            if not component_spec["fill"]:
+                legend_object_name = line_name
+
+        return legend_object_name
+
+    def _make_blind_boxes(y_low, y_high):
+        if blind_regions is None:
+            return []
+        boxes = []
+        for low, high in blind_regions:
+            box = ROOT.TBox(float(low), float(y_low), float(high), float(y_high))
+            box.SetFillColorAlpha(blind_region_color, blind_region_alpha)
+            box.SetLineColor(blind_region_color)
+            boxes.append(box)
+        return boxes
+
+    def _draw_blind_boxes(boxes):
+        for box in boxes:
+            box.Draw("same")
+
+    def _redraw_named_object(target_frame, name, draw_option):
+        obj = target_frame.findObject(name)
+        if obj is not None:
+            obj.Draw(draw_option)
+
+    def _draw_components(target_frame, component_specs):
+        for component_spec in component_specs:
+            legend_object_name = _plot_component(target_frame, component_spec)
+            legend_object = target_frame.findObject(legend_object_name)
+            if legend_object is not None:
+                leg.AddEntry(
+                    legend_object,
+                    component_spec["label"],
+                    component_spec["legend_option"],
+                )
 
     def _count_float_pars():
         if chi2_nfloatpars is not None:
@@ -327,6 +527,7 @@ def fastplot(
         leg = ROOT.TLegend(*legend)
     else:
         leg = ROOT.TLegend(0.7, 0.78, 0.93, 0.92)
+    leg.SetNColumns(max(1, int(legend_columns)))
 
     _plot_data(frame, "Data")
 
@@ -336,76 +537,38 @@ def fastplot(
 
     leg.AddEntry(frame.findObject("Data"), data_legend_name, "LEP")
 
-    _plot_model(frame, "Model")
+    if show_model_curve:
+        _plot_model(frame, "Model")
 
-    model_legend_label = model_legend_name
-    chi2_ndf = _compute_chi2_ndf(frame, "Model", "Data")
-    chi2_ndf_label = (
-        _format_chi2_ndf(chi2_ndf) if chi2_ndf is not None else None
-    )
-    if chi2_ndf_label is not None:
-        model_legend_label = f"{model_legend_name} (#chi^{{2}}/ndf = {chi2_ndf_label})"
+        model_legend_label = model_legend_name
+        chi2_ndf = _compute_chi2_ndf(frame, "Model", "Data")
+        chi2_ndf_label = (
+            _format_chi2_ndf(chi2_ndf) if chi2_ndf is not None else None
+        )
+        if chi2_ndf_label is not None:
+            model_legend_label = f"{model_legend_name} (#chi^{{2}}/ndf = {chi2_ndf_label})"
 
-    leg.AddEntry(frame.findObject("Model"), model_legend_label, "L")
+        model_legend_object = frame.findObject("Model")
+        if model_legend_object is not None:
+            leg.AddEntry(model_legend_object, model_legend_label, "L")
 
+    component_specs = []
     if components is not None:
-        n_col = 1
-        for c, component_label in components:
-            if data_range != None:  # here it should be !=
-                model.plotOn(
-                    frame,
-                    ROOT.RooFit.Components(c.GetName()),
-                    ROOT.RooFit.LineColor(color_cycle[n_col] + line_shade),
-                    # ROOT.RooFit.Normalization(ni, 2),
-                    ROOT.RooFit.FillColor(color_cycle[n_col]),
-                    ROOT.RooFit.FillStyle(fill_cycle[n_col]),
-                    ROOT.RooFit.Name(c.GetName()),
-                    ROOT.RooFit.DrawOption("F"),
-                    ROOT.RooFit.NormRange(data_range),
-                    #                     ROOT.RooFit.Range("full"), ROOT.RooFit.NormRange(data_range), ROOT.RooFit.ProjectionRange("full")
-                )
-            else:
-                model.plotOn(
-                    frame,
-                    ROOT.RooFit.Components(c.GetName()),
-                    ROOT.RooFit.LineColor(color_cycle[n_col] + line_shade),
-                    # ROOT.RooFit.Normalization(ni, 2),
-                    ROOT.RooFit.FillColor(color_cycle[n_col]),
-                    ROOT.RooFit.FillStyle(fill_cycle[n_col]),
-                    ROOT.RooFit.Name(c.GetName()),
-                    ROOT.RooFit.DrawOption("F"),
-                )
+        for n_col, component in enumerate(components, start=1):
+            component_specs.append(_as_component_spec(component, n_col))
 
-            if not isinstance(component_label, str):
-                component_label = c.getTitle().Data()
+    _draw_components(
+        frame,
+        [component_spec for component_spec in component_specs if not component_spec["draw_after_model"]],
+    )
 
-            leg.AddEntry(frame.findObject(c.GetName()), component_label)
+    if show_model_curve:
+        _plot_model(frame, "Model")
 
-            if data_range != None:  # here it should be !=
-                model.plotOn(
-                    frame,
-                    ROOT.RooFit.Components(c.GetName()),
-                    ROOT.RooFit.LineColor(color_cycle[n_col] + line_shade),
-                    #  ROOT.RooFit.Normalization(ni, 2),
-                    ROOT.RooFit.FillColor(color_cycle[n_col]),
-                    ROOT.RooFit.LineWidth(lw),
-                    ROOT.RooFit.NormRange(data_range),
-                    #                       ROOT.RooFit.Range("full"), ROOT.RooFit.NormRange(data_range), ROOT.RooFit.ProjectionRange("full"),
-                    # ROOT.RooFit.DrawOption("F"),
-                )  # ROOT.RooFit.DrawOption("F")) #4050
-            else:
-                model.plotOn(
-                    frame,
-                    ROOT.RooFit.Components(c.GetName()),
-                    ROOT.RooFit.LineColor(color_cycle[n_col] + line_shade),
-                    #  ROOT.RooFit.Normalization(ni, 2),
-                    ROOT.RooFit.FillColor(color_cycle[n_col]),
-                    ROOT.RooFit.LineWidth(lw),
-                    # ROOT.RooFit.DrawOption("BC"),
-                )  # ROOT.RooFit.DrawOption("F")) #4050
-            n_col += 1
-
-    _plot_model(frame, "Model")
+    _draw_components(
+        frame,
+        [component_spec for component_spec in component_specs if component_spec["draw_after_model"]],
+    )
 
     _plot_data(frame, "Data")
 
@@ -421,8 +584,10 @@ def fastplot(
 
         residual_hist = _build_residual_hist(residual_source)
         for i in range(residual_hist.GetN()):
-            residual_hist.SetPointEXlow(i, bin_half_width)
-            residual_hist.SetPointEXhigh(i, bin_half_width)
+            x_value = float(residual_hist.GetX()[i])
+            error_low, error_high = _residual_x_errors(x_value)
+            residual_hist.SetPointEXlow(i, error_low)
+            residual_hist.SetPointEXhigh(i, error_high)
 
         residual_frame = _build_frame("")
         residual_frame.addPlotable(residual_hist, "PE1")
@@ -517,16 +682,32 @@ def fastplot(
         yaxis.SetRangeUser(y_min, y_max)
     else:
         frame.SetMinimum(y_min)
-        headroom_factor = 1.35 if legend is not False else 1.20
+        if y_headroom_factor is not None:
+            headroom_factor = float(y_headroom_factor)
+        else:
+            headroom_factor = 1.35 if legend is not False else 1.20
         frame.SetMaximum(headroom_factor * frame.GetMaximum())
     frame.Draw()
+    main_y_max = y_max if y_max != -999 else frame.GetMaximum()
+    main_blind_boxes = _make_blind_boxes(y_min, main_y_max)
+    _draw_blind_boxes(main_blind_boxes)
+    _redraw_named_object(frame, "Data", "PE same")
     if legend is not False:
         leg.Draw("same")
 
     if show_residuals:
         bottom_pad.cd()
         residual_frame.Draw()
+        residual_blind_boxes = _make_blind_boxes(
+            residual_frame.GetMinimum(), residual_frame.GetMaximum()
+        )
+        _draw_blind_boxes(residual_blind_boxes)
         zero_line.Draw("same")
+        residual_hist.Draw("PE1 same")
+    else:
+        residual_blind_boxes = []
+
+    canvas._blind_boxes = main_blind_boxes + residual_blind_boxes
 
     if extra_text is not None:
         main_pad.cd()
@@ -573,3 +754,6 @@ def fastplot(
             box.Draw("same")
 
     canvas.SaveAs(filename)
+    if extra_filenames is not None:
+        for extra_filename in extra_filenames:
+            canvas.SaveAs(str(extra_filename))

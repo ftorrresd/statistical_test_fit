@@ -22,6 +22,7 @@ from statistical_test_fit.root_runtime import configure_root
 ROOT = configure_root()
 
 from ROOT import (  # type: ignore
+    RooAddPdf,  # type: ignore
     RooArgList,  # type: ignore
     RooArgSet,  # type: ignore
     RooCategory,  # type: ignore
@@ -45,6 +46,7 @@ from statistical_test_fit.mass_ranges import (
     UPSILON_MASS_UPPER,
 )
 from statistical_test_fit.display_names import pdf_state_display
+from statistical_test_fit.fastplot import fastplot
 from statistical_test_fit.signal_modeling import SIGNAL_SAMPLES
 from statistical_test_fit.ws_helper import freeze_pdf_params
 
@@ -54,8 +56,11 @@ DEFAULT_WORKSPACE_NAME = "combined_workspace"
 DEFAULT_WORKSPACE_FILENAME = "workspace.root"
 DEFAULT_DATACARD_FILENAME = "datacard.txt"
 DEFAULT_SUMMARY_JSON_FILENAME = "bundle_summary.json"
+MUMUGAMMA_PROJECTION_NBINS = 72
+MUMU_PROJECTION_NBINS = 80
 ANALYSIS_BIN_NAME = "cat1"
 NON_RESONANT_PROCESS_NAME = "non_resonant_bkg"
+NON_RESONANT_PROJECTION_PDF_NAME = f"{NON_RESONANT_PROCESS_NAME}_johnson_nominal_pdf"
 RESONANT_H_PROCESS_NAME = "resonant_H_bkg"
 RESONANT_Z_PROCESS_NAME = "resonant_Z_bkg"
 NON_RESONANT_WORKSPACE_PATH = REPO_ROOT / "non_resonant_background_workspace.root"
@@ -267,6 +272,17 @@ def html_section(title: str, body: str, intro: str | None = None) -> str:
 </section>"""
 
 
+def html_plot_card(title: str, png_file_name: str, pdf_file_name: str, caption: str) -> str:
+    safe_png_file_name = html_escape(png_file_name)
+    safe_pdf_file_name = html_escape(pdf_file_name)
+    return f"""<div class="subcard">
+<h3>{html_escape(title)}</h3>
+<a href="{safe_pdf_file_name}"><img class="plot-object" src="{safe_png_file_name}" alt="{html_escape(title)}"></a>
+<p><a class="plot-link" href="{safe_pdf_file_name}">Open PDF</a></p>
+<p class="section-intro">{html_escape(caption)}</p>
+</div>"""
+
+
 def html_page(title: str, subtitle: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -337,10 +353,14 @@ code {{ font-family: var(--mono); font-size: 0.88em; }}
 pre {{ margin: 0; max-height: 540px; overflow: auto; border-radius: 16px; border: 1px solid #314563; background: #050b15; color: #dbeafe; padding: 18px; line-height: 1.55; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06); }}
 .split-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }}
 .subcard {{ border: 1px solid var(--line); border-radius: 18px; background: var(--card); padding: 18px; }}
+.plot-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; }}
+.plot-object {{ display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 14px; background: #050b15; }}
+.plot-link {{ color: var(--accent); font-weight: 700; }}
 .footer {{ color: var(--muted); font-size: 0.84rem; margin-top: 28px; text-align: center; }}
 @media (max-width: 720px) {{
   .page {{ width: min(100% - 28px, 1480px); padding-top: 18px; }}
   .hero, .section-card {{ border-radius: 20px; padding: 20px; }}
+  .plot-grid {{ grid-template-columns: 1fr; }}
   table {{ min-width: 680px; }}
 }}
 </style>
@@ -527,11 +547,28 @@ def signal_mass_state_key(signal_spec: SignalProcessSpec) -> str:
     return signal_spec.state.lower()
 
 
-def signal_mass_shape_nuisance_name(source_name: str) -> str:
+def signal_mass_shape_nuisance_name(
+    source_name: str,
+    signal_spec: SignalProcessSpec,
+) -> str:
     for configured_source, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
         if source_name == configured_source:
-            return nuisance_name
+            return f"{nuisance_name}_{signal_spec.combine_name}"
     raise RuntimeError(f"Unsupported signal mass systematic source {source_name!r}")
+
+
+def signal_mass_shape_nuisance_rows(
+    signal_specs: list[SignalProcessSpec],
+) -> list[tuple[str, str, str]]:
+    return [
+        (
+            signal_spec.combine_name,
+            source_name,
+            signal_mass_shape_nuisance_name(source_name, signal_spec),
+        )
+        for signal_spec in signal_specs
+        for source_name, _ in SIGNAL_MASS_SYSTEMATICS
+    ]
 
 
 def validate_signal_mass_systematics(
@@ -564,8 +601,12 @@ def validate_signal_mass_systematics(
                     )
 
 
-def ensure_signal_mass_nuisance_vars(workspace: RooWorkspace) -> None:
-    for _, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
+def ensure_signal_mass_nuisance_vars(
+    workspace: RooWorkspace,
+    signal_spec: SignalProcessSpec,
+) -> None:
+    for source_name, _ in SIGNAL_MASS_SYSTEMATICS:
+        nuisance_name = signal_mass_shape_nuisance_name(source_name, signal_spec)
         nuisance = workspace.var(nuisance_name)
         if not nuisance:
             workspace.factory(f"{nuisance_name}[0,-5,5]")
@@ -582,7 +623,8 @@ def make_relative_signal_mass_terms(
 ) -> list[tuple[str, str, float]]:
     state_info = mass_summary[signal_spec.process][signal_mass_state_key(signal_spec)]
     terms = []
-    for source_name, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
+    for source_name, _ in SIGNAL_MASS_SYSTEMATICS:
+        nuisance_name = signal_mass_shape_nuisance_name(source_name, signal_spec)
         percent = float(state_info[source_name][field_name])
         terms.append((source_name, nuisance_name, percent / 100.0))
     return terms
@@ -620,7 +662,7 @@ def apply_signal_mass_shape_systematics(
     raw_pdf_name: str,
     mass_summary: dict[str, Any],
 ) -> dict[str, Any]:
-    ensure_signal_mass_nuisance_vars(workspace)
+    ensure_signal_mass_nuisance_vars(workspace, signal_spec)
     process_name = signal_spec.combine_name
     role_suffix = f"___{process_name}__signal"
     mean_var_name = f"mean_boson{role_suffix}"
@@ -1006,6 +1048,316 @@ def combined_process_ids(signal_specs: list[SignalProcessSpec]) -> list[int]:
     return signal_ids + [1, 2, 3]
 
 
+def projection_pdf_name(process_name: str) -> str:
+    if process_name == NON_RESONANT_PROCESS_NAME:
+        return NON_RESONANT_PROJECTION_PDF_NAME
+    return process_name
+
+
+def edge_aligned_bin_edges(
+    boundaries: list[float],
+    nbins: int,
+) -> list[float]:
+    if len(boundaries) < 2:
+        raise ValueError("At least two binning boundaries are required")
+    if nbins < len(boundaries) - 1:
+        raise ValueError("Number of bins must be at least the number of intervals")
+    for low, high in zip(boundaries[:-1], boundaries[1:]):
+        if low >= high:
+            raise ValueError("Binning boundaries must be strictly increasing")
+
+    widths = [high - low for low, high in zip(boundaries[:-1], boundaries[1:])]
+    total_width = sum(widths)
+    ideal_bins = [nbins * width / total_width for width in widths]
+    bins_per_interval = [max(1, int(value)) for value in ideal_bins]
+
+    while sum(bins_per_interval) > nbins:
+        candidates = [idx for idx, bins in enumerate(bins_per_interval) if bins > 1]
+        idx = min(candidates, key=lambda item: ideal_bins[item] - bins_per_interval[item])
+        bins_per_interval[idx] -= 1
+
+    deficit = nbins - sum(bins_per_interval)
+    remainder_order = sorted(
+        range(len(bins_per_interval)),
+        key=lambda idx: ideal_bins[idx] - int(ideal_bins[idx]),
+        reverse=True,
+    )
+    for idx in remainder_order[:deficit]:
+        bins_per_interval[idx] += 1
+
+    edges = [boundaries[0]]
+    for low, high, interval_bins in zip(
+        boundaries[:-1], boundaries[1:], bins_per_interval
+    ):
+        step = (high - low) / float(interval_bins)
+        for bin_idx in range(1, interval_bins + 1):
+            edges.append(high if bin_idx == interval_bins else low + step * bin_idx)
+
+    return edges
+
+
+def build_bundled_projection_model(
+    workspace: RooWorkspace,
+    signal_specs: list[SignalProcessSpec],
+) -> tuple[Any, float, list[dict[str, Any]]]:
+    pdfs = RooArgList()
+    norms = RooArgList()
+    norm_rows: list[dict[str, Any]] = []
+    total_norm = 0.0
+
+    for process_name in combined_process_names(signal_specs):
+        pdf_name = projection_pdf_name(process_name)
+        pdf = workspace.pdf(pdf_name)
+        if pdf is None:
+            raise RuntimeError(f"Cannot build projection model: missing PDF {pdf_name!r}")
+        norm_name = f"{process_name}_norm"
+        norm = workspace.var(norm_name)
+        if norm is None:
+            raise RuntimeError(f"Cannot build projection model: missing norm {norm_name!r}")
+        norm_value = float(norm.getVal())
+        pdfs.add(pdf)
+        norms.add(norm)
+        total_norm += norm_value
+        norm_rows.append(
+            {
+                "process": process_name,
+                "pdf": pdf.GetName(),
+                "norm": norm_name,
+                "norm_value": norm_value,
+                "norm_status": "fixed" if norm.isConstant() else "floating",
+            }
+        )
+
+    model = RooAddPdf(
+        "bundled_projection_model",
+        "Bundled projection model",
+        pdfs,
+        norms,
+    )
+    model._keepalive = {"pdfs": pdfs, "norms": norms}
+    return model, total_norm, norm_rows
+
+
+def bundled_projection_components(
+    signal_specs: list[SignalProcessSpec],
+    total_norm: float,
+) -> list[dict[str, Any]]:
+    h_signals = [spec.combine_name for spec in signal_specs if spec.process == "H"]
+    z_signals = [spec.combine_name for spec in signal_specs if spec.process == "Z"]
+    components: list[dict[str, Any]] = [
+        {
+            "selector": f"{NON_RESONANT_PROJECTION_PDF_NAME},{RESONANT_H_PROCESS_NAME},{RESONANT_Z_PROCESS_NAME}",
+            "name": "stack_nonres_resH_resZ",
+            "label": "Z #rightarrow #mu#mu#gamma",
+            "fill_color": ROOT.kAzure + 5,
+            "line_color": ROOT.kAzure + 2,
+            "fill_style": 1001,
+            "fill_line_width": 2,
+            "legend_option": "LF",
+            "line_style": 1,
+            "line_width": 2,
+            "line": True,
+        },
+        {
+            "selector": f"{NON_RESONANT_PROJECTION_PDF_NAME},{RESONANT_H_PROCESS_NAME}",
+            "name": "stack_nonres_resH",
+            "label": "H #rightarrow #mu#mu#gamma",
+            "fill_color": ROOT.kGreen - 2,
+            "line_color": ROOT.kGreen + 2,
+            "fill_style": 1001,
+            "fill_line_width": 2,
+            "legend_option": "LF",
+            "line_style": 1,
+            "line_width": 2,
+            "line": True,
+        },
+        {
+            "selector": NON_RESONANT_PROJECTION_PDF_NAME,
+            "name": "stack_nonres",
+            "label": "Non-resonant (Johnson)",
+            "fill_color": ROOT.kOrange - 2,
+            "line_color": ROOT.kOrange + 7,
+            "fill_style": 1001,
+            "fill_line_width": 2,
+            "legend_option": "LF",
+            "line_style": 1,
+            "line_width": 2,
+            "line": True,
+        },
+        {
+            "selector": f"{NON_RESONANT_PROJECTION_PDF_NAME},{RESONANT_H_PROCESS_NAME},{RESONANT_Z_PROCESS_NAME}",
+            "name": "line_total_background",
+            "label": "Total BKG",
+            "line_color": ROOT.kBlack,
+            "line_style": 1,
+            "line_width": 3,
+            "fill": False,
+            "line": True,
+        },
+    ]
+
+    if h_signals:
+        components.append(
+            {
+                "selector": ",".join(h_signals),
+                "name": "line_H_signal",
+                "label": "H #rightarrow #Upsilon + #gamma (#times 10^{5})",
+                "line_color": ROOT.kRed + 1,
+                "line_style": 2,
+                "line_width": 3,
+                "fill": False,
+                "line": True,
+                "normalization": total_norm * 100000.0,
+                "draw_after_model": True,
+            }
+        )
+    if z_signals:
+        components.append(
+            {
+                "selector": ",".join(z_signals),
+                "name": "line_Z_signal",
+                "label": "Z #rightarrow #Upsilon + #gamma (#times 30)",
+                "line_color": ROOT.kBlue + 1,
+                "line_style": 2,
+                "line_width": 3,
+                "fill": False,
+                "line": True,
+                "normalization": total_norm * 30.0,
+                "draw_after_model": True,
+            }
+        )
+
+    return components
+
+
+def write_bundled_projection_plots(
+    workspace: RooWorkspace,
+    output_dir: Path,
+    signal_specs: list[SignalProcessSpec],
+) -> tuple[list[Path], dict[str, Any]]:
+    data = workspace.data("data_obs")
+    if data is None:
+        raise RuntimeError("Cannot draw bundled projections: missing data_obs")
+    upsilon_mass = workspace.var("upsilon_mass")
+    boson_mass = workspace.var("boson_mass")
+    if upsilon_mass is None or boson_mass is None:
+        raise RuntimeError("Cannot draw bundled projections: missing shared observables")
+
+    projection_model, projection_total_norm, projection_norm_rows = build_bundled_projection_model(
+        workspace,
+        signal_specs,
+    )
+    blind_regions = [
+        (LEFT_SIDEBAND_UPPER, MIDDLE_SIDEBAND_LOWER),
+        (MIDDLE_SIDEBAND_UPPER, RIGHT_SIDEBAND_LOWER),
+    ]
+    data_blind_cut = (
+        f"((boson_mass<{LEFT_SIDEBAND_UPPER}) || "
+        f"(boson_mass>{RIGHT_SIDEBAND_LOWER}) || "
+        f"((boson_mass>{MIDDLE_SIDEBAND_LOWER}) && "
+        f"(boson_mass<{MIDDLE_SIDEBAND_UPPER})))"
+    )
+    blinded_data = data.reduce(RooFit.Cut(data_blind_cut))
+    if blinded_data is None:
+        raise RuntimeError("Could not build blinded data projection dataset")
+    mumugamma_bin_edges = edge_aligned_bin_edges(
+        [
+            BOSON_MASS_LOWER,
+            LEFT_SIDEBAND_UPPER,
+            MIDDLE_SIDEBAND_LOWER,
+            MIDDLE_SIDEBAND_UPPER,
+            RIGHT_SIDEBAND_LOWER,
+            BOSON_MASS_UPPER,
+        ],
+        MUMUGAMMA_PROJECTION_NBINS,
+    )
+    mumu_bin_edges = edge_aligned_bin_edges(
+        [UPSILON_MASS_LOWER, UPSILON_MASS_UPPER],
+        MUMU_PROJECTION_NBINS,
+    )
+    plot_specs = [
+        {
+            "key": "mumugamma",
+            "model": projection_model,
+            "total_norm": projection_total_norm,
+            "norm_rows": projection_norm_rows,
+            "components": bundled_projection_components(signal_specs, projection_total_norm),
+            "projection_range": None,
+            "observable": boson_mass,
+            "pdf_file_name": "bundle_model_projection_mumugamma.pdf",
+            "png_file_name": "bundle_model_projection_mumugamma.png",
+            "bin_edges": mumugamma_bin_edges,
+            "legend": [0.26, 0.52, 0.92, 0.92],
+            "blind_regions": blind_regions,
+            "caption": "Projection on m_{#mu#mu#gamma}; data points are hidden in the blinded Z and H boson-mass regions.",
+        },
+        {
+            "key": "mumu",
+            "model": projection_model,
+            "total_norm": projection_total_norm,
+            "norm_rows": projection_norm_rows,
+            "components": bundled_projection_components(signal_specs, projection_total_norm),
+            "projection_range": None,
+            "observable": upsilon_mass,
+            "pdf_file_name": "bundle_model_projection_mumu.pdf",
+            "png_file_name": "bundle_model_projection_mumu.png",
+            "bin_edges": mumu_bin_edges,
+            "legend": [0.26, 0.52, 0.92, 0.92],
+            "blind_regions": None,
+            "caption": "Projection on m_{#mu#mu}; data points from the blinded Z and H boson-mass regions are excluded.",
+        },
+    ]
+
+    produced_paths: list[Path] = []
+    plot_report: dict[str, Any] = {
+        "model": projection_model.GetName(),
+        "normalization_source": "workspace *_norm factors",
+        "total_norm": projection_total_norm,
+        "norms": projection_norm_rows,
+        "plots": {},
+    }
+    for spec in plot_specs:
+        pdf_path = output_dir / str(spec["pdf_file_name"])
+        png_path = output_dir / str(spec["png_file_name"])
+        fastplot(
+            spec["model"],
+            blinded_data,
+            spec["observable"],
+            str(pdf_path),
+            extra_filenames=[str(png_path)],
+            components=spec["components"],
+            nbins=60,
+            plot_bin_edges=spec["bin_edges"],
+            legend=spec["legend"],
+            legend_columns=2,
+            normalization=spec["total_norm"],
+            projection_range=spec["projection_range"],
+            blind_regions=spec["blind_regions"],
+            show_model_curve=False,
+            y_headroom_factor=2.8,
+            show_chi2_ndf=False,
+            residual_y_range=(-1.0, 1.0),
+        )
+        produced_paths.extend([pdf_path, png_path])
+        plot_report["plots"][spec["key"]] = {
+            "path": relative_to_repo(pdf_path),
+            "pdf_path": relative_to_repo(pdf_path),
+            "png_path": relative_to_repo(png_path),
+            "pdf_file_name": pdf_path.name,
+            "png_file_name": png_path.name,
+            "observable": spec["observable"].GetName(),
+            "caption": spec["caption"],
+            "blind_regions": spec["blind_regions"],
+            "data_blind_cut": data_blind_cut,
+            "bin_edges": spec["bin_edges"],
+            "model_norm": spec["total_norm"],
+            "data_sum_entries": float(blinded_data.sumEntries()),
+            "projection_range": spec["projection_range"],
+        }
+
+    return produced_paths, plot_report
+
+
 def build_hardcoded_systematics_rows(
     signal_specs: list[SignalProcessSpec],
 ) -> list[tuple[str, str, list[str]]]:
@@ -1212,7 +1564,7 @@ def build_systematics_rows(
     yield_rows, yield_report = build_yield_systematics_rows(signal_specs, yield_summary)
     mass_param_rows = [
         (nuisance_name, "param", ["0", "1"])
-        for _, nuisance_name in SIGNAL_MASS_SYSTEMATICS
+        for _, _, nuisance_name in signal_mass_shape_nuisance_rows(signal_specs)
     ]
     return hardcoded_rows + yield_rows + mass_param_rows, yield_report
 
@@ -1667,6 +2019,7 @@ def write_summary_report(
     nonres_selection: dict[str, Any],
     yield_systematics_report: dict[str, Any],
     validation_result: dict[str, Any] | None,
+    projection_plot_report: dict[str, Any],
     produced_files: list[Path],
 ) -> None:
     workspace_file_name = workspace_path.name
@@ -1717,7 +2070,8 @@ def write_summary_report(
         mass_report = report["mass_systematics"]
         mean_terms = {item["source"]: item for item in mass_report["mean_terms"]}
         sigma_terms = {item["source"]: item for item in mass_report["sigma_terms"]}
-        for source_name, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
+        for source_name, _ in SIGNAL_MASS_SYSTEMATICS:
+            nuisance_name = mean_terms[source_name]["nuisance"]
             signal_mass_systematics_rows.append(
                 [
                     report["process"],
@@ -1784,6 +2138,46 @@ def write_summary_report(
         if validation_result
         else [["skipped", "-"]]
     )
+    projection_norm_rows = [
+        [
+            row["process"],
+            row["pdf"],
+            row["norm"],
+            f"{row['norm_value']:.8g}",
+            row["norm_status"],
+        ]
+        for row in projection_plot_report.get("norms", [])
+    ]
+    projection_plot_cards = []
+    for key, title in (
+        ("mumugamma", "m_{#mu#mu#gamma} Projection"),
+        ("mumu", "m_{#mu#mu} Projection"),
+    ):
+        plot_info = projection_plot_report.get("plots", {}).get(key)
+        if not plot_info:
+            continue
+        projection_plot_cards.append(
+            html_plot_card(
+                title,
+                plot_info["png_file_name"],
+                plot_info["pdf_file_name"],
+                plot_info["caption"],
+            )
+        )
+    projection_plots_html = (
+        html_metric_grid(
+            [
+                ("Projection model", projection_plot_report.get("model", "-")),
+                ("Total *_norm", f"{projection_plot_report.get('total_norm', 0.0):.8g}"),
+                ("Plot normalizations", projection_plot_report.get("normalization_source", "-")),
+            ]
+        )
+        + '<div class="plot-grid">'
+        + "\n".join(projection_plot_cards)
+        + "\n</div>"
+        + "<h3>Norm factors used</h3>"
+        + html_table(["Process", "PDF", "Norm", "Norm value", "Status"], projection_norm_rows)
+    )
 
     summary_json_payload = {
         "schema_version": 1,
@@ -1814,14 +2208,21 @@ def write_summary_report(
         "signal_mass_systematics": {
             "source": relative_to_repo(MASS_SYSTEMATICS_PATH),
             "nuisance_parameters": [
-                {"source": source_name, "nuisance": nuisance_name}
-                for source_name, nuisance_name in SIGNAL_MASS_SYSTEMATICS
+                {
+                    "process": process_name,
+                    "source": source_name,
+                    "nuisance": nuisance_name,
+                }
+                for process_name, source_name, nuisance_name in signal_mass_shape_nuisance_rows(
+                    signal_specs
+                )
             ],
             "signals": {
                 report["process"]: report["mass_systematics"]
                 for report in signal_reports
             },
         },
+        "projection_plots": projection_plot_report,
         "validation": (
             {
                 **validation_result,
@@ -1927,6 +2328,11 @@ def write_summary_report(
                 ["Process", "PDF from datacard", "Norm", "Norm value", "Status", "Source workspace"],
                 background_rows,
             ),
+        ),
+        html_section(
+            "Model Projections",
+            projection_plots_html,
+            "Fastplot projections of a temporary RooAddPdf assembled from the bundled workspace PDFs and their *_norm factors.",
         ),
         html_section(
             "Non-Resonant Candidate Selection",
@@ -2177,8 +2583,13 @@ def main() -> int:
             f"from {variation_mapping['variation']} in {relative_to_repo(YIELD_SYSTEMATICS_PATH)}",
         )
     log("Configured signal mass shape nuisance parameters")
-    for source_name, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
-        log_kv(nuisance_name, f"from {source_name} in {relative_to_repo(MASS_SYSTEMATICS_PATH)}")
+    for process_name, source_name, nuisance_name in signal_mass_shape_nuisance_rows(
+        signal_specs
+    ):
+        log_kv(
+            nuisance_name,
+            f"{process_name} from {source_name} in {relative_to_repo(MASS_SYSTEMATICS_PATH)}",
+        )
 
     bundled_workspace = RooWorkspace(args.workspace_name)
     ensure_shared_observables(bundled_workspace)
@@ -2230,6 +2641,16 @@ def main() -> int:
     produced_files.append(datacard_path)
     log(f"Wrote simultaneous datacard: {relative_to_repo(datacard_path)}")
 
+    log("Drawing bundled model projections")
+    projection_plot_paths, projection_plot_report = write_bundled_projection_plots(
+        bundled_workspace,
+        output_dir,
+        signal_specs,
+    )
+    produced_files.extend(projection_plot_paths)
+    for plot_path in projection_plot_paths:
+        log_kv("projection plot", relative_to_repo(plot_path))
+
     validation_result: dict[str, Any] | None = None
     if not args.skip_validation:
         log("Running text2workspace.py validation")
@@ -2257,6 +2678,7 @@ def main() -> int:
         nonres_selection=nonres_selection,
         yield_systematics_report=yield_systematics_report,
         validation_result=validation_result,
+        projection_plot_report=projection_plot_report,
         produced_files=produced_files,
     )
     log(f"Wrote summary report: {relative_to_repo(report_path)}")
