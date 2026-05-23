@@ -72,6 +72,9 @@ def fastplot(
     extra_filenames=None,
     components=None,
     nbins=None,
+    data2=None,
+    data2_name="Data (unblinded)",
+    data2_color=ROOT.kRed,
     extra_info=None,
     size=1280,
     average=True,
@@ -233,6 +236,18 @@ def fastplot(
             target_frame,
             ROOT.RooFit.Name(name),
             ROOT.RooFit.Binning(data_binning),
+            ROOT.RooFit.DataError(ROOT.RooAbsData.SumW2),
+        )
+
+    def _plot_data2(target_frame, name):
+        if data2 is None:
+            return
+        data2_binning = plot_binning if plot_binning is not None else plot_nbins
+        data2.plotOn(
+            target_frame,
+            ROOT.RooFit.Name(name),
+            ROOT.RooFit.Binning(data2_binning),
+            ROOT.RooFit.MarkerColor(data2_color),
             ROOT.RooFit.DataError(ROOT.RooAbsData.SumW2),
         )
 
@@ -542,6 +557,12 @@ def fastplot(
 
     leg.AddEntry(frame.findObject("Data"), data_legend_name, "LEP")
 
+    if data2 is not None:
+        _plot_data2(frame, "Data2")
+        data2_obj = frame.findObject("Data2")
+        if data2_obj is not None:
+            leg.AddEntry(data2_obj, data2_name, "LEP")
+
     if show_model_curve:
         _plot_model(frame, "Model")
 
@@ -696,6 +717,7 @@ def fastplot(
     main_y_max = y_max if y_max != -999 else frame.GetMaximum()
     main_blind_boxes = _make_blind_boxes(y_min, main_y_max)
     _draw_blind_boxes(main_blind_boxes)
+    _redraw_named_object(frame, "Data2", "PE same") if data2 is not None else None
     _redraw_named_object(frame, "Data", "PE same")
     if legend is not False:
         leg.Draw("same")
