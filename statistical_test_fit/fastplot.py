@@ -105,6 +105,7 @@ def fastplot(
     model_legend_name="Fit",
     show_model_curve=True,
     y_headroom_factor=None,
+    log_y=False,
     show_residuals=True,
     residual_mode=ResidualMode.RELATIVE_DIFF,
     residual_y_range=None,
@@ -703,6 +704,8 @@ def fastplot(
 
     # Draw All The Stuff
     main_pad.cd()
+    if log_y:
+        main_pad.SetLogy(1)
     if y_max != -999:
         yaxis = frame.GetYaxis()
         yaxis.SetRangeUser(y_min, y_max)
@@ -712,23 +715,27 @@ def fastplot(
             headroom_factor = float(y_headroom_factor)
         else:
             headroom_factor = 1.35 if legend is not False else 1.20
-        frame.SetMaximum(headroom_factor * frame.GetMaximum())
-    frame.Draw()
+        frame_max = frame.GetMaximum()
+        if log_y and frame_max > 0.0:
+            frame.SetMaximum(10.0 ** (math.ceil(math.log10(frame_max)) + max(0.0, y_headroom_factor)))
+        else:
+            frame.SetMaximum(headroom_factor * frame_max)
+    if log_y and y_min <= 0.0:
+        frame.SetMinimum(0.1)
     main_y_max = y_max if y_max != -999 else frame.GetMaximum()
     main_blind_boxes = _make_blind_boxes(y_min, main_y_max)
     _draw_blind_boxes(main_blind_boxes)
-    _redraw_named_object(frame, "Data2", "PE same") if data2 is not None else None
-    _redraw_named_object(frame, "Data", "PE same")
+    frame.Draw()
     if legend is not False:
         leg.Draw("same")
 
     if show_residuals:
         bottom_pad.cd()
-        residual_frame.Draw()
         residual_blind_boxes = _make_blind_boxes(
             residual_frame.GetMinimum(), residual_frame.GetMaximum()
         )
         _draw_blind_boxes(residual_blind_boxes)
+        residual_frame.Draw()
         zero_line.Draw("same")
         residual_hist.Draw("PE1 same")
     else:
