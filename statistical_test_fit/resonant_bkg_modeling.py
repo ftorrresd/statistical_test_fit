@@ -678,7 +678,8 @@ def run_resonant_background(args: Namespace):
         },
         "process_initial_norms": {
             "H": float(stage1_results["higgs_workspace"]["data_sum_entries"]),
-            "Z": float(normalization_extrapolation.y0),
+            "Z": float(normalization_extrapolation.y0)
+            * (UPSILON_MASS_UPPER - UPSILON_MASS_LOWER),
         },
     }
     with open(RESONANT_SUMMARY_PATH, "w") as summary_file:
