@@ -1096,12 +1096,38 @@ def edge_aligned_bin_edges(
     return edges
 
 
+def projection_process_sideband_norm(
+    workspace: RooWorkspace,
+    process_name: str,
+) -> float:
+    pdf_name = projection_pdf_name(process_name)
+    pdf = workspace.pdf(pdf_name)
+    norm_name = f"{process_name}_norm"
+    norm = workspace.var(norm_name)
+    boson_mass = workspace.var("boson_mass")
+    if pdf is None or norm is None or boson_mass is None:
+        raise RuntimeError(
+            f"Cannot compute sideband norm for {process_name!r}: missing PDF, norm, or boson_mass"
+        )
+
+    norm_value = float(norm.getVal())
+    obs_set = RooArgSet(boson_mass)
+
+    sideband_int = pdf.createIntegral(obs_set, RooFit.Range("LEFT,MIDDLE,RIGHT")).getVal()
+    full_int = pdf.createIntegral(obs_set, RooFit.Range("FULL")).getVal()
+    if full_int <= 0.0:
+        raise RuntimeError(f"Full-range integral is non-positive for {pdf_name!r}")
+    return norm_value * float(sideband_int) / float(full_int)
+
+
 def build_bundled_projection_model(
     workspace: RooWorkspace,
     signal_specs: list[SignalProcessSpec],
+    projection_range: str | None = None,
 ) -> tuple[Any, float, list[dict[str, Any]]]:
     pdfs = RooArgList()
     norms = RooArgList()
+    local_norms = []
     norm_rows: list[dict[str, Any]] = []
     total_norm = 0.0
 
@@ -1114,16 +1140,31 @@ def build_bundled_projection_model(
         norm = workspace.var(norm_name)
         if norm is None:
             raise RuntimeError(f"Cannot build projection model: missing norm {norm_name!r}")
-        norm_value = float(norm.getVal())
+        workspace_norm_value = float(norm.getVal())
+
+        if projection_range is None:
+            plot_norm_value = workspace_norm_value
+            plot_norm = norm
+        else:
+            plot_norm_value = projection_process_sideband_norm(workspace, process_name)
+            plot_norm = RooRealVar(
+                f"projection_{process_name}_norm",
+                f"projection_{process_name}_norm",
+                plot_norm_value,
+            )
+            plot_norm.setConstant(True)
+            local_norms.append(plot_norm)
+
         pdfs.add(pdf)
-        norms.add(norm)
-        total_norm += norm_value
+        norms.add(plot_norm)
+        total_norm += plot_norm_value
         norm_rows.append(
             {
                 "process": process_name,
                 "pdf": pdf.GetName(),
                 "norm": norm_name,
-                "norm_value": norm_value,
+                "norm_value": workspace_norm_value,
+                "projection_norm_value": plot_norm_value,
                 "norm_status": "fixed" if norm.isConstant() else "floating",
             }
         )
@@ -1134,7 +1175,7 @@ def build_bundled_projection_model(
         pdfs,
         norms,
     )
-    model._keepalive = {"pdfs": pdfs, "norms": norms}
+    model._keepalive = {"pdfs": pdfs, "norms": norms, "local_norms": local_norms}
     return model, total_norm, norm_rows
 
 
@@ -1237,23 +1278,10 @@ def write_bundled_projection_plots(
     if upsilon_mass is None or boson_mass is None:
         raise RuntimeError("Cannot draw bundled projections: missing shared observables")
 
-    projection_model, projection_total_norm, projection_norm_rows = build_bundled_projection_model(
+    full_model, full_total_norm, full_norm_rows = build_bundled_projection_model(
         workspace,
         signal_specs,
     )
-    blind_regions = [
-        (LEFT_SIDEBAND_UPPER, MIDDLE_SIDEBAND_LOWER),
-        (MIDDLE_SIDEBAND_UPPER, RIGHT_SIDEBAND_LOWER),
-    ]
-    data_blind_cut = (
-        f"((boson_mass<{LEFT_SIDEBAND_UPPER}) || "
-        f"(boson_mass>{RIGHT_SIDEBAND_LOWER}) || "
-        f"((boson_mass>{MIDDLE_SIDEBAND_LOWER}) && "
-        f"(boson_mass<{MIDDLE_SIDEBAND_UPPER})))"
-    )
-    blinded_data = data.reduce(RooFit.Cut(data_blind_cut))
-    if blinded_data is None:
-        raise RuntimeError("Could not build blinded data projection dataset")
     mumugamma_bin_edges = edge_aligned_bin_edges(
         [
             BOSON_MASS_LOWER,
@@ -1269,13 +1297,27 @@ def write_bundled_projection_plots(
         [UPSILON_MASS_LOWER, UPSILON_MASS_UPPER],
         MUMU_PROJECTION_NBINS,
     )
+    blind_regions = [
+        (LEFT_SIDEBAND_UPPER, MIDDLE_SIDEBAND_LOWER),
+        (MIDDLE_SIDEBAND_UPPER, RIGHT_SIDEBAND_LOWER),
+    ]
+    data_blind_cut = (
+        f"((boson_mass<{LEFT_SIDEBAND_UPPER}) || "
+        f"(boson_mass>{RIGHT_SIDEBAND_LOWER}) || "
+        f"((boson_mass>{MIDDLE_SIDEBAND_LOWER}) && "
+        f"(boson_mass<{MIDDLE_SIDEBAND_UPPER})))"
+    )
+    blinded_data = data.reduce(RooFit.Cut(data_blind_cut))
+    if blinded_data is None:
+        raise RuntimeError("Could not build blinded data projection dataset")
+    data_norm = float(blinded_data.sumEntries())
     plot_specs = [
         {
             "key": "mumugamma",
-            "model": projection_model,
-            "total_norm": projection_total_norm,
-            "norm_rows": projection_norm_rows,
-            "components": bundled_projection_components(signal_specs, projection_total_norm),
+            "model": full_model,
+            "total_norm": full_total_norm,
+            "norm_rows": full_norm_rows,
+            "components": bundled_projection_components(signal_specs, full_total_norm),
             "projection_range": None,
             "observable": boson_mass,
             "pdf_file_name": "bundle_model_projection_mumugamma.pdf",
@@ -1287,10 +1329,10 @@ def write_bundled_projection_plots(
         },
         {
             "key": "mumu",
-            "model": projection_model,
-            "total_norm": projection_total_norm,
-            "norm_rows": projection_norm_rows,
-            "components": bundled_projection_components(signal_specs, projection_total_norm),
+            "model": full_model,
+            "total_norm": data_norm,
+            "norm_rows": full_norm_rows,
+            "components": bundled_projection_components(signal_specs, data_norm),
             "projection_range": None,
             "observable": upsilon_mass,
             "pdf_file_name": "bundle_model_projection_mumu.pdf",
@@ -1304,10 +1346,11 @@ def write_bundled_projection_plots(
 
     produced_paths: list[Path] = []
     plot_report: dict[str, Any] = {
-        "model": projection_model.GetName(),
-        "normalization_source": "workspace *_norm factors",
-        "total_norm": projection_total_norm,
-        "norms": projection_norm_rows,
+        "model": full_model.GetName(),
+        "normalization_source": "workspace *_norm factors for m_{#mu#mu#gamma}; data.sumEntries() for m_{#mu#mu}",
+        "total_norm": full_total_norm,
+        "data_norm": data_norm,
+        "norms": full_norm_rows,
         "plots": {},
     }
     for spec in plot_specs:
