@@ -849,13 +849,16 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
             (w.pdf("signal_model_boson_gauss"), "Gaussian Component"),
         ],
         nbins=job.nbins,
-        legend=[0.2, 0.6, 0.5, 0.92]
+        legend=[0.22, 0.55, 0.52, 0.90]
         if sample.process == "H"
-        else [0.6, 0.6, 0.93, 0.92],
+        else [0.22, 0.55, 0.52, 0.90],
         is_data=False,
         model_legend_name="Double-sided CB + Gaussian",
         plot_range=get_signal_boson_plot_range(sample.process),
         residual_y_range=(-2.0, 2.0),
+        y_headroom_factor=1.8,
+        cms_extra_text="Private work (CMS simulation)",
+        cms_label_outside=False,
     )
 
     upsilon_plot = f"{job.plot_dir}/signal_fit_upsilon_{sample.inner_file_name}.pdf"
@@ -869,11 +872,14 @@ def _fit_signal_sample(job: SignalFitJob) -> dict[str, str]:
             (w.pdf("signal_model_upsilon_gauss"), "Gaussian Component"),
         ],
         nbins=job.nbins,
-        legend=[0.65, 0.7, 0.9, 0.92],
+        legend=[0.22, 0.55, 0.52, 0.90],
         is_data=False,
         model_legend_name="Double-sided CB + Gaussian",
         plot_range=get_signal_upsilon_plot_range(sample.state),
         residual_y_range=(-2.0, 2.0),
+        y_headroom_factor=1.8,
+        cms_extra_text="Private work (CMS simulation)",
+        cms_label_outside=False,
     )
 
     w = set_constant(w)

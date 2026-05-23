@@ -1,6 +1,7 @@
 from array import array
 from enum import Enum, auto
 from itertools import cycle
+import os
 from typing import Optional, List, Any
 
 from ROOT import (
@@ -11,6 +12,7 @@ from ROOT import (
     TCanvas,  # type: ignore
     TLegend,  # type: ignore
     gPad,  # type: ignore
+    gStyle,  # type: ignore
     kDashed,  # type: ignore
     kGray,  # type: ignore
     kRed,  # type: ignore
@@ -19,6 +21,49 @@ from ROOT import (
 from typing_extensions import ReadOnly
 
 from .bkg_model import BkgModel, BkgPdfFamily
+
+try:
+    import sys as _sys
+
+    _cmsstyle_src = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "cmsstyle",
+        "src",
+    )
+    _cmsstyle_src = os.path.abspath(_cmsstyle_src)
+    if _cmsstyle_src not in _sys.path:
+        _sys.path.insert(0, _cmsstyle_src)
+    import cmsstyle as CMS  # noqa: E402
+
+    _has_cmsstyle = True
+except ImportError:
+    _has_cmsstyle = False
+
+
+_cmsstyle_labels_done = False
+
+
+def _init_cmsstyle_labels():
+    global _cmsstyle_labels_done
+    if not _has_cmsstyle or _cmsstyle_labels_done:
+        return
+    _cmsstyle_labels_done = True
+    CMS.setCMSStyle()
+    CMS.SetExtraText("Private work (CMS data)")
+    CMS.SetEnergy(13)
+    CMS.SetLumi(138)
+
+
+def _cms_style_setup():
+    _init_cmsstyle_labels()
+
+
+def _cms_add_labels(can):
+    if not _has_cmsstyle:
+        return
+    CMS.UpdatePad(can)
+    CMS.CMS_lumi(can, iPosX=0, scaleLumi=0.8)
 
 
 def _curve_name_for_model(test_bkg_pdf: BkgModel, idx: int) -> str:
@@ -110,6 +155,7 @@ def make_plots_1d(
     start: Optional[int],
     winner: Optional[int],
 ) -> str:
+    _init_cmsstyle_labels()
     # Frame
     frame = x.frame(
         RooFit.Bins(nbins),
@@ -148,6 +194,7 @@ def make_plots_1d(
 
     # Canvas with shaded blinded region
     can = TCanvas("c", "c", 820, 920)
+    can.SetLeftMargin(0.18)
     can.Divide(1, 2)
 
     # Top pad: fit
@@ -163,10 +210,11 @@ def make_plots_1d(
     box_right.Draw("same")
 
     # Add a legend
-    leg = TLegend(0.4, 0.5, 0.88, 0.88)
+    leg = TLegend(0.26, 0.58, 0.54, 0.90)
     # leg.SetTextAlign(13)
     leg.SetBorderSize(0)
     leg.SetFillStyle(0)
+    leg.SetTextSize(0.022)
     leg.AddEntry(frame.findObject("data_sb"), "Data", "lep")
     leg.AddEntry(
         frame.findObject("bkg_sidebands"),
@@ -204,6 +252,9 @@ def make_plots_1d(
 
     plot_file_name = f"plots/fit_1d/{outprefix}.pdf"
 
+    if _has_cmsstyle:
+        can.cd(1)
+        _cms_add_labels(can)
     can.SaveAs(plot_file_name)
 
     return plot_file_name
@@ -241,6 +292,7 @@ def make_plots_2d(
     winner: Optional[int],
     components: Optional[List[Any]] = None,
 ) -> str:
+    _init_cmsstyle_labels()
     data_postfix = ""
     if data_type == DataType.REAL:
         data_postfix = "_data"
@@ -324,7 +376,10 @@ def make_plots_2d(
                 RooFit.LineStyle(line_style),
             )
 
-    leg = TLegend(0.4, 0.5, 0.88, 0.88)
+    leg = TLegend(0.26, 0.58, 0.54, 0.90)
+    leg.SetBorderSize(0)
+    leg.SetFillStyle(0)
+    leg.SetTextSize(0.022)
     if components is not None:
         for n, c in components:
             test_bkg_pdfs[0].model.plotOn(
@@ -349,10 +404,8 @@ def make_plots_2d(
 
     # Canvas with shaded blinded region
     can = TCanvas("c", "c", 820, 920)
-    can.SetLeftMargin(0.16)  # more room on the left (0.12–0.20 is typical)
-
+    can.SetLeftMargin(0.18)
     # can.Divide(1, 2)
-
     # Top pad: fit
     # can.cd(1)
     # gPad.SetPad(0, 0.30, 1, 1)
@@ -421,6 +474,8 @@ def make_plots_2d(
         plot_file_name = f"plots/fit_2d{data_postfix}/mumu_{outprefix}.pdf"
     else:
         plot_file_name = f"plots/fit_2d{data_postfix}/mumugamma_{outprefix}.pdf"
+    if _has_cmsstyle:
+        _cms_add_labels(can)
     can.SaveAs(plot_file_name)
 
     return plot_file_name

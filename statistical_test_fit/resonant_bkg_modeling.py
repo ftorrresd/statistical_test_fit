@@ -114,9 +114,26 @@ def build_resonant_background_Higgs_ws(plot_dir=PLOT_DIR, nbins=80):
         w.var("boson_mass"),
         f"{plot_dir}/resonant_background_fit_HiggsDalitz_MC_m_mumugamma.pdf",
         nbins=nbins,
-        legend=[0.6, 0.6, 0.9, 0.92],  # legend=[0.2, 0.6, 0.5, 0.92], #type: ignore
+        legend=[0.22, 0.58, 0.52, 0.90],  # legend=[0.2, 0.6, 0.5, 0.92], #type: ignore
         is_data=False,
         plot_range=get_signal_boson_plot_range("H"),
+        y_headroom_factor=1.8,
+        cms_extra_text="Private work (CMS simulation)",
+        cms_label_outside=False,
+    )
+
+    # plot upsilon mass fit
+    fastplot(
+        w.pdf("resonant_background_model_Higgs"),
+        data,
+        w.var("upsilon_mass"),
+        f"{plot_dir}/resonant_background_fit_HiggsDalitz_MC_m_mumu.pdf",
+        nbins=nbins,
+        legend=[0.22, 0.55, 0.52, 0.90],  # legend=[0.6, 0.2, 0.93, 0.4], #type: ignore
+        is_data=False,
+        y_headroom_factor=1.8,
+        cms_extra_text="Private work (CMS simulation)",
+        cms_label_outside=False,
     )
 
     # plot upsilon mass fit
@@ -217,9 +234,12 @@ def build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=80):
         w.var("boson_mass"),
         f"{plot_dir}/resonant_background_fit_Z_MC_m_mumugamma.pdf",
         nbins=nbins,
-        legend=[0.6, 0.6, 0.9, 0.92],  # legend=[0.2, 0.6, 0.5, 0.92], #type: ignore
+        legend=[0.22, 0.58, 0.52, 0.90],  # legend=[0.2, 0.6, 0.5, 0.92], #type: ignore
         is_data=False,
         plot_range=get_signal_boson_plot_range("Z"),
+        y_headroom_factor=1.8,
+        cms_extra_text="Private work (CMS simulation)",
+        cms_label_outside=False,
     )
 
     # plot upsilon mass fit
@@ -228,15 +248,12 @@ def build_resonant_background_Z_ws(plot_dir=PLOT_DIR, nbins=80):
         data,
         w.var("upsilon_mass"),
         f"{plot_dir}/resonant_background_fit_Z_MC_m_mumu.pdf",
-        # components=[
-        #             (upsilon_1S, 10),
-        #             (upsilon_2S, 10),
-        #             (upsilon_3S, 10),
-        #             (background, 20)
-        #             ],
         nbins=nbins,
-        legend=[0.2, 0.7, 0.53, 0.9],  # legend=[0.6, 0.2, 0.93, 0.4], #type: ignore
+        legend=[0.22, 0.55, 0.52, 0.90],  # legend=[0.6, 0.2, 0.93, 0.4], #type: ignore
         is_data=False,
+        y_headroom_factor=1.8,
+        cms_extra_text="Private work (CMS simulation)",
+        cms_label_outside=False,
     )
 
     # setting all var as constants
@@ -402,9 +419,12 @@ def resonant_background_modeling_Z(load_from_cache=False, plot_dir=PLOT_DIR, nbi
         #             (w.pdf("resonant_background_model_boson_gauss"), 10),
         #             ],
         nbins=nbins,
-        legend=[0.6, 0.6, 0.9, 0.92],  # legend=[0.6, 0.6, 0.93, 0.92], #type:ignore
+        legend=[0.22, 0.58, 0.52, 0.90],  # legend=[0.6, 0.6, 0.93, 0.92], #type:ignore
         is_data=False,
         plot_range=get_signal_boson_plot_range("Z"),
+        y_headroom_factor=1.8,
+        cms_extra_text="Private work (CMS simulation)",
+        cms_label_outside=False,
     )
 
     print("data.sumEntries(): ", data.sumEntries())
@@ -578,9 +598,11 @@ def get_normalization_from_CR(
             ),
         ],
         nbins=nbins,
-        legend=[0.6, 0.6, 0.93, 0.92],  # type: ignore
+        legend=[0.22, 0.58, 0.52, 0.90],  # type: ignore
         is_data=True,
         model_legend_name="Total model: RooAddPdf",
+        y_headroom_factor=2.0,
+        cms_extra_text="Private work (CMS data)",
     )
 
     if cached_norm_para is not None:

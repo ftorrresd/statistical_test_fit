@@ -235,7 +235,8 @@ def dimuon_non_correlated(m_mumu_lower=8.0, m_mumu_upper=12.0, load_from_cache=F
             (background, 20),
         ],
         nbins=60,
-        legend=[0.6, 0.6, 0.93, 0.92],  # type: ignore
+        legend=[0.18, 0.58, 0.48, 0.90],  # type: ignore
+        cms_extra_text="Private work (CMS data)",
     )
 
     if cached_upsilon_model_params is not None:

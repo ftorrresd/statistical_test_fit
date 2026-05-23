@@ -1326,7 +1326,7 @@ def write_bundled_projection_plots(
             "legend": [0.65, 0.48, 0.92, 0.92],
             "blind_regions": blind_regions,
             "log_y": False,
-            "y_headroom_factor": 1.0,
+            "y_headroom_factor": 1.2,
             "caption": "Projection on m_{#mu#mu#gamma}",
         },
         {
@@ -1377,7 +1377,7 @@ def write_bundled_projection_plots(
             "legend": [0.65, 0.48, 0.92, 0.92],
             "blind_regions": None,
             "log_y": True,
-            "y_headroom_factor": 1.5,
+            "y_headroom_factor": 1.6,
             "caption": "Projection on m_{#mu#mu}; log scale.",
         },
     ]

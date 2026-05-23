@@ -4,9 +4,28 @@ from __future__ import print_function
 
 from array import array
 import math
+import os
 from enum import Enum
 
 import ROOT
+
+try:
+    import sys as _sys
+
+    _cmsstyle_src = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "cmsstyle",
+        "src",
+    )
+    _cmsstyle_src = os.path.abspath(_cmsstyle_src)  # type: ignore[arg-type]
+    if _cmsstyle_src not in _sys.path:
+        _sys.path.insert(0, _cmsstyle_src)
+    import cmsstyle as CMS  # noqa: E402
+
+    _has_cmsstyle = True
+except ImportError:
+    _has_cmsstyle = False
 
 DEFAULT_PALETTE = [
     1,
@@ -64,6 +83,22 @@ def round_to_1(x):
     return round(x, -int(floor(log10(abs(x)))))
 
 
+_cmsstyle_labels_done = False
+
+
+def _init_cmsstyle_labels(cms_extra_text=None):
+    global _cmsstyle_labels_done
+    if not _has_cmsstyle:
+        return
+    if cms_extra_text is not None:
+        CMS.SetExtraText(str(cms_extra_text))
+    elif not _cmsstyle_labels_done:
+        _cmsstyle_labels_done = True
+        CMS.SetExtraText("Private work (CMS data/simulation)")
+    CMS.SetEnergy(13)
+    CMS.SetLumi(138)
+
+
 def fastplot(
     model,
     data,
@@ -106,6 +141,8 @@ def fastplot(
     show_model_curve=True,
     y_headroom_factor=None,
     log_y=False,
+    cms_extra_text=None,
+    cms_label_outside=False,
     show_residuals=True,
     residual_mode=ResidualMode.RELATIVE_DIFF,
     residual_y_range=None,
@@ -185,7 +222,10 @@ def fastplot(
     Todo:
         * Change or remove extra_info
     """
-    set_root_style(font_scale, label_scale)
+    if _has_cmsstyle:
+        CMS.setCMSStyle()
+    else:
+        set_root_style(font_scale, label_scale)
     if nbins is None:
         nbins = 60
 
@@ -543,12 +583,19 @@ def fastplot(
 
     if isinstance(legend, list):
         assert len(legend) == 4, "Please provide four coordinates for the legend"
-        leg = ROOT.TLegend(*legend)
+        if _has_cmsstyle:
+            leg = CMS.cmsLeg(*legend, textSize=0.035)
+        else:
+            leg = ROOT.TLegend(*legend)
     else:
-        leg = ROOT.TLegend(0.7, 0.78, 0.93, 0.92)
-    leg.SetNColumns(max(1, int(legend_columns)))
-    if legend_text_size is not None:
-        leg.SetTextSize(float(legend_text_size))
+        if _has_cmsstyle:
+            leg = CMS.cmsLeg(0.7, 0.78, 0.93, 0.92, textSize=0.035)
+        else:
+            leg = ROOT.TLegend(0.7, 0.78, 0.93, 0.92)
+    if not _has_cmsstyle:
+        leg.SetNColumns(max(1, int(legend_columns)))
+        if legend_text_size is not None:
+            leg.SetTextSize(float(legend_text_size))
 
     _plot_data(frame, "Data")
 
@@ -661,14 +708,14 @@ def fastplot(
         bottom_pad = ROOT.TPad("bottom_pad", "bottom_pad", 0.0, 0.0, 1.0, 0.28)
 
         top_pad.SetBottomMargin(0.03)
-        top_pad.SetLeftMargin(0.14)
+        top_pad.SetLeftMargin(0.18)
         top_pad.SetRightMargin(0.05)
         top_pad.SetTopMargin(0.05)
         top_pad.SetTicks(1, 1)
 
         bottom_pad.SetTopMargin(0.03)
         bottom_pad.SetBottomMargin(0.35)
-        bottom_pad.SetLeftMargin(0.14)
+        bottom_pad.SetLeftMargin(0.18)
         bottom_pad.SetRightMargin(0.05)
         bottom_pad.SetTicks(1, 1)
         bottom_pad.SetGridy(1)
@@ -677,6 +724,7 @@ def fastplot(
         bottom_pad.Draw()
         main_pad = top_pad
     else:
+        canvas.SetLeftMargin(0.18)
         canvas.SetRightMargin(0.05)
         canvas.SetTicks(1, 1)
         main_pad = canvas
@@ -786,6 +834,16 @@ def fastplot(
                     print("Something went wrong in plotting")
 
             box.Draw("same")
+
+    _init_cmsstyle_labels(cms_extra_text)
+    if _has_cmsstyle:
+        if show_residuals:
+            top_pad.cd()
+        else:
+            main_pad.cd()
+        CMS.UpdatePad(canvas.GetPad(0) or main_pad)
+        _iPosX = 0 if cms_label_outside else 11
+        CMS.CMS_lumi(main_pad, iPosX=_iPosX, scaleLumi=0.8)
 
     canvas.SaveAs(filename)
     if extra_filenames is not None:
