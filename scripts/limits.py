@@ -8,6 +8,7 @@ import datetime as dt
 import html
 import json
 import math
+import os
 import re
 import shlex
 import shutil
@@ -23,6 +24,8 @@ from rich.text import Text
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+COMBINE_ROOT = REPO_ROOT.parent / "HiggsAnalysis" / "CombinedLimit"
+PLOT_TEST_STAT_CLS_SCRIPT = COMBINE_ROOT / "test" / "plotTestStatCLs.py"
 CONSOLE = Console()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -41,6 +44,12 @@ DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY = 2
 HYBRID_RANGE_ASYMPTOTIC_SCALE = 10.0
 HYBRID_RETRY_RANGE_SCALE = 10.0
 DEFAULT_HYBRID_RANGE_MAX_RETRIES = 3
+DEFAULT_HYBRID_GRID_TOYS = 2000
+DEFAULT_HYBRID_GRID_CYCLES = 1
+DEFAULT_HYBRID_GRID_UPPER_SCALE = 2.0
+DEFAULT_HYBRID_GRID_COARSE_POINTS = 9
+DEFAULT_HYBRID_GRID_SEED = 123456
+HYBRID_GRID_RELATIVE_OFFSETS = (0.70, 0.80, 0.90, 0.95, 0.975, 1.0, 1.025, 1.05, 1.10, 1.20, 1.30)
 RETRYABLE_HYBRID_WARNING_PATTERNS = (
     "[WARNING] Minimization finished with status",
     "covariance matrix forced positive definite",
@@ -53,6 +62,7 @@ WORKSPACE_OUTPUT_NAME = "multisignal_workspace.root"
 LOCAL_WORKSPACE_NAME = "workspace.root"
 LOCAL_DATACARD_NAME = "datacard.txt"
 LOCAL_BLIND_ASIMOV_NAME = "blind_asimov.root"
+LOCAL_HYBRID_GRID_NAME = "hybrid_grid.root"
 BLIND_ASIMOV_DATASET = f"{LOCAL_BLIND_ASIMOV_NAME}:toys/toy_asimov"
 
 
@@ -164,6 +174,10 @@ def safe_name(value: str) -> str:
     return value or "unnamed"
 
 
+def point_tag(value: float) -> str:
+    return safe_name("r_" + format_number(value).replace("-", "m").replace("+", "p"))
+
+
 def scheme_slug(name: str) -> str:
     return poi_scheme_display(name).slug
 
@@ -193,6 +207,23 @@ def common_minimizer_options() -> list[str]:
         "--cminDefaultMinimizerStrategy",
         str(DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY),
     ]
+
+
+def available_cpu_count() -> int:
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            return max(1, len(os.sched_getaffinity(0)))
+        except OSError:
+            pass
+    return max(1, os.cpu_count() or 1)
+
+
+def resolved_worker_count(requested_workers: int, job_count: int) -> int:
+    if job_count <= 0:
+        return 0
+    if requested_workers <= 0:
+        return min(job_count, available_cpu_count())
+    return min(requested_workers, job_count)
 
 
 def is_int_token(value: str) -> bool:
@@ -727,6 +758,10 @@ def build_hybrid_job(
             default_poi_max,
             {target.poi: poi_max},
         ),
+        "--rMin",
+        format_number(poi_min),
+        "--rMax",
+        format_number(poi_max),
         "-m",
         mass,
         "-n",
@@ -769,6 +804,7 @@ def build_hybrid_job(
             "target_processes": list(target.processes),
             "profiled_signal_pois": [poi for poi in scheme.all_pois if poi != target.poi],
             "quantile": quantile,
+            "hybrid_mode": "adaptive",
             "poi_min": poi_min,
             "poi_max": poi_max,
             "default_poi_max": default_poi_max,
@@ -785,12 +821,380 @@ def build_hybrid_job(
             "hint_method": hint_method,
             "dataset_override": BLIND_ASIMOV_DATASET,
             "bypass_frequentist_fit": True,
+            "r_min_option": poi_min,
+            "r_max_option": poi_max,
             "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
             "blindness": [
                 "HybridNew uses --LHCmode LHC-limits for LHC-style CLs limits.",
                 "HybridNew is run directly with --expectedFromGrid for the requested quantile.",
                 f"data_obs is overridden with the blind pre-fit Asimov dataset {BLIND_ASIMOV_DATASET}.",
                 "--bypassFrequentistFit prevents fitting observed data before toy generation.",
+            ],
+            "mass": mass,
+        },
+    )
+
+
+def input_record(path: Path) -> dict[str, str]:
+    return {
+        "source": str(path.resolve()),
+        "source_repo_relative": repo_relative(path),
+        "staged": str(path.resolve()),
+        "staged_name": path.name,
+    }
+
+
+def build_hybrid_grid_point_job(
+    run_dir: Path,
+    scheme: PoiScheme,
+    target: PoiTarget,
+    point_value: float,
+    point_index: int,
+    cycle_index: int,
+    seed: int,
+    mass: str,
+    workspace_path: Path,
+    datacard_path: Path,
+    blind_asimov_path: Path,
+    poi_min: float,
+    poi_max: float,
+    default_poi_max: float,
+    hybrid_toys: int,
+    quick: bool = False,
+    range_reference: dict[str, Any] | None = None,
+) -> CommandJob:
+    scheme_display = poi_scheme_display(scheme.name)
+    target_display = signal_target_display(target.label)
+    cwd = (
+        run_dir
+        / scheme_display.slug
+        / "combine"
+        / "hybrid_grid"
+        / target_display.slug
+        / "points"
+        / f"{point_index:04d}_{point_tag(point_value)}"
+        / f"cycle_{cycle_index:03d}"
+    )
+    reset_directory(cwd)
+    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path, blind_asimov_path)
+    command = [
+        "combine",
+        "-M",
+        "HybridNew",
+        LOCAL_WORKSPACE_NAME,
+        "--LHCmode",
+        "LHC-limits",
+        "--singlePoint",
+        f"{target.poi}={format_number(point_value)}",
+        "--saveHybridResult",
+        "--clsAcc",
+        "0",
+        "-T",
+        str(hybrid_toys),
+        "-s",
+        str(seed),
+        "--dataset",
+        BLIND_ASIMOV_DATASET,
+        "--bypassFrequentistFit",
+        "--redefineSignalPOIs",
+        target.poi,
+        "--setParameters",
+        set_parameters_argument(scheme.all_pois, 0.0),
+        "--setParameterRanges",
+        parameter_ranges_argument(
+            scheme.all_pois,
+            poi_min,
+            default_poi_max,
+            {target.poi: poi_max},
+        ),
+        "--rMin",
+        format_number(poi_min),
+        "--rMax",
+        format_number(poi_max),
+        "-m",
+        mass,
+        "-n",
+        f".hybrid_grid_blind.{target_display.slug}.{point_tag(point_value)}.cycle{cycle_index:03d}",
+    ]
+    if not quick:
+        command.extend(common_minimizer_options())
+
+    return CommandJob(
+        job_id=(
+            f"hybrid_grid_point_{scheme_display.slug}_{target_display.slug}_"
+            f"{point_index:04d}_cycle{cycle_index:03d}"
+        ),
+        kind="combine_grid_point",
+        method="HybridNewGridPoint",
+        cwd=cwd,
+        command=tuple(command),
+        output_patterns=("higgsCombine*.root",),
+        inputs=tuple(inputs),
+        metadata={
+            "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
+            "target_label": target.label,
+            "target_slug": target_display.slug,
+            "target_display_label": target_display.text,
+            "target_latex": target_display.latex,
+            "target_poi": target.poi,
+            "target_processes": list(target.processes),
+            "profiled_signal_pois": [poi for poi in scheme.all_pois if poi != target.poi],
+            "hybrid_mode": "grid",
+            "grid_point": point_value,
+            "grid_point_index": point_index,
+            "grid_cycle": cycle_index,
+            "grid_seed": seed,
+            "poi_min": poi_min,
+            "poi_max": poi_max,
+            "default_poi_max": default_poi_max,
+            "profiled_poi_max": default_poi_max,
+            "range_source": "asymptotic_grid",
+            "range_reference": range_reference,
+            "hybrid_toys": hybrid_toys,
+            "grid_cls_acc": 0.0,
+            "dataset_override": BLIND_ASIMOV_DATASET,
+            "bypass_frequentist_fit": True,
+            "r_min_option": poi_min,
+            "r_max_option": poi_max,
+            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "blindness": [
+                "HybridNew grid points use --singlePoint and --saveHybridResult.",
+                "Grid generation sets --clsAcc 0 so the requested -T toys define the point precision.",
+                f"data_obs is overridden with the blind pre-fit Asimov dataset {BLIND_ASIMOV_DATASET}.",
+                "--bypassFrequentistFit prevents fitting observed data before toy generation.",
+                "--rMax is set to the asymptotic-derived grid maximum so large POI points are inside the scan range.",
+            ],
+            "mass": mass,
+        },
+    )
+
+
+def build_hybrid_grid_merge_job(
+    run_dir: Path,
+    scheme: PoiScheme,
+    target: PoiTarget,
+    root_paths: list[Path],
+    range_reference: dict[str, Any],
+) -> CommandJob:
+    scheme_display = poi_scheme_display(scheme.name)
+    target_display = signal_target_display(target.label)
+    cwd = run_dir / scheme_display.slug / "combine" / "hybrid_grid" / target_display.slug / "merged"
+    reset_directory(cwd)
+    command = ["hadd", "-f", LOCAL_HYBRID_GRID_NAME]
+    command.extend(str(path.resolve()) for path in root_paths)
+    return CommandJob(
+        job_id=f"hybrid_grid_merge_{scheme_display.slug}_{target_display.slug}",
+        kind="hybrid_grid_merge",
+        method="hadd",
+        cwd=cwd,
+        command=tuple(command),
+        output_patterns=(LOCAL_HYBRID_GRID_NAME,),
+        inputs=tuple(input_record(path) for path in root_paths),
+        metadata={
+            "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
+            "target_label": target.label,
+            "target_slug": target_display.slug,
+            "target_display_label": target_display.text,
+            "target_latex": target_display.latex,
+            "target_poi": target.poi,
+            "target_processes": list(target.processes),
+            "hybrid_mode": "grid",
+            "grid_input_files": len(root_paths),
+            "range_reference": range_reference,
+        },
+    )
+
+
+def build_hybrid_grid_distribution_plot_job(
+    run_dir: Path,
+    scheme: PoiScheme,
+    target: PoiTarget,
+    mass: str,
+    grid_path: Path,
+    range_reference: dict[str, Any],
+) -> CommandJob:
+    ensure_file(PLOT_TEST_STAT_CLS_SCRIPT, "Required Combine diagnostic plotting script does not exist")
+    scheme_display = poi_scheme_display(scheme.name)
+    target_display = signal_target_display(target.label)
+    cwd = run_dir / scheme_display.slug / "combine" / "hybrid_grid" / target_display.slug / "diagnostics"
+    reset_directory(cwd)
+    inputs = [copy_file(grid_path, cwd / LOCAL_HYBRID_GRID_NAME)]
+    output_name = f"test_stat_distributions_{target_display.slug}.root"
+    command = [
+        "python3",
+        str(PLOT_TEST_STAT_CLS_SCRIPT),
+        "--input",
+        LOCAL_HYBRID_GRID_NAME,
+        "--poi",
+        target.poi,
+        "--val",
+        "all",
+        "--mass",
+        mass,
+        "--output",
+        output_name,
+        "--save-as-pdf",
+    ]
+    return CommandJob(
+        job_id=f"hybrid_grid_diagnostics_{scheme_display.slug}_{target_display.slug}",
+        kind="hybrid_grid_diagnostics",
+        method="plotTestStatCLs.py",
+        cwd=cwd,
+        command=tuple(command),
+        output_patterns=(),
+        inputs=tuple(inputs),
+        metadata={
+            "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
+            "target_label": target.label,
+            "target_slug": target_display.slug,
+            "target_display_label": target_display.text,
+            "target_latex": target_display.latex,
+            "target_poi": target.poi,
+            "target_processes": list(target.processes),
+            "hybrid_mode": "grid",
+            "grid_file": str(grid_path.resolve()),
+            "grid_file_repo_relative": repo_relative(grid_path),
+            "diagnostic_output_patterns": [output_name, f"{output_name}_*.pdf"],
+            "range_reference": range_reference,
+            "mass": mass,
+            "blindness": [
+                "plotTestStatCLs.py reads the merged HybridNew grid and plots test-statistic distributions at each grid point.",
+            ],
+        },
+    )
+
+
+def build_hybrid_grid_read_job(
+    run_dir: Path,
+    scheme: PoiScheme,
+    target: PoiTarget,
+    quantile: float,
+    mass: str,
+    workspace_path: Path,
+    datacard_path: Path,
+    blind_asimov_path: Path,
+    grid_path: Path,
+    poi_min: float,
+    poi_max: float,
+    default_poi_max: float,
+    hybrid_toys: int,
+    grid_cycles: int,
+    grid_points: tuple[float, ...],
+    quick: bool = False,
+    range_reference: dict[str, Any] | None = None,
+) -> CommandJob:
+    scheme_display = poi_scheme_display(scheme.name)
+    target_display = signal_target_display(target.label)
+    cwd = (
+        run_dir
+        / scheme_display.slug
+        / "combine"
+        / "hybrid_grid"
+        / target_display.slug
+        / "read"
+        / quantile_tag(quantile)
+    )
+    reset_directory(cwd)
+    inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path, blind_asimov_path)
+    inputs.append(copy_file(grid_path, cwd / LOCAL_HYBRID_GRID_NAME))
+    limit_scan_plot = f"limit_scan_{target_display.slug}_{quantile_tag(quantile)}.png"
+    command = [
+        "combine",
+        "-M",
+        "HybridNew",
+        LOCAL_WORKSPACE_NAME,
+        "--LHCmode",
+        "LHC-limits",
+        "--readHybridResults",
+        "--grid",
+        LOCAL_HYBRID_GRID_NAME,
+        "--expectedFromGrid",
+        quantile_key(quantile),
+        "--dataset",
+        BLIND_ASIMOV_DATASET,
+        "--bypassFrequentistFit",
+        "--redefineSignalPOIs",
+        target.poi,
+        "--setParameters",
+        set_parameters_argument(scheme.all_pois, 0.0),
+        "--setParameterRanges",
+        parameter_ranges_argument(
+            scheme.all_pois,
+            poi_min,
+            default_poi_max,
+            {target.poi: poi_max},
+        ),
+        "--rMin",
+        format_number(poi_min),
+        "--rMax",
+        format_number(poi_max),
+        "--plot",
+        limit_scan_plot,
+        "-m",
+        mass,
+        "-n",
+        f".hybrid_grid_blind.{target_display.slug}.{quantile_tag(quantile)}",
+    ]
+    if not quick:
+        command.extend(common_minimizer_options())
+
+    return CommandJob(
+        job_id=f"hybrid_grid_lhc_{scheme_display.slug}_{target_display.slug}_{quantile_tag(quantile)}",
+        kind="combine",
+        method="HybridNew",
+        cwd=cwd,
+        command=tuple(command),
+        output_patterns=("higgsCombine*.root",),
+        inputs=tuple(inputs),
+        metadata={
+            "scheme": scheme.name,
+            "scheme_slug": scheme_display.slug,
+            "scheme_label": scheme_display.text,
+            "scheme_latex": scheme_display.latex,
+            "target_label": target.label,
+            "target_slug": target_display.slug,
+            "target_display_label": target_display.text,
+            "target_latex": target_display.latex,
+            "target_poi": target.poi,
+            "target_processes": list(target.processes),
+            "profiled_signal_pois": [poi for poi in scheme.all_pois if poi != target.poi],
+            "quantile": quantile,
+            "hybrid_mode": "grid",
+            "poi_min": poi_min,
+            "poi_max": poi_max,
+            "default_poi_max": default_poi_max,
+            "profiled_poi_max": default_poi_max,
+            "range_source": "asymptotic_grid",
+            "range_reference": range_reference,
+            "hybrid_toys": hybrid_toys,
+            "grid_cycles": grid_cycles,
+            "grid_point_count": len(grid_points),
+            "grid_points": [format_number(value) for value in grid_points],
+            "grid_file": str(grid_path.resolve()),
+            "grid_file_repo_relative": repo_relative(grid_path),
+            "diagnostic_output_patterns": [limit_scan_plot],
+            "limit_scan_plot": limit_scan_plot,
+            "grid_cls_acc": 0.0,
+            "dataset_override": BLIND_ASIMOV_DATASET,
+            "bypass_frequentist_fit": True,
+            "r_min_option": poi_min,
+            "r_max_option": poi_max,
+            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "blindness": [
+                "HybridNew uses --readHybridResults with a merged --singlePoint toy grid.",
+                "The expected quantile is extracted with --expectedFromGrid from the precomputed grid.",
+                f"data_obs is overridden with the blind pre-fit Asimov dataset {BLIND_ASIMOV_DATASET}.",
+                "--bypassFrequentistFit prevents fitting observed data before any required test-statistic update.",
+                "--rMax is set to the asymptotic-derived grid maximum so large POI limits are inside the readback range.",
             ],
             "mass": mass,
         },
@@ -886,6 +1290,10 @@ def job_manifest_label(job: CommandJob) -> str:
         details.append(f"target={metadata.get('target_display_label', metadata['target_poi'])}")
     if metadata.get("quantile") is not None:
         details.append(f"quantile={metadata['quantile']}")
+    if metadata.get("grid_point") is not None:
+        details.append(f"grid_point={format_number(float(metadata['grid_point']))}")
+    if metadata.get("grid_cycle") is not None:
+        details.append(f"cycle={metadata['grid_cycle']}")
     if metadata.get("poi_max") is not None:
         details.append(f"target_range=0,{format_number(float(metadata['poi_max']))}")
     if (
@@ -904,7 +1312,7 @@ def print_job_manifest(wave_name: str, jobs: list[CommandJob], workers: int) -> 
     if not jobs:
         log(f"No jobs planned for {wave_name}.")
         return
-    max_workers = len(jobs) if workers <= 0 else min(workers, len(jobs))
+    max_workers = resolved_worker_count(workers, len(jobs))
     log(f"Planned jobs for {wave_name}: {len(jobs)} job(s), {max_workers} worker(s)")
     log("Each listed working directory has been cleared before input staging.")
     for index, job in enumerate(jobs, start=1):
@@ -961,7 +1369,7 @@ def run_jobs_parallel(
     print_job_manifest(wave_name, jobs, workers)
     if not jobs:
         return []
-    max_workers = len(jobs) if workers <= 0 else min(workers, len(jobs))
+    max_workers = resolved_worker_count(workers, len(jobs))
     log(f"Running {len(jobs)} command(s) with {max_workers} worker(s)")
     results: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1125,6 +1533,29 @@ def summarize_limits(root_outputs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def collect_diagnostic_outputs(cwd: Path, metadata: dict[str, Any]) -> list[dict[str, str]]:
+    outputs: list[dict[str, str]] = []
+    seen: set[Path] = set()
+    patterns = metadata.get("diagnostic_output_patterns", [])
+    if not isinstance(patterns, list):
+        return outputs
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        for path in sorted(cwd.glob(pattern)):
+            if not path.is_file() or path in seen:
+                continue
+            seen.add(path)
+            outputs.append(
+                {
+                    "file": str(path.resolve()),
+                    "file_name": path.name,
+                    "file_repo_relative": repo_relative(path),
+                }
+            )
+    return outputs
+
+
 def attach_outputs(result: dict[str, Any]) -> dict[str, Any]:
     cwd = Path(result["cwd"])
     root_outputs = [
@@ -1132,6 +1563,7 @@ def attach_outputs(result: dict[str, Any]) -> dict[str, Any]:
     ]
     result["root_outputs"] = root_outputs
     result["limits"] = summarize_limits(root_outputs)
+    result["diagnostic_outputs"] = collect_diagnostic_outputs(cwd, result.get("metadata", {}))
     result["json_path"] = str((cwd / "result.json").resolve())
     result["json_path_repo_relative"] = repo_relative(cwd / "result.json")
     result["summary_html_path"] = str((cwd / "summary.html").resolve())
@@ -1245,6 +1677,21 @@ def html_link(label: str, href: str) -> str:
     return f'<a href="{html_escape(href)}">{html_escape(label)}</a>'
 
 
+def diagnostic_links_html(result: dict[str, Any], base_dir: Path) -> str:
+    outputs = result.get("diagnostic_outputs", [])
+    if not outputs:
+        return "-"
+    links = []
+    for output in outputs:
+        file_path = output.get("file")
+        file_name = output.get("file_name", "diagnostic")
+        if file_path:
+            links.append(html_link(file_name, href_relative_to(base_dir, Path(file_path))))
+        else:
+            links.append(html_escape(file_name))
+    return "<br>".join(links)
+
+
 def html_table_raw(headers: list[str], rows: list[list[Any]]) -> str:
     if not rows:
         rows = [["-" for _ in headers]]
@@ -1298,6 +1745,10 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
         ]
         for output in result.get("root_outputs", [])
     ]
+    diagnostic_rows = [
+        [html_link(output.get("file_name", "-"), output.get("file_name", "-"))]
+        for output in result.get("diagnostic_outputs", [])
+    ]
     blindness_lines = metadata.get("blindness", [])
     if blindness_lines:
         policy_html = "<ul>" + "".join(f"<li>{html_escape(line)}</li>" for line in blindness_lines) + "</ul>"
@@ -1312,16 +1763,29 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
         ["Duration", result.get("duration", format_duration(float(result.get("duration_seconds", 0.0))))],
         ["Working directory", result.get("cwd_repo_relative", result.get("cwd", "-"))],
     ]
-    if result.get("method") == "HybridNew":
+    if result.get("method") in {"HybridNew", "HybridNewGridPoint"}:
         profiled_poi_max = metadata.get("profiled_poi_max", metadata.get("poi_max", DEFAULT_POI_MAX))
         status_rows.extend(
             [
+                ["Hybrid mode", metadata.get("hybrid_mode") or "adaptive"],
                 ["Retry", retry_summary_text(result)],
                 ["Target POI range", f"0 to {format_number(float(metadata.get('poi_max', DEFAULT_POI_MAX)))}"],
                 ["Profiled POI range", f"0 to {format_number(float(profiled_poi_max))}"],
+                ["rMax option", metadata.get("r_max_option", "-")],
                 ["Hint method", metadata.get("hint_method") or "-"],
             ]
         )
+        if metadata.get("grid_point") is not None:
+            status_rows.extend(
+                [
+                    ["Grid point", format_number(float(metadata["grid_point"]))],
+                    ["Grid cycle", metadata.get("grid_cycle", "-")],
+                    ["Grid seed", metadata.get("grid_seed", "-")],
+                    ["Grid toys", metadata.get("hybrid_toys", "-")],
+                ]
+            )
+        if metadata.get("grid_file") is not None:
+            status_rows.append(["Grid file", metadata.get("grid_file_repo_relative", metadata.get("grid_file", "-"))])
     logs_rows = [
         ["command", html_link("command.txt", "command.txt")],
         ["stdout", html_link("stdout.txt", "stdout.txt")],
@@ -1336,6 +1800,7 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
     <section class="card"><h2>Limit Policy</h2>{policy_html}</section>
     <section class="card"><h2>Inputs Staged In This Directory</h2>{html_table(['Local file', 'Source'], input_rows)}</section>
     <section class="card"><h2>ROOT Outputs</h2>{html_table(['File', 'Limit tree', 'toy_asimov', 'Status'], output_rows)}</section>
+    <section class="card"><h2>Diagnostic Outputs</h2>{html_table_raw(['File'], diagnostic_rows)}</section>
     <section class="card"><h2>Limit Tree Entries</h2>{html_table(['File', 'Entry', 'quantileExpected', 'limit', 'limitErr', 'mh', 'iToy', 'iSeed'], make_limit_entry_rows(result.get('root_outputs', [])))}</section>
     <section class="card"><h2>Logs</h2>{html_table_raw(['Stream', 'Path'], logs_rows)}</section>
     """
@@ -1420,6 +1885,99 @@ def hybrid_range_from_asymptotic_result(
         "asymptotic_limit": asymptotic_limit,
         "scale": HYBRID_RANGE_ASYMPTOTIC_SCALE,
         "cap": DEFAULT_POI_MAX,
+    }
+
+
+def hybrid_grid_toys(args: argparse.Namespace) -> int:
+    if args.hybrid_grid_toys is not None:
+        return int(args.hybrid_grid_toys)
+    if args.hybrid_toys is not None:
+        return int(args.hybrid_toys)
+    return DEFAULT_HYBRID_GRID_TOYS
+
+
+def uses_hybrid_grid(args: argparse.Namespace) -> bool:
+    return args.methods == "HybridGrid"
+
+
+def hybrid_mode_label(args: argparse.Namespace) -> str:
+    return "grid" if uses_hybrid_grid(args) else "adaptive"
+
+
+def unique_sorted_points(values: list[float], lower: float, upper: float) -> tuple[float, ...]:
+    by_name: dict[str, float] = {}
+    for value in values:
+        if not math.isfinite(value):
+            continue
+        clipped = min(upper, max(lower, value))
+        by_name[format_number(clipped)] = clipped
+    return tuple(sorted(by_name.values()))
+
+
+def hybrid_grid_from_asymptotic_result(
+    asymptotic_lookup: dict[tuple[str, str], dict[str, Any]],
+    scheme: PoiScheme,
+    target: PoiTarget,
+    quantiles: tuple[float, ...],
+    poi_min: float,
+    poi_cap: float,
+    upper_scale: float,
+    coarse_points: int,
+) -> tuple[tuple[float, ...], float, dict[str, Any]]:
+    result = asymptotic_lookup.get((scheme.name, target.poi))
+    if result is None:
+        raise RuntimeError(
+            f"No asymptotic result found for {scheme.name}/{target.poi}; "
+            "cannot derive HybridNew grid."
+        )
+
+    asymptotic_limits: dict[str, float] = {}
+    for quantile in quantiles:
+        asymptotic_limit = first_positive_expected_limit(result, quantile)
+        if asymptotic_limit is None:
+            raise RuntimeError(
+                f"Asymptotic result {result.get('job_id')} does not contain a positive "
+                f"expected limit for quantile {quantile_key(quantile)}; "
+                "cannot derive HybridNew grid."
+            )
+        asymptotic_limits[quantile_key(quantile)] = asymptotic_limit
+
+    largest_limit = max(asymptotic_limits.values())
+    poi_max = min(poi_cap, upper_scale * largest_limit)
+    if poi_max <= poi_min:
+        raise RuntimeError(
+            f"Derived invalid HybridNew grid range for {scheme.name}/{target.poi}: "
+            f"{format_number(poi_min)},{format_number(poi_max)}"
+        )
+
+    grid_values: list[float] = [poi_min, poi_max]
+    for index in range(coarse_points):
+        fraction = index / max(1, coarse_points - 1)
+        grid_values.append(poi_min + fraction * (poi_max - poi_min))
+    for asymptotic_limit in asymptotic_limits.values():
+        for relative_offset in HYBRID_GRID_RELATIVE_OFFSETS:
+            grid_values.append(relative_offset * asymptotic_limit)
+
+    grid_points = unique_sorted_points(grid_values, poi_min, poi_max)
+    if len(grid_points) < 2:
+        raise RuntimeError(
+            f"Derived too few HybridNew grid points for {scheme.name}/{target.poi}: "
+            f"{', '.join(format_number(point) for point in grid_points)}"
+        )
+
+    return grid_points, poi_max, {
+        "strategy": "grid max = min(DEFAULT_POI_MAX, upper_scale * max(requested asymptotic expected limits)); grid clustered around each asymptotic expected limit",
+        "applies_to": "redefined target POI only",
+        "asymptotic_job": result.get("job_id"),
+        "asymptotic_limits": asymptotic_limits,
+        "largest_asymptotic_limit": largest_limit,
+        "upper_scale": upper_scale,
+        "coarse_points": coarse_points,
+        "relative_offsets": list(HYBRID_GRID_RELATIVE_OFFSETS),
+        "cap": poi_cap,
+        "grid_min": poi_min,
+        "grid_max": poi_max,
+        "grid_points": [format_number(point) for point in grid_points],
     }
 
 
@@ -1652,7 +2210,7 @@ def run_hybrid_jobs_with_adaptive_retries(
     print_job_manifest("HybridNew limit jobs", initial_jobs, args.workers)
     if not initial_jobs:
         return []
-    max_workers = len(initial_jobs) if args.workers <= 0 else min(args.workers, len(initial_jobs))
+    max_workers = resolved_worker_count(args.workers, len(initial_jobs))
     log(f"Running {len(initial_jobs)} initial HybridNew command(s) with {max_workers} worker(s)")
     log("Adaptive HybridNew retries are submitted as soon as each job finishes.")
     submitted_count = 0
@@ -1714,6 +2272,161 @@ def run_hybrid_jobs_with_adaptive_retries(
     return all_results
 
 
+def run_hybrid_grid_workflow(
+    args: argparse.Namespace,
+    run_dir: Path,
+    schemes: tuple[PoiScheme, ...],
+    asymptotic_results: list[dict[str, Any]],
+    workspace_paths: dict[str, Path],
+    staged_datacards: dict[str, Path],
+    blind_asimov_paths: dict[str, Path],
+) -> list[dict[str, Any]]:
+    asymptotic_lookup = asymptotic_results_by_target(asymptotic_results)
+    grid_toys = hybrid_grid_toys(args)
+    planned: dict[tuple[str, str], dict[str, Any]] = {}
+    point_jobs: list[CommandJob] = []
+    next_seed = int(args.hybrid_grid_seed)
+
+    for scheme in schemes:
+        for target in scheme.targets:
+            grid_points, poi_max, range_reference = hybrid_grid_from_asymptotic_result(
+                asymptotic_lookup,
+                scheme,
+                target,
+                args.quantiles,
+                args.poi_min,
+                args.poi_max,
+                args.hybrid_grid_upper_scale,
+                args.hybrid_grid_coarse_points,
+            )
+            planned[(scheme.name, target.poi)] = {
+                "scheme": scheme,
+                "target": target,
+                "grid_points": grid_points,
+                "poi_max": poi_max,
+                "range_reference": range_reference,
+            }
+            log(
+                "HybridNew grid from asymptotic: "
+                f"{scheme.name}/{target.poi} has {len(grid_points)} point(s), "
+                f"r range {format_number(args.poi_min)} to {format_number(poi_max)}, "
+                f"-T {grid_toys}, cycles {args.hybrid_grid_cycles}, "
+                f"profiled POIs keep 0 to {format_number(args.poi_max)}"
+            )
+            for point_index, point_value in enumerate(grid_points):
+                for cycle_index in range(args.hybrid_grid_cycles):
+                    point_jobs.append(
+                        build_hybrid_grid_point_job(
+                            run_dir,
+                            scheme,
+                            target,
+                            point_value,
+                            point_index,
+                            cycle_index,
+                            next_seed,
+                            args.mass,
+                            workspace_paths[scheme.name],
+                            staged_datacards[scheme.name],
+                            blind_asimov_paths[scheme.name],
+                            args.poi_min,
+                            poi_max,
+                            args.poi_max,
+                            grid_toys,
+                            quick=args.quick,
+                            range_reference=range_reference,
+                        )
+                    )
+                    next_seed += 1
+
+    results: list[dict[str, Any]] = []
+    point_results = run_jobs_parallel(point_jobs, args.workers, "HybridNew grid point jobs")
+    results.extend(point_results)
+    if not all(result_successful(result) for result in point_results):
+        return results
+
+    root_paths_by_target: dict[tuple[str, str], list[Path]] = {key: [] for key in planned}
+    for result in point_results:
+        metadata = result.get("metadata", {})
+        key = (str(metadata.get("scheme")), str(metadata.get("target_poi")))
+        root_path = result_output_path(result)
+        if root_path is None:
+            raise RuntimeError(f"No HybridNew grid point ROOT output found for {result.get('job_id')}")
+        root_paths_by_target[key].append(root_path)
+
+    merge_jobs = [
+        build_hybrid_grid_merge_job(
+            run_dir,
+            plan["scheme"],
+            plan["target"],
+            root_paths_by_target[key],
+            plan["range_reference"],
+        )
+        for key, plan in planned.items()
+    ]
+    merge_results = run_jobs_parallel(merge_jobs, args.workers, "HybridNew grid merge jobs")
+    results.extend(merge_results)
+    if not all(result_successful(result) for result in merge_results):
+        return results
+
+    grid_paths: dict[tuple[str, str], Path] = {}
+    for result in merge_results:
+        metadata = result.get("metadata", {})
+        key = (str(metadata.get("scheme")), str(metadata.get("target_poi")))
+        grid_path = result_output_path(result, LOCAL_HYBRID_GRID_NAME)
+        if grid_path is None:
+            raise RuntimeError(f"No merged HybridNew grid output found for {result.get('job_id')}")
+        grid_paths[key] = grid_path
+
+    diagnostic_jobs = [
+        build_hybrid_grid_distribution_plot_job(
+            run_dir,
+            plan["scheme"],
+            plan["target"],
+            args.mass,
+            grid_paths[key],
+            plan["range_reference"],
+        )
+        for key, plan in planned.items()
+    ]
+    diagnostic_results = run_jobs_parallel(
+        diagnostic_jobs,
+        args.workers,
+        "HybridNew grid diagnostic plot jobs",
+    )
+    results.extend(diagnostic_results)
+
+    read_jobs: list[CommandJob] = []
+    for key, plan in planned.items():
+        scheme = plan["scheme"]
+        target = plan["target"]
+        for quantile in args.quantiles:
+            read_jobs.append(
+                build_hybrid_grid_read_job(
+                    run_dir,
+                    scheme,
+                    target,
+                    quantile,
+                    args.mass,
+                    workspace_paths[scheme.name],
+                    staged_datacards[scheme.name],
+                    blind_asimov_paths[scheme.name],
+                    grid_paths[key],
+                    args.poi_min,
+                    plan["poi_max"],
+                    args.poi_max,
+                    grid_toys,
+                    args.hybrid_grid_cycles,
+                    plan["grid_points"],
+                    quick=args.quick,
+                    range_reference=plan["range_reference"],
+                )
+            )
+
+    read_results = run_jobs_parallel(read_jobs, args.workers, "HybridNew grid readback jobs")
+    results.extend(read_results)
+    return results
+
+
 def result_output_path(result: dict[str, Any], expected_name: str | None = None) -> Path | None:
     cwd = Path(result["cwd"])
     root_files = [cwd / name for name in result.get("produced_root_files", [])]
@@ -1754,6 +2467,16 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "default_poi_max": metadata.get("default_poi_max"),
         "profiled_poi_max": metadata.get("profiled_poi_max"),
         "hint_method": metadata.get("hint_method"),
+        "hybrid_mode": metadata.get("hybrid_mode"),
+        "grid_point": metadata.get("grid_point"),
+        "grid_point_index": metadata.get("grid_point_index"),
+        "grid_cycle": metadata.get("grid_cycle"),
+        "grid_seed": metadata.get("grid_seed"),
+        "grid_point_count": metadata.get("grid_point_count"),
+        "grid_cycles": metadata.get("grid_cycles"),
+        "grid_file": metadata.get("grid_file_repo_relative", metadata.get("grid_file")),
+        "grid_cls_acc": metadata.get("grid_cls_acc"),
+        "r_max_option": metadata.get("r_max_option"),
         "dataset_override": metadata.get("dataset_override"),
         "bypass_frequentist_fit": metadata.get("bypass_frequentist_fit"),
         "range_source": metadata.get("range_source"),
@@ -1765,6 +2488,7 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "retry_reasons": metadata.get("retry_reasons"),
         "retry_exhausted": metadata.get("retry_exhausted"),
         "retry_message": metadata.get("retry_message"),
+        "diagnostic_outputs": result.get("diagnostic_outputs", []),
         "limits": result.get("limits"),
     }
 
@@ -1824,9 +2548,16 @@ def write_run_summary(
         "methods": args.methods,
         "quantiles": list(args.quantiles),
         "quick": args.quick,
+        "hybrid_mode": hybrid_mode_label(args),
         "hybrid_range_from_asymptotic": args.hybrid_range_from_asymptotic,
         "hybrid_range_asymptotic_scale": HYBRID_RANGE_ASYMPTOTIC_SCALE,
         "hybrid_retry_range_scale": HYBRID_RETRY_RANGE_SCALE,
+        "hybrid_grid_toys": hybrid_grid_toys(args),
+        "hybrid_grid_cycles": args.hybrid_grid_cycles,
+        "hybrid_grid_upper_scale": args.hybrid_grid_upper_scale,
+        "hybrid_grid_coarse_points": args.hybrid_grid_coarse_points,
+        "hybrid_grid_seed": args.hybrid_grid_seed,
+        "hybrid_grid_relative_offsets": list(HYBRID_GRID_RELATIVE_OFFSETS),
         "fixed_range_hybrid_hint_method": "AsymptoticLimits",
         "blind_asimov_dataset": BLIND_ASIMOV_DATASET,
         "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
@@ -1901,6 +2632,7 @@ def write_run_summary(
             )
             if result.get("summary_html_path")
             else "-",
+            diagnostic_links_html(result, run_dir),
         ]
         for result in results
     ]
@@ -1910,12 +2642,18 @@ def write_run_summary(
         ["Mass", args.mass],
         ["Methods", args.methods],
         ["Quick mode", "yes" if args.quick else "no"],
+        ["Hybrid mode", hybrid_mode_label(args)],
         [
             "Hybrid range strategy",
-            "asymptotic-derived target POI per quantile"
+            "asymptotic-derived target POI grid"
+            if uses_hybrid_grid(args)
+            else "asymptotic-derived target POI per quantile"
             if args.hybrid_range_from_asymptotic
             else "fixed default range",
         ],
+        ["Hybrid grid toys per cycle", hybrid_grid_toys(args) if uses_hybrid_grid(args) else "-"],
+        ["Hybrid grid cycles", args.hybrid_grid_cycles if uses_hybrid_grid(args) else "-"],
+        ["Hybrid grid upper scale", args.hybrid_grid_upper_scale if uses_hybrid_grid(args) else "-"],
         ["Hybrid range max retries", args.hybrid_range_max_retries],
         ["Hybrid retry range scale", HYBRID_RETRY_RANGE_SCALE],
         ["Blind Asimov dataset", BLIND_ASIMOV_DATASET],
@@ -1934,8 +2672,10 @@ def write_run_summary(
         <li>HybridNew jobs use <code>--expectedFromGrid</code> for the requested expected quantiles.</li>
         <li>HybridNew jobs pass <code>--bypassFrequentistFit</code>.</li>
         <li>Fixed-range HybridNew jobs pass <code>-H AsymptoticLimits</code>; asymptotic-derived-range HybridNew jobs do not.</li>
-        <li>All Combine limit jobs pass <code>--cminDefaultMinimizerStrategy 2</code>.</li>
+        <li>Non-quick Combine limit jobs pass <code>--cminDefaultMinimizerStrategy 2</code>.</li>
         <li>When <code>--hybrid-range-from-asymptotic</code> is used, only the <code>--redefineSignalPOIs</code> target gets <code>0,min(1000000,10*r_asymp)</code>; profiled POIs keep the default range.</li>
+        <li>When <code>--methods HybridGrid</code> is used, HybridNew point jobs run <code>--singlePoint</code> with <code>--clsAcc 0</code>, merge with <code>hadd</code>, and read back expected limits with <code>--readHybridResults --grid</code>.</li>
+        <li>HybridNew grid jobs set <code>--rMax</code> to the asymptotic-derived grid maximum so large POI limits are not clipped by Combine's default maximum.</li>
         <li>Retryable HybridNew minimization warnings scale the r range by 10 and immediately re-enter the job queue when that job finishes, until the retry cap is reached.</li>
       </ul>
     """
@@ -1966,7 +2706,7 @@ def write_run_summary(
     <section class="card"><h2>Summary</h2>{html_table_raw(['Field', 'Value'], [[html_escape(k), v if str(v).startswith('<a ') else html_escape(v)] for k, v in summary_rows])}</section>
     <section class="card"><h2>Limit Policy</h2>{policy_html}</section>
     {retry_alert_section}
-    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'Target POI Range', 'Profiled POI Range', 'Retry', 'Duration', 'Summary'], job_rows)}</section>
+    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'Target POI Range', 'Profiled POI Range', 'Retry', 'Duration', 'Summary', 'Diagnostics'], job_rows)}</section>
     """
     readme_html.write_text(html_document("Blind Limit Run", body), encoding="utf-8")
 
@@ -1976,7 +2716,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Run expected upper-limit workflows for the bundled simultaneous Combine card. "
             "Independent three-POI H/Z and grouped H/Z schemes are supported."
-        )
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--datacard",
@@ -2005,16 +2746,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--methods",
-        choices=("asymptotic", "hybrid", "both"),
+        choices=("asymptotic", "hybrid", "HybridGrid", "both"),
         default="both",
-        help="Limit method(s) to run.",
-    )
-    parser.add_argument(
-        "--quick",
-        action="store_true",
         help=(
-            "Run a fast non-default HybridNew configuration: "
-            "--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100."
+            "Limit method(s) to run. `HybridGrid` runs asymptotic limits first, "
+            "then parallel HybridNew --singlePoint toy grids, then readback with --readHybridResults."
         ),
     )
     parser.add_argument(
@@ -2027,13 +2763,54 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Run a fast non-default HybridNew configuration: "
+            "--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-grid-toys",
+        type=int,
+        default=None,
+        help=(
+            "Toys per HybridNew grid point cycle. Defaults to --hybrid-toys when set "
+            f"(including --quick), otherwise {DEFAULT_HYBRID_GRID_TOYS}."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-grid-cycles",
+        type=int,
+        default=DEFAULT_HYBRID_GRID_CYCLES,
+        help="Independent seed cycles per HybridNew grid point; outputs are merged before readback.",
+    )
+    parser.add_argument(
+        "--hybrid-grid-upper-scale",
+        type=float,
+        default=DEFAULT_HYBRID_GRID_UPPER_SCALE,
+        help="Set grid rMax to this factor times the largest requested asymptotic expected limit, capped by the default POI maximum.",
+    )
+    parser.add_argument(
+        "--hybrid-grid-coarse-points",
+        type=int,
+        default=DEFAULT_HYBRID_GRID_COARSE_POINTS,
+        help="Number of coarse linear grid points between rMin and the asymptotic-derived grid rMax.",
+    )
+    parser.add_argument(
+        "--hybrid-grid-seed",
+        type=int,
+        default=DEFAULT_HYBRID_GRID_SEED,
+        help="Base random seed for deterministic HybridNew grid point cycles.",
+    )
+    parser.add_argument(
         "--hybrid-range-max-retries",
         type=int,
         default=DEFAULT_HYBRID_RANGE_MAX_RETRIES,
         help=(
             "Maximum number of 10x-r-range HybridNew retries after retryable "
             "minimization warnings in --hybrid-range-from-asymptotic mode. "
-            "All limit jobs pass --cminDefaultMinimizerStrategy 2."
+            "Non-quick limit jobs pass --cminDefaultMinimizerStrategy 2."
         ),
     )
     parser.add_argument(
@@ -2052,7 +2829,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=int,
         default=0,
-        help="Parallel subprocess workers per dependency wave. Use 0 to run all ready jobs at once; adaptive HybridNew retries reuse this pool immediately.",
+        help="Parallel subprocess workers per dependency wave. Use 0 to cap at the available CPU count; adaptive HybridNew retries reuse this pool immediately.",
     )
     parser.add_argument(
         "--hybrid-toys",
@@ -2104,6 +2881,16 @@ def main() -> int:
     if args.hybrid_range_max_retries < 0:
         raise ValueError("--hybrid-range-max-retries must be non-negative")
     apply_quick_mode(args)
+    if uses_hybrid_grid(args) and args.no_save_hybrid_result:
+        raise ValueError("--no-save-hybrid-result is incompatible with --methods HybridGrid")
+    if args.hybrid_grid_cycles <= 0:
+        raise ValueError("--hybrid-grid-cycles must be positive")
+    if args.hybrid_grid_upper_scale <= 0.0:
+        raise ValueError("--hybrid-grid-upper-scale must be positive")
+    if args.hybrid_grid_coarse_points < 2:
+        raise ValueError("--hybrid-grid-coarse-points must be at least 2")
+    if hybrid_grid_toys(args) <= 0:
+        raise ValueError("Hybrid grid toys must be positive")
     datacard_path = Path(args.datacard).resolve()
     args.datacard = str(datacard_path)
     ensure_file(datacard_path, "Input datacard not found")
@@ -2118,13 +2905,18 @@ def main() -> int:
     log(f"Backgrounds: {', '.join(processes.backgrounds)}")
     log(f"POI schemes: {', '.join(scheme_label(scheme.name) for scheme in schemes)}")
     if args.quick:
-        log(
-            "Quick mode enabled: HybridNew "
-            "--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100"
-        )
+        if uses_hybrid_grid(args):
+            log("Quick mode enabled: HybridNew grid point cycles use -T 100; grid points keep --clsAcc 0")
+        else:
+            log(
+                "Quick mode enabled: HybridNew "
+                "--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100"
+            )
     log("Default POI range: 0 to 1000000")
     if args.hybrid_range_from_asymptotic:
         log("Optional HybridNew range mode enabled: target POI ranges come from asymptotic limits")
+    if uses_hybrid_grid(args):
+        log("HybridGrid method enabled: asymptotic limits will seed parallel --singlePoint grids")
 
     all_results: list[dict[str, Any]] = []
 
@@ -2177,9 +2969,10 @@ def main() -> int:
             raise RuntimeError(f"No blind Asimov output found for {scheme_name}")
         blind_asimov_paths[scheme_name] = asimov_path
 
-    run_hybrid = args.methods in {"hybrid", "both"}
+    run_hybrid_grid = uses_hybrid_grid(args)
+    run_hybrid = args.methods in {"hybrid", "both"} or run_hybrid_grid
     run_requested_asymptotic = args.methods in {"asymptotic", "both"}
-    use_asymptotic_hybrid_ranges = args.hybrid_range_from_asymptotic and run_hybrid
+    use_asymptotic_hybrid_ranges = (args.hybrid_range_from_asymptotic or run_hybrid_grid) and run_hybrid
     run_asymptotic = run_requested_asymptotic or use_asymptotic_hybrid_ranges
     if args.hybrid_range_from_asymptotic and not run_hybrid:
         log("Hybrid range from asymptotic requested, but HybridNew is not selected; using normal asymptotic-only flow.")
@@ -2213,62 +3006,79 @@ def main() -> int:
             write_run_summary(run_dir, args, processes, schemes, all_results)
             return 1
 
-        asymptotic_lookup = asymptotic_results_by_target(asymptotic_results)
-        hybrid_jobs: list[CommandJob] = []
-        try:
-            for scheme in schemes:
-                for target in scheme.targets:
-                    for quantile in args.quantiles:
-                        poi_max, range_reference = hybrid_range_from_asymptotic_result(
-                            asymptotic_lookup,
-                            scheme,
-                            target,
-                            quantile,
-                        )
-                        log(
-                            "HybridNew target range from asymptotic: "
-                            f"{scheme.name}/{target.poi}/{quantile_key(quantile)} "
-                            f"0 to {format_number(poi_max)} "
-                            f"from r_asymp={format_number(float(range_reference['asymptotic_limit']))}; "
-                            f"profiled POIs keep 0 to {format_number(args.poi_max)}"
-                        )
-                        hybrid_jobs.append(
-                            build_hybrid_job(
-                                run_dir,
+        if run_hybrid_grid:
+            try:
+                hybrid_results = run_hybrid_grid_workflow(
+                    args,
+                    run_dir,
+                    schemes,
+                    asymptotic_results,
+                    workspace_paths,
+                    staged_datacards,
+                    blind_asimov_paths,
+                )
+            except RuntimeError as exc:
+                log(str(exc))
+                write_run_summary(run_dir, args, processes, schemes, all_results)
+                return 1
+            all_results.extend(hybrid_results)
+        else:
+            asymptotic_lookup = asymptotic_results_by_target(asymptotic_results)
+            hybrid_jobs: list[CommandJob] = []
+            try:
+                for scheme in schemes:
+                    for target in scheme.targets:
+                        for quantile in args.quantiles:
+                            poi_max, range_reference = hybrid_range_from_asymptotic_result(
+                                asymptotic_lookup,
                                 scheme,
                                 target,
                                 quantile,
-                                args.mass,
-                                workspace_paths[scheme.name],
-                                staged_datacards[scheme.name],
-                                blind_asimov_paths[scheme.name],
-                                args.poi_min,
-                                poi_max,
-                                args.hybrid_toys,
-                                args.cls_acc,
-                                args.r_rel_acc,
-                                args.r_abs_acc,
-                                not args.no_save_hybrid_result,
-                                args.poi_max,
-                                quick=args.quick,
-                                range_source="asymptotic",
-                                range_reference=range_reference,
                             )
-                        )
-        except RuntimeError as exc:
-            log(str(exc))
-            write_run_summary(run_dir, args, processes, schemes, all_results)
-            return 1
-        hybrid_results = run_hybrid_jobs_with_adaptive_retries(
-            hybrid_jobs,
-            args,
-            run_dir,
-            schemes,
-            workspace_paths,
-            staged_datacards,
-            blind_asimov_paths,
-        )
-        all_results.extend(hybrid_results)
+                            log(
+                                "HybridNew target range from asymptotic: "
+                                f"{scheme.name}/{target.poi}/{quantile_key(quantile)} "
+                                f"0 to {format_number(poi_max)} "
+                                f"from r_asymp={format_number(float(range_reference['asymptotic_limit']))}; "
+                                f"profiled POIs keep 0 to {format_number(args.poi_max)}"
+                            )
+                            hybrid_jobs.append(
+                                build_hybrid_job(
+                                    run_dir,
+                                    scheme,
+                                    target,
+                                    quantile,
+                                    args.mass,
+                                    workspace_paths[scheme.name],
+                                    staged_datacards[scheme.name],
+                                    blind_asimov_paths[scheme.name],
+                                    args.poi_min,
+                                    poi_max,
+                                    args.hybrid_toys,
+                                    args.cls_acc,
+                                    args.r_rel_acc,
+                                    args.r_abs_acc,
+                                    not args.no_save_hybrid_result,
+                                    args.poi_max,
+                                    quick=args.quick,
+                                    range_source="asymptotic",
+                                    range_reference=range_reference,
+                                )
+                            )
+            except RuntimeError as exc:
+                log(str(exc))
+                write_run_summary(run_dir, args, processes, schemes, all_results)
+                return 1
+            hybrid_results = run_hybrid_jobs_with_adaptive_retries(
+                hybrid_jobs,
+                args,
+                run_dir,
+                schemes,
+                workspace_paths,
+                staged_datacards,
+                blind_asimov_paths,
+            )
+            all_results.extend(hybrid_results)
     else:
         limit_jobs: list[CommandJob] = list(asymptotic_jobs if run_requested_asymptotic else [])
         if run_hybrid:
