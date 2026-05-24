@@ -688,6 +688,7 @@ def build_hybrid_job(
     attempt: int = 0,
     retry_of: str | None = None,
     retry_reasons: tuple[str, ...] = (),
+    quick: bool = False,
 ) -> CommandJob:
     scheme_display = poi_scheme_display(scheme.name)
     target_display = signal_target_display(target.label)
@@ -731,7 +732,8 @@ def build_hybrid_job(
         "-n",
         f".hybrid_blind.{target_display.slug}.{quantile_tag(quantile)}{retry_suffix}",
     ]
-    command.extend(common_minimizer_options())
+    if not quick:
+        command.extend(common_minimizer_options())
     if hint_method is not None:
         command.extend(["-H", hint_method])
     if save_hybrid_result:
@@ -1601,6 +1603,7 @@ def make_hybrid_retry_job(
         args.r_abs_acc,
         not args.no_save_hybrid_result,
         args.poi_max,
+        quick=args.quick,
         range_source=str(metadata.get("range_source", "asymptotic")),
         range_reference=range_reference,
         attempt=attempt + 1,
@@ -2247,6 +2250,7 @@ def main() -> int:
                                 args.r_abs_acc,
                                 not args.no_save_hybrid_result,
                                 args.poi_max,
+                                quick=args.quick,
                                 range_source="asymptotic",
                                 range_reference=range_reference,
                             )
@@ -2289,6 +2293,7 @@ def main() -> int:
                                 args.r_abs_acc,
                                 not args.no_save_hybrid_result,
                                 args.poi_max,
+                                quick=args.quick,
                                 hint_method="AsymptoticLimits",
                             )
                         )
