@@ -932,11 +932,19 @@ def format_duration(total_seconds: float) -> str:
     return f"{days:02d}:{hours:02d}:{minutes:02d}:{seconds:02d}:{milliseconds:03d}"
 
 
+def format_command_txt(command: list[str]) -> str:
+    separator = " " + "\\" + "\n  "
+    return separator.join(shlex.quote(part) for part in command)
+
+
 def run_command_job(job: CommandJob) -> dict[str, Any]:
     job.cwd.mkdir(parents=True, exist_ok=True)
     command_string = shlex.join(job.command)
     command_path = job.cwd / "command.txt"
-    command_path.write_text(command_string + "\n", encoding="utf-8")
+    command_path.write_text(
+        format_command_txt(list(job.command)) + "\n",
+        encoding="utf-8",
+    )
     started_at = dt.datetime.now(dt.timezone.utc)
     start_time = time.monotonic()
     stdout = ""
@@ -1009,7 +1017,10 @@ def executor_exception_result(job: CommandJob, exc: Exception) -> dict[str, Any]
     command_path = job.cwd / "command.txt"
     stdout_path = job.cwd / "stdout.txt"
     stderr_path = job.cwd / "stderr.txt"
-    command_path.write_text(command_string + "\n", encoding="utf-8")
+    command_path.write_text(
+        format_command_txt(list(job.command)) + "\n",
+        encoding="utf-8",
+    )
     stdout_path.write_text("", encoding="utf-8")
     stderr_text = f"Unhandled executor exception: {exc}"
     stderr_path.write_text(stderr_text, encoding="utf-8")

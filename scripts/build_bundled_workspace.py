@@ -553,22 +553,24 @@ def signal_mass_shape_nuisance_name(
 ) -> str:
     for configured_source, nuisance_name in SIGNAL_MASS_SYSTEMATICS:
         if source_name == configured_source:
-            return f"{nuisance_name}_{signal_spec.combine_name}"
+            return f"{nuisance_name}_{signal_spec.process}"
     raise RuntimeError(f"Unsupported signal mass systematic source {source_name!r}")
 
 
 def signal_mass_shape_nuisance_rows(
     signal_specs: list[SignalProcessSpec],
 ) -> list[tuple[str, str, str]]:
-    return [
-        (
-            signal_spec.combine_name,
-            source_name,
-            signal_mass_shape_nuisance_name(source_name, signal_spec),
-        )
-        for signal_spec in signal_specs
-        for source_name, _ in SIGNAL_MASS_SYSTEMATICS
-    ]
+    rows: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for signal_spec in signal_specs:
+        for source_name, _ in SIGNAL_MASS_SYSTEMATICS:
+            nuisance_name = signal_mass_shape_nuisance_name(source_name, signal_spec)
+            key = (signal_spec.process, source_name, nuisance_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((signal_spec.process, source_name, nuisance_name))
+    return rows
 
 
 def validate_signal_mass_systematics(
