@@ -72,6 +72,12 @@ NON_RESONANT_PROCESS_NAME = "non_resonant_bkg"
 DEFAULT_PDF_INDEX_NAME = "pdfindex"
 
 
+class StoreCminStrategy(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):  # type: ignore[override]
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "cmin_strategy_explicit", True)
+
+
 @dataclass(frozen=True)
 class DatacardProcesses:
     signals: list[str]
@@ -916,6 +922,7 @@ def build_fit_job(
             "poi_max": poi_max,
             "quick": bool(args.quick),
             "cmin_default_minimizer_strategy": int(args.cmin_default_minimizer_strategy),
+            "cmin_strategy_explicit": bool(args.cmin_strategy_explicit),
             "robust_fit": bool(args.robust_fit),
             "pdf_index_name": args.pdf_index_name,
             "mass": mass,
@@ -2068,6 +2075,7 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
         "poi_max": metadata.get("poi_max"),
         "quick": metadata.get("quick"),
         "cmin_default_minimizer_strategy": metadata.get("cmin_default_minimizer_strategy"),
+        "cmin_strategy_explicit": metadata.get("cmin_strategy_explicit"),
         "robust_fit": metadata.get("robust_fit"),
         "bias_analysis": result.get("bias_analysis"),
     }
@@ -2138,6 +2146,7 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "poi_max": metadata.get("poi_max"),
         "quick": metadata.get("quick"),
         "cmin_default_minimizer_strategy": metadata.get("cmin_default_minimizer_strategy"),
+        "cmin_strategy_explicit": metadata.get("cmin_strategy_explicit"),
         "robust_fit": metadata.get("robust_fit"),
         "analysis_status": analysis.get("status"),
         "entries_total": analysis.get("entries_total"),
@@ -4034,6 +4043,7 @@ def write_run_summary(
         "poi_max": args.poi_max,
         "quick": bool(args.quick),
         "cmin_default_minimizer_strategy": int(args.cmin_default_minimizer_strategy),
+        "cmin_strategy_explicit": bool(args.cmin_strategy_explicit),
         "robust_fit": bool(args.robust_fit),
         "bias_pull_threshold": args.bias_pull_threshold,
         "pull_width_threshold": args.pull_width_threshold,
@@ -4106,6 +4116,7 @@ def write_run_summary(
         ["Fit PDF modes", ", ".join(args.pdf_target_strategies)],
         ["Quick mode", "enabled" if args.quick else "disabled"],
         ["Minimizer strategy", args.cmin_default_minimizer_strategy],
+        ["Minimizer strategy explicit", "yes" if args.cmin_strategy_explicit else "no"],
         ["Robust fit", "enabled" if args.robust_fit else "disabled"],
         ["Bias threshold", args.bias_pull_threshold],
         ["Scatter outlier annotations", "enabled" if args.annotate_scatter_outliers else "disabled"],
@@ -4239,7 +4250,7 @@ def write_run_summary(
     ]
     policy_note = """
       <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
-      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. The <code>--pdf-target-strategy</code> option controls whether <code>pdfindex</code> floats/profiled, is fixed to each target PDF index, or both. Job-level POI ranges use the fixed requested range. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report r closure and the closure pull, and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. The <code>--pdf-target-strategy</code> option controls whether <code>pdfindex</code> floats/profiled, is fixed to each target PDF index, or both. Job-level POI ranges use the fixed requested range. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report r closure and the closure pull, and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0 unless <code>--cmin-strategy</code> is explicitly set.</p>
     """
     body = f"""
     <h1>Bias Study Run</h1>
@@ -4305,6 +4316,7 @@ def build_parser() -> argparse.ArgumentParser:
             "using GenerateOnly and MultiDimFit."
         )
     )
+    parser.set_defaults(cmin_strategy_explicit=False)
     parser.add_argument(
         "--datacard",
         default=str(DEFAULT_DATACARD),
@@ -4432,17 +4444,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Use faster, less robust MultiDimFit settings: disable --robustFit and use "
-            f"--cminDefaultMinimizerStrategy {QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY}."
+            f"--cminDefaultMinimizerStrategy {QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY} "
+            "unless --cmin-strategy is explicitly set."
         ),
     )
     parser.add_argument(
+        "--cmin-strategy",
         "--cmin-default-minimizer-strategy",
+        dest="cmin_default_minimizer_strategy",
         type=int,
+        choices=(0, 1, 2),
         default=DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+        action=StoreCminStrategy,
         help=(
             "Value passed as --cminDefaultMinimizerStrategy to MultiDimFit. "
             f"Default is {DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY}; --quick overrides this to "
-            f"{QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY}."
+            f"{QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY} unless this option is explicitly set."
         ),
     )
     parser.add_argument(
@@ -4506,13 +4523,14 @@ def validate_args(args: argparse.Namespace) -> None:
     args.pdf_target_strategies = selected_pdf_target_strategies(args)
     if args.quick:
         args.robust_fit = False
-        args.cmin_default_minimizer_strategy = QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY
+        if not args.cmin_strategy_explicit:
+            args.cmin_default_minimizer_strategy = QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY
     if "toys" in args.dataset_strategies and args.toys <= 0:
         raise ValueError("--toys must be positive when --dataset-strategy includes toys")
     if args.workers < 0:
         raise ValueError("--workers must be non-negative")
     if args.cmin_default_minimizer_strategy < 0:
-        raise ValueError("--cmin-default-minimizer-strategy must be non-negative")
+        raise ValueError("--cmin-strategy must be non-negative")
     if not args.injections:
         raise ValueError("--injections must contain at least one value")
     if any(not math.isfinite(float(value)) for value in args.injections):
@@ -4579,7 +4597,13 @@ def main() -> int:
     )
     log(f"Minimizer strategy: {args.cmin_default_minimizer_strategy}")
     if args.quick:
-        log("Quick mode enabled: robust fitting disabled and minimizer strategy set to 0")
+        if args.cmin_strategy_explicit:
+            log(
+                "Quick mode enabled: robust fitting disabled and explicit "
+                f"minimizer strategy {args.cmin_default_minimizer_strategy} kept"
+            )
+        else:
+            log("Quick mode enabled: robust fitting disabled and minimizer strategy set to 0")
     if args.robust_fit:
         log("Robust fit enabled: MultiDimFit commands include --robustFit 1")
 
