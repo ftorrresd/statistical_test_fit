@@ -70,6 +70,7 @@ LOCAL_WORKSPACE_NAME = "workspace.root"
 LOCAL_DATACARD_NAME = "datacard.txt"
 LOCAL_BLIND_ASIMOV_NAME = "blind_asimov.root"
 LOCAL_HYBRID_GRID_NAME = "hybrid_grid.root"
+RUN_SUMMARY_HTML_NAME = "SUMMARY.html"
 BLIND_ASIMOV_DATASET = f"{LOCAL_BLIND_ASIMOV_NAME}:toys/toy_asimov"
 
 
@@ -1445,6 +1446,7 @@ def run_jobs_parallel(
     jobs: list[CommandJob],
     workers: int,
     wave_name: str,
+    on_launch: Any | None = None,
 ) -> list[dict[str, Any]]:
     print_job_manifest(wave_name, jobs, workers)
     if not jobs:
@@ -1454,6 +1456,8 @@ def run_jobs_parallel(
     results: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_job = {executor.submit(run_command_job, job): job for job in jobs}
+        if on_launch is not None:
+            on_launch(jobs)
         pending_job_ids = {job.job_id for job in jobs}
         for future in concurrent.futures.as_completed(future_to_job):
             job = future_to_job[future]
@@ -2595,6 +2599,44 @@ def short_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def short_planned_job(job: CommandJob) -> dict[str, Any]:
+    metadata = job.metadata
+    return {
+        "job_id": job.job_id,
+        "kind": job.kind,
+        "method": job.method,
+        "status": "planned",
+        "cwd": repo_relative(job.cwd),
+        "command_file": repo_relative(job.cwd / "command.txt"),
+        "command": list(job.command),
+        "command_string": shlex.join(job.command),
+        "scheme": metadata.get("scheme"),
+        "target_poi": metadata.get("target_poi"),
+        "target_label": metadata.get("target_label"),
+        "target_processes": metadata.get("target_processes"),
+        "quantile": metadata.get("quantile"),
+        "poi_min": metadata.get("poi_min"),
+        "poi_max": metadata.get("poi_max"),
+        "default_poi_max": metadata.get("default_poi_max"),
+        "profiled_poi_max": metadata.get("profiled_poi_max"),
+        "hint_method": metadata.get("hint_method"),
+        "hybrid_mode": metadata.get("hybrid_mode"),
+        "grid_point": metadata.get("grid_point"),
+        "grid_point_index": metadata.get("grid_point_index"),
+        "grid_cycle": metadata.get("grid_cycle"),
+        "grid_seed": metadata.get("grid_seed"),
+        "grid_point_count": metadata.get("grid_point_count"),
+        "grid_cycles": metadata.get("grid_cycles"),
+        "grid_file": metadata.get("grid_file_repo_relative", metadata.get("grid_file")),
+        "grid_cls_acc": metadata.get("grid_cls_acc"),
+        "r_max_option": metadata.get("r_max_option"),
+        "dataset_override": metadata.get("dataset_override"),
+        "bypass_frequentist_fit": metadata.get("bypass_frequentist_fit"),
+        "range_source": metadata.get("range_source"),
+        "range_reference": metadata.get("range_reference"),
+    }
+
+
 def build_limit_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     for result in results:
@@ -2635,15 +2677,22 @@ def write_run_summary(
     processes: DatacardProcesses,
     schemes: tuple[PoiScheme, ...],
     results: list[dict[str, Any]],
+    planned_jobs: list[CommandJob] | None = None,
+    phase: str = "complete",
 ) -> None:
-    readme_html = run_dir / "README.html"
+    summary_html = run_dir / RUN_SUMMARY_HTML_NAME
     retry_alerts = hybrid_retry_alerts(results)
+    completed_job_ids = {str(result.get("job_id")) for result in results}
+    pending_planned_jobs = [
+        job for job in (planned_jobs or []) if job.job_id not in completed_job_ids
+    ]
     payload = {
         "schema_version": 1,
+        "summary_phase": phase,
         "run_dir": str(run_dir.resolve()),
         "run_dir_repo_relative": repo_relative(run_dir),
-        "readme_html": str(readme_html.resolve()),
-        "readme_html_repo_relative": repo_relative(readme_html),
+        "summary_html": str(summary_html.resolve()),
+        "summary_html_repo_relative": repo_relative(summary_html),
         "datacard": str(Path(args.datacard).resolve()),
         "datacard_repo_relative": repo_relative(Path(args.datacard).resolve()),
         "mass": args.mass,
@@ -2700,10 +2749,15 @@ def write_run_summary(
             for scheme in schemes
         ],
         "jobs": [short_result(result) for result in results],
+        "planned_jobs": [short_planned_job(job) for job in pending_planned_jobs],
         "limits": build_limit_summary(results),
     }
     summary_json = run_dir / "blind_limits_summary.json"
     summary_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def metadata_range(metadata: dict[str, Any], key: str) -> str:
+        value = metadata.get(key)
+        return f"0 to {format_number(float(value))}" if value is not None else "-"
 
     job_rows = [
         [
@@ -2713,16 +2767,8 @@ def write_run_summary(
             html_escape(result.get("metadata", {}).get("scheme_label", result.get("metadata", {}).get("scheme", "-"))),
             html_escape(result.get("metadata", {}).get("target_display_label", result.get("metadata", {}).get("target_poi", "-"))),
             html_escape(result.get("metadata", {}).get("quantile", "-")),
-            html_escape(
-                f"0 to {format_number(float(result.get('metadata', {}).get('poi_max')))}"
-                if result.get("metadata", {}).get("poi_max") is not None
-                else "-"
-            ),
-            html_escape(
-                f"0 to {format_number(float(result.get('metadata', {}).get('profiled_poi_max')))}"
-                if result.get("metadata", {}).get("profiled_poi_max") is not None
-                else "-"
-            ),
+            html_escape(metadata_range(result.get("metadata", {}), "poi_max")),
+            html_escape(metadata_range(result.get("metadata", {}), "profiled_poi_max")),
             html_escape(retry_summary_text(result)),
             html_escape(
                 result.get(
@@ -2740,8 +2786,29 @@ def write_run_summary(
         ]
         for result in results
     ]
+    job_rows.extend(
+        [
+            html_escape(job.job_id),
+            html_escape(job.method),
+            status_pill("planned"),
+            html_escape(job.metadata.get("scheme_label", job.metadata.get("scheme", "-"))),
+            html_escape(
+                job.metadata.get("target_display_label", job.metadata.get("target_poi", "-"))
+            ),
+            html_escape(job.metadata.get("quantile", "-")),
+            html_escape(metadata_range(job.metadata, "poi_max")),
+            html_escape(metadata_range(job.metadata, "profiled_poi_max")),
+            "-",
+            "-",
+            "-",
+            f"<code>{html_escape(shlex.join(job.command))}</code>",
+        ]
+        for job in pending_planned_jobs
+    )
     summary_rows = [
+        ["Summary phase", phase],
         ["Run directory", repo_relative(run_dir)],
+        ["HTML summary", html_link(RUN_SUMMARY_HTML_NAME, RUN_SUMMARY_HTML_NAME)],
         ["Datacard", repo_relative(Path(args.datacard).resolve())],
         ["Mass", args.mass],
         ["Methods", args.methods],
@@ -2813,9 +2880,9 @@ def write_run_summary(
     <section class="card"><h2>Summary</h2>{html_table_raw(['Field', 'Value'], [[html_escape(k), v if str(v).startswith('<a ') else html_escape(v)] for k, v in summary_rows])}</section>
     <section class="card"><h2>Limit Policy</h2>{policy_html}</section>
     {retry_alert_section}
-    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'Target POI Range', 'Profiled POI Range', 'Retry', 'Duration', 'Summary', 'Diagnostics'], job_rows)}</section>
+    <section class="card"><h2>Jobs</h2>{html_table_raw(['Job', 'Method', 'Status', 'Scheme', 'Target POI', 'Quantile', 'Target POI Range', 'Profiled POI Range', 'Retry', 'Duration', 'Summary', 'Diagnostics / Plan'], job_rows)}</section>
     """
-    readme_html.write_text(html_document("Blind Limit Run", body), encoding="utf-8")
+    summary_html.write_text(html_document("Blind Limit Run", body), encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3043,11 +3110,33 @@ def main() -> int:
         log("HybridGrid method enabled: asymptotic limits will seed parallel --singlePoint grids")
 
     all_results: list[dict[str, Any]] = []
+    launch_summary_written = False
+
+    def write_launch_summary(launched_jobs: list[CommandJob]) -> None:
+        nonlocal launch_summary_written
+        if launch_summary_written:
+            return
+        write_run_summary(
+            run_dir,
+            args,
+            processes,
+            schemes,
+            all_results,
+            planned_jobs=launched_jobs,
+            phase="launched",
+        )
+        launch_summary_written = True
+        log(f"Wrote launch summary: {repo_relative(run_dir / RUN_SUMMARY_HTML_NAME)}")
 
     workspace_jobs = [
         build_workspace_job(run_dir, datacard_path, args.mass, scheme) for scheme in schemes
     ]
-    workspace_results = run_jobs_parallel(workspace_jobs, args.workers, "workspace builds")
+    workspace_results = run_jobs_parallel(
+        workspace_jobs,
+        args.workers,
+        "workspace builds",
+        on_launch=write_launch_summary,
+    )
     all_results.extend(workspace_results)
     if not all(result_successful(result) for result in workspace_results):
         write_run_summary(run_dir, args, processes, schemes, all_results)
@@ -3258,7 +3347,11 @@ def main() -> int:
             "returning 0 because final command return codes were successful."
         )
 
-    log(f"Completed successfully. Summary: {repo_relative(run_dir / 'blind_limits_summary.json')}")
+    log(
+        "Completed successfully. Summary: "
+        f"{repo_relative(run_dir / 'blind_limits_summary.json')}, "
+        f"{repo_relative(run_dir / RUN_SUMMARY_HTML_NAME)}"
+    )
     return 0
 
 
