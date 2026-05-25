@@ -672,11 +672,15 @@ def apply_signal_mass_shape_systematics(
     mean_function_name = f"mean_boson_syst{role_suffix}"
     sigma_function_name = f"sigma_boson_syst{role_suffix}"
 
-    mean_terms = make_relative_signal_mass_terms(
-        mass_summary,
-        signal_spec,
-        "mean_diff_percent",
-    )
+    mean_terms = [
+        term
+        for term in make_relative_signal_mass_terms(
+            mass_summary,
+            signal_spec,
+            "mean_diff_percent",
+        )
+        if term[0] != "photon_E_smearing"
+    ]
     sigma_terms = make_relative_signal_mass_terms(
         mass_summary,
         signal_spec,
@@ -2150,14 +2154,22 @@ def write_summary_report(
         mean_terms = {item["source"]: item for item in mass_report["mean_terms"]}
         sigma_terms = {item["source"]: item for item in mass_report["sigma_terms"]}
         for source_name, _ in SIGNAL_MASS_SYSTEMATICS:
-            nuisance_name = mean_terms[source_name]["nuisance"]
+            mean_term = mean_terms.get(source_name)
+            sigma_term = sigma_terms.get(source_name)
+            if mean_term is None and sigma_term is None:
+                continue
+            nuisance_name = (mean_term or sigma_term)["nuisance"]
             signal_mass_systematics_rows.append(
                 [
                     report["process"],
                     source_name,
                     nuisance_name,
-                    f"{100.0 * mean_terms[source_name]['relative_uncertainty']:.6g}",
-                    f"{100.0 * sigma_terms[source_name]['relative_uncertainty']:.6g}",
+                    "-"
+                    if mean_term is None
+                    else f"{100.0 * mean_term['relative_uncertainty']:.6g}",
+                    "-"
+                    if sigma_term is None
+                    else f"{100.0 * sigma_term['relative_uncertainty']:.6g}",
                     mass_report["mean_function"],
                     mass_report["sigma_function"],
                 ]
