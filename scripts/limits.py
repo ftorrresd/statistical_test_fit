@@ -33,6 +33,12 @@ if str(REPO_ROOT) not in sys.path:
 from statistical_test_fit.display_names import poi_scheme_display, signal_target_display
 
 
+class StoreCminStrategy(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):  # type: ignore[override]
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "cmin_strategy_explicit", True)
+
+
 DEFAULT_DATACARD = REPO_ROOT / "datacards" / "datacard.txt"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "limits"
 DEFAULT_MASS = "125"
@@ -47,6 +53,7 @@ DEFAULT_HYBRID_RANGE_MAX_RETRIES = 3
 DEFAULT_HYBRID_GRID_TOYS = 2000
 DEFAULT_HYBRID_GRID_CYCLES = 1
 DEFAULT_HYBRID_GRID_UPPER_SCALE = 2.0
+HYBRID_GRID_RMAX_HEADROOM_SCALE = 1.5
 DEFAULT_HYBRID_GRID_COARSE_POINTS = 9
 DEFAULT_HYBRID_GRID_SEED = 123456
 HYBRID_GRID_RELATIVE_OFFSETS = (0.70, 0.80, 0.90, 0.95, 0.975, 1.0, 1.025, 1.05, 1.10, 1.20, 1.30)
@@ -202,11 +209,15 @@ def target_latex(value: str) -> str:
     return signal_target_display(value).latex
 
 
-def common_minimizer_options() -> list[str]:
+def common_minimizer_options(cmin_strategy: int) -> list[str]:
     return [
         "--cminDefaultMinimizerStrategy",
-        str(DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY),
+        str(cmin_strategy),
     ]
+
+
+def use_common_minimizer_options(quick: bool, cmin_strategy_explicit: bool) -> bool:
+    return (not quick) or cmin_strategy_explicit
 
 
 def available_cpu_count() -> int:
@@ -499,6 +510,10 @@ def parameter_ranges_argument(
     )
 
 
+def hybrid_grid_rmax_option(grid_max: float) -> float:
+    return HYBRID_GRID_RMAX_HEADROOM_SCALE * grid_max
+
+
 def build_workspace_job(
     run_dir: Path,
     datacard_path: Path,
@@ -566,6 +581,7 @@ def build_blind_asimov_job(
     datacard_path: Path,
     poi_min: float,
     poi_max: float,
+    cmin_strategy: int,
 ) -> CommandJob:
     scheme_display = poi_scheme_display(scheme.name)
     cwd = run_dir / scheme_display.slug / "blind_asimov"
@@ -594,7 +610,7 @@ def build_blind_asimov_job(
         "-n",
         f".blind_asimov.{scheme_display.slug}",
     ]
-    command.extend(common_minimizer_options())
+    command.extend(common_minimizer_options(cmin_strategy))
     return CommandJob(
         job_id=f"blind_asimov_{scheme_display.slug}",
         kind="blind_asimov_generation",
@@ -612,7 +628,8 @@ def build_blind_asimov_job(
             "poi_min": poi_min,
             "poi_max": poi_max,
             "blind_asimov_dataset": "toys/toy_asimov",
-            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "cmin_default_minimizer_strategy": cmin_strategy,
+            "cmin_minimizer_options_applied": True,
             "blindness": [
                 "GenerateOnly uses -t -1 to create a pre-fit Asimov dataset.",
                 "All signal POIs are set to zero before generation.",
@@ -633,6 +650,7 @@ def build_asymptotic_job(
     blind_asimov_path: Path,
     poi_min: float,
     poi_max: float,
+    cmin_strategy: int,
 ) -> CommandJob:
     scheme_display = poi_scheme_display(scheme.name)
     target_display = signal_target_display(target.label)
@@ -659,7 +677,7 @@ def build_asymptotic_job(
         "-n",
         f".asymptotic_blind.{target_display.slug}",
     ]
-    command.extend(common_minimizer_options())
+    command.extend(common_minimizer_options(cmin_strategy))
     return CommandJob(
         job_id=f"asymptotic_{scheme_display.slug}_{target_display.slug}",
         kind="combine",
@@ -684,7 +702,8 @@ def build_asymptotic_job(
             "poi_max": poi_max,
             "range_source": "fixed",
             "dataset_override": BLIND_ASIMOV_DATASET,
-            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "cmin_default_minimizer_strategy": cmin_strategy,
+            "cmin_minimizer_options_applied": True,
             "blindness": [
                 "AsymptoticLimits is run with --run blind.",
                 "Combine therefore uses the pre-fit model state for the expected Asimov calculation instead of fitting observed data.",
@@ -713,6 +732,9 @@ def build_hybrid_job(
     r_abs_acc: float | None,
     save_hybrid_result: bool,
     default_poi_max: float,
+    *,
+    cmin_strategy: int,
+    cmin_strategy_explicit: bool = False,
     hint_method: str | None = None,
     range_source: str = "fixed",
     range_reference: dict[str, Any] | None = None,
@@ -768,7 +790,9 @@ def build_hybrid_job(
         f".hybrid_blind.{target_display.slug}.{quantile_tag(quantile)}{retry_suffix}",
     ]
     if not quick:
-        command.extend(common_minimizer_options())
+        command.extend(common_minimizer_options(cmin_strategy))
+    elif cmin_strategy_explicit:
+        command.extend(common_minimizer_options(cmin_strategy))
     if hint_method is not None:
         command.extend(["-H", hint_method])
     if save_hybrid_result:
@@ -823,7 +847,13 @@ def build_hybrid_job(
             "bypass_frequentist_fit": True,
             "r_min_option": poi_min,
             "r_max_option": poi_max,
-            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "cmin_default_minimizer_strategy": cmin_strategy
+            if use_common_minimizer_options(quick, cmin_strategy_explicit)
+            else None,
+            "cmin_strategy_explicit": cmin_strategy_explicit,
+            "cmin_minimizer_options_applied": use_common_minimizer_options(
+                quick, cmin_strategy_explicit
+            ),
             "blindness": [
                 "HybridNew uses --LHCmode LHC-limits for LHC-style CLs limits.",
                 "HybridNew is run directly with --expectedFromGrid for the requested quantile.",
@@ -860,6 +890,9 @@ def build_hybrid_grid_point_job(
     poi_max: float,
     default_poi_max: float,
     hybrid_toys: int,
+    *,
+    cmin_strategy: int,
+    cmin_strategy_explicit: bool = False,
     quick: bool = False,
     range_reference: dict[str, Any] | None = None,
 ) -> CommandJob:
@@ -877,6 +910,7 @@ def build_hybrid_grid_point_job(
     )
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path, blind_asimov_path)
+    r_max_option = hybrid_grid_rmax_option(poi_max)
     command = [
         "combine",
         "-M",
@@ -910,14 +944,16 @@ def build_hybrid_grid_point_job(
         "--rMin",
         format_number(poi_min),
         "--rMax",
-        format_number(poi_max),
+        format_number(r_max_option),
         "-m",
         mass,
         "-n",
         f".hybrid_grid_blind.{target_display.slug}.{point_tag(point_value)}.cycle{cycle_index:03d}",
     ]
     if not quick:
-        command.extend(common_minimizer_options())
+        command.extend(common_minimizer_options(cmin_strategy))
+    elif cmin_strategy_explicit:
+        command.extend(common_minimizer_options(cmin_strategy))
 
     return CommandJob(
         job_id=(
@@ -958,14 +994,21 @@ def build_hybrid_grid_point_job(
             "dataset_override": BLIND_ASIMOV_DATASET,
             "bypass_frequentist_fit": True,
             "r_min_option": poi_min,
-            "r_max_option": poi_max,
-            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "r_max_option": r_max_option,
+            "r_max_headroom_scale": HYBRID_GRID_RMAX_HEADROOM_SCALE,
+            "cmin_default_minimizer_strategy": cmin_strategy
+            if use_common_minimizer_options(quick, cmin_strategy_explicit)
+            else None,
+            "cmin_strategy_explicit": cmin_strategy_explicit,
+            "cmin_minimizer_options_applied": use_common_minimizer_options(
+                quick, cmin_strategy_explicit
+            ),
             "blindness": [
                 "HybridNew grid points use --singlePoint and --saveHybridResult.",
                 "Grid generation sets --clsAcc 0 so the requested -T toys define the point precision.",
                 f"data_obs is overridden with the blind pre-fit Asimov dataset {BLIND_ASIMOV_DATASET}.",
                 "--bypassFrequentistFit prevents fitting observed data before toy generation.",
-                "--rMax is set to the asymptotic-derived grid maximum so large POI points are inside the scan range.",
+                "--rMax is set to 1.5 times the asymptotic-derived grid maximum so large POI points are away from the upper boundary.",
             ],
             "mass": mass,
         },
@@ -1089,6 +1132,9 @@ def build_hybrid_grid_read_job(
     hybrid_toys: int,
     grid_cycles: int,
     grid_points: tuple[float, ...],
+    *,
+    cmin_strategy: int,
+    cmin_strategy_explicit: bool = False,
     quick: bool = False,
     range_reference: dict[str, Any] | None = None,
 ) -> CommandJob:
@@ -1107,6 +1153,7 @@ def build_hybrid_grid_read_job(
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path, blind_asimov_path)
     inputs.append(copy_file(grid_path, cwd / LOCAL_HYBRID_GRID_NAME))
     limit_scan_plot = f"limit_scan_{target_display.slug}_{quantile_tag(quantile)}.png"
+    r_max_option = hybrid_grid_rmax_option(poi_max)
     command = [
         "combine",
         "-M",
@@ -1136,7 +1183,7 @@ def build_hybrid_grid_read_job(
         "--rMin",
         format_number(poi_min),
         "--rMax",
-        format_number(poi_max),
+        format_number(r_max_option),
         "--plot",
         limit_scan_plot,
         "-m",
@@ -1145,7 +1192,9 @@ def build_hybrid_grid_read_job(
         f".hybrid_grid_blind.{target_display.slug}.{quantile_tag(quantile)}",
     ]
     if not quick:
-        command.extend(common_minimizer_options())
+        command.extend(common_minimizer_options(cmin_strategy))
+    elif cmin_strategy_explicit:
+        command.extend(common_minimizer_options(cmin_strategy))
 
     return CommandJob(
         job_id=f"hybrid_grid_lhc_{scheme_display.slug}_{target_display.slug}_{quantile_tag(quantile)}",
@@ -1187,14 +1236,21 @@ def build_hybrid_grid_read_job(
             "dataset_override": BLIND_ASIMOV_DATASET,
             "bypass_frequentist_fit": True,
             "r_min_option": poi_min,
-            "r_max_option": poi_max,
-            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "r_max_option": r_max_option,
+            "r_max_headroom_scale": HYBRID_GRID_RMAX_HEADROOM_SCALE,
+            "cmin_default_minimizer_strategy": cmin_strategy
+            if use_common_minimizer_options(quick, cmin_strategy_explicit)
+            else None,
+            "cmin_strategy_explicit": cmin_strategy_explicit,
+            "cmin_minimizer_options_applied": use_common_minimizer_options(
+                quick, cmin_strategy_explicit
+            ),
             "blindness": [
                 "HybridNew uses --readHybridResults with a merged --singlePoint toy grid.",
                 "The expected quantile is extracted with --expectedFromGrid from the precomputed grid.",
                 f"data_obs is overridden with the blind pre-fit Asimov dataset {BLIND_ASIMOV_DATASET}.",
                 "--bypassFrequentistFit prevents fitting observed data before any required test-statistic update.",
-                "--rMax is set to the asymptotic-derived grid maximum so large POI limits are inside the readback range.",
+                "--rMax is set to 1.5 times the asymptotic-derived grid maximum so large POI limits are away from the upper boundary.",
             ],
             "mass": mass,
         },
@@ -1616,7 +1672,7 @@ def html_document(title: str, body: str) -> str:
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       line-height: 1.5;
     }}
-    main {{ max-width: 1200px; margin: 0 auto; padding: 2.2rem; }}
+    main {{ width: 100%; max-width: none; margin: 0; padding: 2.2rem; }}
     h1 {{ margin: 0 0 0.5rem; font-size: clamp(1.9rem, 4vw, 3.1rem); letter-spacing: -0.04em; }}
     h2 {{ margin: 0 0 1rem; color: var(--accent); font-size: 1.05rem; text-transform: uppercase; letter-spacing: 0.12em; }}
     .subtitle {{ color: var(--muted); margin: 0 0 2rem; }}
@@ -2130,6 +2186,10 @@ def make_hybrid_retry_job(
     quantile = float(metadata["quantile"])
     scheme = scheme_by_name[scheme_name]
     target = target_by_key[(scheme_name, target_poi)]
+    minimizer_options_applied = use_common_minimizer_options(
+        args.quick,
+        args.cmin_strategy_explicit,
+    )
     range_reference = dict(metadata.get("range_reference") or {})
     range_reference.setdefault("retry_history", [])
     range_reference["retry_history"].append(
@@ -2139,7 +2199,11 @@ def make_hybrid_retry_job(
             "previous_poi_max": previous_poi_max,
             "next_poi_max": next_poi_max,
             "scale": HYBRID_RETRY_RANGE_SCALE,
-            "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "cmin_default_minimizer_strategy": args.cmin_strategy
+            if minimizer_options_applied
+            else None,
+            "cmin_strategy_explicit": args.cmin_strategy_explicit,
+            "cmin_minimizer_options_applied": minimizer_options_applied,
             "reasons": reasons,
         }
     )
@@ -2161,6 +2225,8 @@ def make_hybrid_retry_job(
         args.r_abs_acc,
         not args.no_save_hybrid_result,
         args.poi_max,
+        cmin_strategy=args.cmin_strategy,
+        cmin_strategy_explicit=args.cmin_strategy_explicit,
         quick=args.quick,
         range_source=str(metadata.get("range_source", "asymptotic")),
         range_reference=range_reference,
@@ -2176,14 +2242,22 @@ def make_hybrid_retry_job(
             "retry_reasons": reasons,
             "retry_next_poi_max": next_poi_max,
             "retry_range_scale": HYBRID_RETRY_RANGE_SCALE,
-            "retry_cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+            "retry_cmin_default_minimizer_strategy": args.cmin_strategy
+            if minimizer_options_applied
+            else None,
+            "retry_cmin_minimizer_options_applied": minimizer_options_applied,
         },
+    )
+    cmin_log = (
+        f"--cminDefaultMinimizerStrategy {args.cmin_strategy}"
+        if minimizer_options_applied
+        else "no --cminDefaultMinimizerStrategy in quick mode"
     )
     log(
         "Submitting immediate HybridNew retry after retryable warning: "
         f"{result.get('job_id')} -> {retry_job.job_id}; "
         f"range 0,{format_number(previous_poi_max)} -> 0,{format_number(next_poi_max)}; "
-        f"--cminDefaultMinimizerStrategy {DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY}"
+        f"{cmin_log}"
     )
     log(f"     cwd: {repo_relative(retry_job.cwd)}")
     log(f"     command: {shlex.join(retry_job.command)}")
@@ -2332,6 +2406,8 @@ def run_hybrid_grid_workflow(
                             poi_max,
                             args.poi_max,
                             grid_toys,
+                            cmin_strategy=args.cmin_strategy,
+                            cmin_strategy_explicit=args.cmin_strategy_explicit,
                             quick=args.quick,
                             range_reference=range_reference,
                         )
@@ -2417,6 +2493,8 @@ def run_hybrid_grid_workflow(
                     grid_toys,
                     args.hybrid_grid_cycles,
                     plan["grid_points"],
+                    cmin_strategy=args.cmin_strategy,
+                    cmin_strategy_explicit=args.cmin_strategy_explicit,
                     quick=args.quick,
                     range_reference=plan["range_reference"],
                 )
@@ -2555,12 +2633,14 @@ def write_run_summary(
         "hybrid_grid_toys": hybrid_grid_toys(args),
         "hybrid_grid_cycles": args.hybrid_grid_cycles,
         "hybrid_grid_upper_scale": args.hybrid_grid_upper_scale,
+        "hybrid_grid_rmax_headroom_scale": HYBRID_GRID_RMAX_HEADROOM_SCALE,
         "hybrid_grid_coarse_points": args.hybrid_grid_coarse_points,
         "hybrid_grid_seed": args.hybrid_grid_seed,
         "hybrid_grid_relative_offsets": list(HYBRID_GRID_RELATIVE_OFFSETS),
         "fixed_range_hybrid_hint_method": "AsymptoticLimits",
         "blind_asimov_dataset": BLIND_ASIMOV_DATASET,
-        "cmin_default_minimizer_strategy": DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+        "cmin_default_minimizer_strategy": args.cmin_strategy,
+        "cmin_strategy_explicit": args.cmin_strategy_explicit,
         "hybrid_range_max_retries": args.hybrid_range_max_retries,
         "hybrid_retry_alerts": retry_alerts,
         "poi_min": args.poi_min,
@@ -2654,10 +2734,12 @@ def write_run_summary(
         ["Hybrid grid toys per cycle", hybrid_grid_toys(args) if uses_hybrid_grid(args) else "-"],
         ["Hybrid grid cycles", args.hybrid_grid_cycles if uses_hybrid_grid(args) else "-"],
         ["Hybrid grid upper scale", args.hybrid_grid_upper_scale if uses_hybrid_grid(args) else "-"],
+        ["Hybrid grid rMax headroom", HYBRID_GRID_RMAX_HEADROOM_SCALE if uses_hybrid_grid(args) else "-"],
         ["Hybrid range max retries", args.hybrid_range_max_retries],
         ["Hybrid retry range scale", HYBRID_RETRY_RANGE_SCALE],
         ["Blind Asimov dataset", BLIND_ASIMOV_DATASET],
-        ["Minimizer strategy", DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY],
+        ["Minimizer strategy", args.cmin_strategy],
+        ["Minimizer strategy explicit", "yes" if args.cmin_strategy_explicit else "no"],
         ["POI scheme request", args.poi_scheme],
         ["Selected POI schemes", ", ".join(scheme_label(scheme.name) for scheme in schemes)],
         ["Default POI range", f"{format_number(args.poi_min)} to {format_number(args.poi_max)}"],
@@ -2672,10 +2754,11 @@ def write_run_summary(
         <li>HybridNew jobs use <code>--expectedFromGrid</code> for the requested expected quantiles.</li>
         <li>HybridNew jobs pass <code>--bypassFrequentistFit</code>.</li>
         <li>Fixed-range HybridNew jobs pass <code>-H AsymptoticLimits</code>; asymptotic-derived-range HybridNew jobs do not.</li>
-        <li>Non-quick Combine limit jobs pass <code>--cminDefaultMinimizerStrategy 2</code>.</li>
+        <li>Non-quick Combine limit jobs pass <code>--cminDefaultMinimizerStrategy {args.cmin_strategy}</code>.</li>
+        <li>Quick-mode HybridNew jobs pass <code>--cminDefaultMinimizerStrategy</code> only when <code>--cmin-strategy</code> is explicitly set.</li>
         <li>When <code>--hybrid-range-from-asymptotic</code> is used, only the <code>--redefineSignalPOIs</code> target gets <code>0,min(1000000,10*r_asymp)</code>; profiled POIs keep the default range.</li>
         <li>When <code>--methods HybridGrid</code> is used, HybridNew point jobs run <code>--singlePoint</code> with <code>--clsAcc 0</code>, merge with <code>hadd</code>, and read back expected limits with <code>--readHybridResults --grid</code>.</li>
-        <li>HybridNew grid jobs set <code>--rMax</code> to the asymptotic-derived grid maximum so large POI limits are not clipped by Combine's default maximum.</li>
+        <li>HybridNew grid jobs set <code>--rMax</code> to <code>1.5*grid_rmax</code> so large POI limits are not clipped by Combine's default maximum or placed exactly at the upper boundary.</li>
         <li>Retryable HybridNew minimization warnings scale the r range by 10 and immediately re-enter the job queue when that job finishes, until the retry cap is reached.</li>
       </ul>
     """
@@ -2719,6 +2802,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.set_defaults(cmin_strategy_explicit=False)
     parser.add_argument(
         "--datacard",
         default=str(DEFAULT_DATACARD),
@@ -2771,6 +2855,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--cmin-strategy",
+        type=int,
+        choices=(0, 1, 2),
+        default=DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY,
+        action=StoreCminStrategy,
+        help=(
+            "Value passed to Combine as --cminDefaultMinimizerStrategy. "
+            "Quick-mode HybridNew jobs keep their current behavior unless this option is explicitly set."
+        ),
+    )
+    parser.add_argument(
         "--hybrid-grid-toys",
         type=int,
         default=None,
@@ -2810,7 +2905,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Maximum number of 10x-r-range HybridNew retries after retryable "
             "minimization warnings in --hybrid-range-from-asymptotic mode. "
-            "Non-quick limit jobs pass --cminDefaultMinimizerStrategy 2."
+            "Non-quick limit jobs pass the configured --cmin-strategy."
         ),
     )
     parser.add_argument(
@@ -2912,6 +3007,11 @@ def main() -> int:
                 "Quick mode enabled: HybridNew "
                 "--rRelAcc 0.10 --rAbsAcc 10 --clsAcc 0.02 -T 100"
             )
+        if args.cmin_strategy_explicit:
+            log(
+                "Quick mode explicit --cmin-strategy enabled: HybridNew jobs pass "
+                f"--cminDefaultMinimizerStrategy {args.cmin_strategy}"
+            )
     log("Default POI range: 0 to 1000000")
     if args.hybrid_range_from_asymptotic:
         log("Optional HybridNew range mode enabled: target POI ranges come from asymptotic limits")
@@ -2948,6 +3048,7 @@ def main() -> int:
             staged_datacards[scheme.name],
             args.poi_min,
             args.poi_max,
+            args.cmin_strategy,
         )
         for scheme in schemes
     ]
@@ -2992,6 +3093,7 @@ def main() -> int:
                         blind_asimov_paths[scheme.name],
                         args.poi_min,
                         args.poi_max,
+                        args.cmin_strategy,
                     )
                 )
 
@@ -3060,6 +3162,8 @@ def main() -> int:
                                     args.r_abs_acc,
                                     not args.no_save_hybrid_result,
                                     args.poi_max,
+                                    cmin_strategy=args.cmin_strategy,
+                                    cmin_strategy_explicit=args.cmin_strategy_explicit,
                                     quick=args.quick,
                                     range_source="asymptotic",
                                     range_reference=range_reference,
@@ -3103,6 +3207,8 @@ def main() -> int:
                                 args.r_abs_acc,
                                 not args.no_save_hybrid_result,
                                 args.poi_max,
+                                cmin_strategy=args.cmin_strategy,
+                                cmin_strategy_explicit=args.cmin_strategy_explicit,
                                 quick=args.quick,
                                 hint_method="AsymptoticLimits",
                             )
