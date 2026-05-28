@@ -70,6 +70,7 @@ LOCAL_DATACARD_NAME = "datacard.txt"
 LOCAL_TOYS_NAME = "toys.root"
 NON_RESONANT_PROCESS_NAME = "non_resonant_bkg"
 DEFAULT_PDF_INDEX_NAME = "pdfindex"
+SHAPE_NUISANCE_PREFIX = "CMS_sig_mmg_"
 
 
 class StoreCminStrategy(argparse.Action):
@@ -681,6 +682,8 @@ def build_dataset_generation_job(
     freeze_parameters = [args.pdf_index_name]
     if args.injection_mode == "target-only":
         freeze_parameters.extend(poi for poi in scheme.all_pois if poi != target.poi)
+    if args.freeze_shape_nuisances:
+        freeze_parameters.extend(args.shape_nuisances)
     command = [
         "combine",
         "-M",
@@ -849,6 +852,8 @@ def build_fit_job(
         "-n",
         f".{fit_dir_name}.{fit_pdf_tag}.{scheme_display.slug}.{target_display.slug}.{truth_slug}.{injection_output_slug(injected_r)}",
     ]
+    if args.freeze_shape_nuisances:
+        freeze_parameters.extend(args.shape_nuisances)
     if freeze_parameters:
         command.extend(["--freezeParameters", ",".join(freeze_parameters)])
     if args.profile_freeze_disassociated_params:
@@ -1171,6 +1176,24 @@ def open_workspace_from_file(root_path: Path, preferred_names: tuple[str, ...] =
 
     root_file.Close()
     raise RuntimeError(f"No RooWorkspace found in {root_path}")
+
+
+def discover_shape_nuisance_names(workspace_path: Path) -> list[str]:
+    ROOT, root_file, workspace = open_workspace_from_file(workspace_path)
+    try:
+        nuisances: list[str] = []
+        all_vars = workspace.allVars()
+        it = all_vars.createIterator()
+        while True:
+            var = it.Next()
+            if not var:
+                break
+            name = str(var.GetName())
+            if name.startswith(SHAPE_NUISANCE_PREFIX):
+                nuisances.append(name)
+        return sorted(nuisances)
+    finally:
+        root_file.Close()
 
 
 def infer_pdf_family(name: str) -> str:
@@ -4440,6 +4463,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pass --X-rtd MINIMIZER_freezeDisassociatedParams to MultiDimFit jobs.",
     )
     parser.add_argument(
+        "--freeze-shape-nuisances",
+        action="store_true",
+        help="Freeze all signal mass shape systematic parameters at 0 by appending them to --freezeParameters in both GenerateOnly and MultiDimFit jobs.",
+    )
+    parser.add_argument(
         "--quick",
         action="store_true",
         help=(
@@ -4521,6 +4549,7 @@ def validate_args(args: argparse.Namespace) -> None:
     args.dataset_strategies = selected_dataset_strategies(args)
     args.pdf_target_strategy = normalize_pdf_target_strategy(args.pdf_target_strategy)
     args.pdf_target_strategies = selected_pdf_target_strategies(args)
+    args.shape_nuisances: list[str] = []
     if args.quick:
         args.robust_fit = False
         if not args.cmin_strategy_explicit:
@@ -4626,6 +4655,15 @@ def main() -> int:
         staged_datacards[scheme_name] = Path(result["cwd"]) / LOCAL_DATACARD_NAME
 
     first_scheme = schemes[0]
+    if args.freeze_shape_nuisances:
+        args.shape_nuisances = discover_shape_nuisance_names(workspace_paths[first_scheme.name])
+        if args.shape_nuisances:
+            log(
+                f"Freezing shape nuisances ({len(args.shape_nuisances)}): "
+                + ", ".join(args.shape_nuisances)
+            )
+        else:
+            log("No shape nuisances matching prefix found; freeze list unchanged.")
     pdf_state_metadata = load_bundle_pdf_state_metadata(datacard_path)
     truth_pdfs, truth_pdf_metadata = discover_truth_pdfs(
         workspace_paths[first_scheme.name],
