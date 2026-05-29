@@ -64,6 +64,10 @@ METHOD_LABELS = {
     "asymptotic": "Asymptotic Limits",
     "hybrid_lhc": "HybridNew Limits",
 }
+METHOD_SHORT_LABELS = {
+    "asymptotic": "asymptotic CLs",
+    "hybrid_lhc": "HybridNew CLs",
+}
 DEFAULT_METHODS = ("asymptotic", "hybrid_lhc")
 
 
@@ -647,7 +651,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Create a LaTeX table of theory branching fractions and observed/expected branching-fraction limits "
             "from scripts/limits.py JSON output."
-        )
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--summary",
@@ -722,12 +727,14 @@ def main() -> int:
     for method in methods:
         for scheme in schemes:
             config = SECTION_CONFIG[scheme]
+            method_label = METHOD_SHORT_LABELS.get(method, method)
+            caption = f"{config['caption']} ({method_label})."
             sections.append(
                 TableSection(
                     scheme=scheme,
                     method=method,
                     title=config["title"],
-                    caption=config["caption"],
+                    caption=caption,
                     label=f"{config['label_base']}_{method}",
                     rows=build_rows(summary, scheme, method, warnings),
                 )

@@ -20,14 +20,25 @@ def main():
 
     # Set up the argument parser
     parser = argparse.ArgumentParser(
-        description="Non-resonant background RooFit with a blinded signal region on real data."
+        description="Non-resonant background RooFit with a blinded signal region on real data.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--nbins", type=int, default=60, help="Number of bins for diagnostic plots.")
     parser.add_argument(
         "--chi2-nbins", type=int, default=60, help="Number of bins for chi-square goodness-of-fit computation."
     )
-    parser.add_argument("--workers", type=int, default=None)
-    parser.add_argument("--use-cache", default=False, action="store_true")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Parallel worker processes; use all available CPUs when unset.",
+    )
+    parser.add_argument(
+        "--use-cache",
+        default=False,
+        action="store_true",
+        help="Reuse existing non-resonant JSON caches instead of deleting and rebuilding them.",
+    )
     parser.add_argument(
         "--strict-mode",
         action="store_true",

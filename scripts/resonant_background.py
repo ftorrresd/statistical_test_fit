@@ -13,10 +13,16 @@ def main():
     from statistical_test_fit.root_runtime import configure_root
 
     parser = argparse.ArgumentParser(
-        description="Standalone resonant-background modeling workflow."
+        description="Standalone resonant-background modeling workflow.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--nbins", type=int, default=60)
-    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--nbins", type=int, default=60, help="Number of bins for diagnostic plots.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Parallel worker processes; use all available CPUs when unset.",
+    )
     parser.add_argument(
         "--skip-cache",
         default=False,

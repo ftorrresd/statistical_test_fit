@@ -30,12 +30,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from statistical_test_fit.display_names import (
+    DisplayName,
     dataset_strategy_display,
-    floating_pdf_display,
     infer_pdf_family_from_name,
     infer_pdf_order,
     normalize_pdf_family,
-    pdf_state_display,
     poi_scheme_display,
     signal_target_display,
 )
@@ -61,6 +60,7 @@ DEFAULT_PULL_WIDTH_THRESHOLD = 0.2
 DEFAULT_SEED_BASE = 123450
 DEFAULT_CMIN_DEFAULT_MINIMIZER_STRATEGY = 2
 QUICK_CMIN_DEFAULT_MINIMIZER_STRATEGY = 0
+TRACKED_ERROR_BOUNDARY_FALLBACK_RATIO = 20.0
 SCATTER_PLOT_SUBPROCESS_TIMEOUT_SECONDS = 1800
 HEATMAP_PLOT_SUBPROCESS_TIMEOUT_SECONDS = 1800
 FIT_ALGO = "singles"
@@ -77,6 +77,9 @@ class StoreCminStrategy(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):  # type: ignore[override]
         setattr(namespace, self.dest, values)
         setattr(namespace, "cmin_strategy_explicit", True)
+
+
+PoiRange = tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,7 @@ class PoiScheme:
     poi_maps: tuple[str, ...]
     targets: tuple[PoiTarget, ...]
     all_poi_names: tuple[str, ...] = ()
+    poi_ranges: dict[str, PoiRange] = field(default_factory=dict)
 
     @property
     def all_pois(self) -> tuple[str, ...]:
@@ -260,6 +264,74 @@ def target_latex(value: str) -> str:
     return signal_target_display(value).latex
 
 
+def concise_pdf_display(
+    *,
+    index: Any = None,
+    family: Any = None,
+    order: Any = None,
+    name: Any = None,
+    source_model_name: Any = None,
+    workspace_label: Any = None,
+) -> DisplayName:
+    del index
+    family_name = normalize_pdf_family(family) if family not in (None, "") else ""
+    if not family_name:
+        family_name = infer_pdf_family_from_name(name, source_model_name, workspace_label)
+    order_value = infer_pdf_order(order, name, source_model_name, workspace_label)
+    labels = {
+        "johnson": ("johnson_su", "Johnson SU", "Johnson SU"),
+        "bernstein": ("bernstein", "Bernstein", "Bernstein"),
+        "chebychev": ("chebyshev", "Chebyshev", "Chebyshev"),
+        "power_law": ("power_law", "Power-law", "Power-law"),
+        "exponential": ("exponential", "Exponential", "Exponential"),
+    }
+    slug, text, latex = labels.get(
+        family_name,
+        (safe_name(str(family_name)), str(family_name).replace("_", " ").title(), str(family_name).replace("_", " ").title()),
+    )
+    if order_value is not None and family_name != "johnson":
+        slug = f"{slug}_order{order_value}"
+        text = f"{text} order {order_value}"
+        latex = rf"{latex} order ${order_value}$"
+    return DisplayName(slug=safe_name(slug), text=text, latex=latex)
+
+
+def profiled_pdf_display() -> DisplayName:
+    return DisplayName(slug="profiled_pdf", text="Profiled", latex="Profiled")
+
+
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def truth_pdf_display_from_metadata(metadata: dict[str, Any]) -> DisplayName:
+    return concise_pdf_display(
+        index=metadata.get("truth_pdf_index"),
+        family=metadata.get("truth_pdf_family"),
+        order=metadata.get("truth_pdf_scan_order"),
+        name=metadata.get("truth_pdf"),
+        source_model_name=metadata.get("truth_pdf_label"),
+        workspace_label=metadata.get("truth_pdf_slug"),
+    )
+
+
+def target_pdf_display_from_experiment(experiment: dict[str, Any]) -> DisplayName:
+    mode = normalize_pdf_target_strategy(experiment.get("fit_pdf_mode", "floating"))
+    if mode != "fixed":
+        return profiled_pdf_display()
+    return concise_pdf_display(
+        index=first_present(experiment.get("target_pdf_index"), experiment.get("fit_pdf_index")),
+        family=first_present(experiment.get("target_pdf_family"), experiment.get("fit_pdf_family")),
+        order=first_present(experiment.get("target_pdf_scan_order"), experiment.get("fit_pdf_scan_order")),
+        name=first_present(experiment.get("target_pdf"), experiment.get("fit_pdf")),
+        source_model_name=first_present(experiment.get("target_pdf_label"), experiment.get("fit_pdf_label")),
+        workspace_label=first_present(experiment.get("target_pdf_slug"), experiment.get("fit_pdf_slug")),
+    )
+
+
 def injection_output_slug(value: float) -> str:
     return "injected_r_" + format_number(value).replace("-", "minus_").replace(".", "p")
 
@@ -296,6 +368,44 @@ def strategy_dataset_count(dataset_strategy: str, args: argparse.Namespace) -> i
 
 def effective_poi_range(args: argparse.Namespace) -> tuple[float, float]:
     return float(args.poi_min), float(args.poi_max)
+
+
+def effective_boson_poi_range(args: argparse.Namespace, boson: str) -> PoiRange:
+    key = boson.lower()
+    lower = getattr(args, f"{key}_poi_min", None)
+    upper = getattr(args, f"{key}_poi_max", None)
+    return (
+        float(args.poi_min if lower is None else lower),
+        float(args.poi_max if upper is None else upper),
+    )
+
+
+def effective_boson_poi_ranges(args: argparse.Namespace) -> dict[str, PoiRange]:
+    return {
+        "H": effective_boson_poi_range(args, "H"),
+        "Z": effective_boson_poi_range(args, "Z"),
+    }
+
+
+def format_poi_range(poi_range: PoiRange) -> str:
+    return f"[{format_number(poi_range[0])}, {format_number(poi_range[1])}]"
+
+
+def format_boson_poi_ranges(args: argparse.Namespace) -> str:
+    ranges = effective_boson_poi_ranges(args)
+    return "; ".join(f"{boson}: {format_poi_range(ranges[boson])}" for boson in ("H", "Z"))
+
+
+def effective_poi_range_for_name(args: argparse.Namespace, poi: str) -> PoiRange:
+    if poi.startswith("r_H"):
+        return effective_boson_poi_range(args, "H")
+    if poi.startswith("r_Z"):
+        return effective_boson_poi_range(args, "Z")
+    return effective_poi_range(args)
+
+
+def scheme_poi_range(args: argparse.Namespace, scheme: PoiScheme, poi: str) -> PoiRange:
+    return scheme.poi_ranges.get(poi, effective_poi_range_for_name(args, poi))
 
 
 def is_int_token(value: str) -> bool:
@@ -368,11 +478,11 @@ def make_three_poi_scheme(
     signals: list[str],
     target_boson: str,
     poi_initial: float,
-    poi_min: float,
-    poi_max: float,
+    poi_ranges_by_boson: dict[str, PoiRange],
 ) -> PoiScheme:
     maps: list[str] = []
     targets: list[PoiTarget] = []
+    poi_ranges: dict[str, PoiRange] = {}
     target_processes = [
         process_name for process_name in signals if process_boson(process_name) == target_boson
     ]
@@ -380,6 +490,8 @@ def make_three_poi_scheme(
         raise RuntimeError(f"No {target_boson} signal processes found for three-POI scheme")
     for process_name in signals:
         poi = process_specific_poi(process_name)
+        poi_min, poi_max = poi_ranges_by_boson[process_boson(process_name)]
+        poi_ranges[poi] = (poi_min, poi_max)
         maps.append(
             f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
         )
@@ -396,6 +508,7 @@ def make_three_poi_scheme(
         poi_maps=tuple(maps),
         targets=tuple(targets),
         all_poi_names=tuple(process_specific_poi(process_name) for process_name in signals),
+        poi_ranges=poi_ranges,
     )
 
 
@@ -403,8 +516,7 @@ def make_boson_grouped_poi_scheme(
     signals: list[str],
     target_boson: str,
     poi_initial: float,
-    poi_min: float,
-    poi_max: float,
+    poi_ranges_by_boson: dict[str, PoiRange],
 ) -> PoiScheme:
     target_processes = [
         process_name for process_name in signals if process_boson(process_name) == target_boson
@@ -417,19 +529,24 @@ def make_boson_grouped_poi_scheme(
 
     maps: list[str] = []
     all_pois: list[str] = []
+    poi_ranges: dict[str, PoiRange] = {}
     target_poi = f"r_{target_boson}_grouped"
+    target_poi_min, target_poi_max = poi_ranges_by_boson[target_boson]
     all_pois.append(target_poi)
+    poi_ranges[target_poi] = (target_poi_min, target_poi_max)
     for index, process_name in enumerate(target_processes):
         if index == 0:
             maps.append(
-                f"map=.*/{process_name}:{target_poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
+                f"map=.*/{process_name}:{target_poi}[{format_number(poi_initial)},{format_number(target_poi_min)},{format_number(target_poi_max)}]"
             )
         else:
             maps.append(f"map=.*/{process_name}:{target_poi}")
 
     for process_name in profiled_processes:
         poi = process_specific_poi(process_name)
+        poi_min, poi_max = poi_ranges_by_boson[process_boson(process_name)]
         all_pois.append(poi)
+        poi_ranges[poi] = (poi_min, poi_max)
         maps.append(
             f"map=.*/{process_name}:{poi}[{format_number(poi_initial)},{format_number(poi_min)},{format_number(poi_max)}]"
         )
@@ -453,38 +570,36 @@ def make_boson_grouped_poi_scheme(
             ),
         ),
         all_poi_names=tuple(all_pois),
+        poi_ranges=poi_ranges,
     )
 
 
 def selected_schemes(args: argparse.Namespace, signals: list[str]) -> tuple[PoiScheme, ...]:
+    poi_ranges_by_boson = effective_boson_poi_ranges(args)
     schemes = {
         "three_poi_z": make_three_poi_scheme(
             signals,
             "Z",
             args.poi_initial,
-            args.poi_min,
-            args.poi_max,
+            poi_ranges_by_boson,
         ),
         "three_poi_h": make_three_poi_scheme(
             signals,
             "H",
             args.poi_initial,
-            args.poi_min,
-            args.poi_max,
+            poi_ranges_by_boson,
         ),
         "z_grouped": make_boson_grouped_poi_scheme(
             signals,
             "Z",
             args.poi_initial,
-            args.poi_min,
-            args.poi_max,
+            poi_ranges_by_boson,
         ),
         "h_grouped": make_boson_grouped_poi_scheme(
             signals,
             "H",
             args.poi_initial,
-            args.poi_min,
-            args.poi_max,
+            poi_ranges_by_boson,
         ),
     }
     if args.poi_scheme == "three_poi":
@@ -599,8 +714,11 @@ def append_set_parameter(assignments: str, name: str, value: float | int) -> str
     return f"{assignments},{suffix}" if assignments else suffix
 
 
-def parameter_ranges_argument(pois: tuple[str, ...], lower: float, upper: float) -> str:
-    return ":".join(f"{poi}={format_number(lower)},{format_number(upper)}" for poi in pois)
+def parameter_ranges_argument(pois: tuple[str, ...], poi_ranges: dict[str, PoiRange]) -> str:
+    return ":".join(
+        f"{poi}={format_number(poi_ranges[poi][0])},{format_number(poi_ranges[poi][1])}"
+        for poi in pois
+    )
 
 
 def build_workspace_job(run_dir: Path, datacard_path: Path, mass: str, scheme: PoiScheme) -> CommandJob:
@@ -671,7 +789,7 @@ def build_dataset_generation_job(
     reset_directory(cwd)
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     toys_argument = strategy_toys_argument(dataset_strategy, args)
-    poi_min, poi_max = effective_poi_range(args)
+    poi_min, poi_max = scheme.poi_ranges[target.poi]
     set_parameters = set_parameters_argument(
         scheme.all_pois,
         target.poi,
@@ -699,7 +817,7 @@ def build_dataset_generation_job(
         "--freezeParameters",
         ",".join(freeze_parameters),
         "--setParameterRanges",
-        parameter_ranges_argument(scheme.all_pois, poi_min, poi_max),
+        parameter_ranges_argument(scheme.all_pois, scheme.poi_ranges),
         "-m",
         mass,
         "-n",
@@ -753,7 +871,16 @@ def build_dataset_generation_job(
             "seed": seed,
             "requested_poi_min": args.poi_min,
             "requested_poi_max": args.poi_max,
-            "poi_range_policy": "fixed requested range",
+            "global_poi_min": args.poi_min,
+            "global_poi_max": args.poi_max,
+            "h_poi_min": effective_boson_poi_range(args, "H")[0],
+            "h_poi_max": effective_boson_poi_range(args, "H")[1],
+            "z_poi_min": effective_boson_poi_range(args, "Z")[0],
+            "z_poi_max": effective_boson_poi_range(args, "Z")[1],
+            "poi_ranges": {poi: list(scheme.poi_ranges[poi]) for poi in scheme.all_pois},
+            "target_poi_min": poi_min,
+            "target_poi_max": poi_max,
+            "poi_range_policy": "H/Z-specific requested ranges",
             "poi_min": poi_min,
             "poi_max": poi_max,
             "pdf_index_name": args.pdf_index_name,
@@ -782,11 +909,10 @@ def build_fit_job(
     target_display = signal_target_display(target.label)
     dataset_display = dataset_strategy_display(dataset_strategy)
     truth_slug = truth_pdf.slug or safe_name(truth_pdf.label)
-    fit_pdf_display = floating_pdf_display() if target_pdf is None else pdf_state_display(
+    fit_pdf_display = profiled_pdf_display() if target_pdf is None else concise_pdf_display(
         index=target_pdf.index,
         family=target_pdf.family,
         order=target_pdf.scan_order,
-        selection_role=target_pdf.selection_role,
         name=target_pdf.name,
     )
     fit_pdf_tag = fit_pdf_display.slug if target_pdf is None else f"fixed_{fit_pdf_display.slug}"
@@ -803,7 +929,7 @@ def build_fit_job(
     inputs = stage_common_combine_inputs(cwd, workspace_path, datacard_path)
     inputs.append(copy_file(toys_path, cwd / LOCAL_TOYS_NAME))
     toys_argument = strategy_toys_argument(dataset_strategy, args)
-    poi_min, poi_max = effective_poi_range(args)
+    poi_min, poi_max = scheme.poi_ranges[target.poi]
     scanned_pois = (target.poi,)
     profiled_pois = tuple(poi for poi in scheme.all_pois if poi not in scanned_pois)
     set_parameters = set_parameters_argument(
@@ -838,7 +964,7 @@ def build_fit_job(
         "--setParameters",
         set_parameters,
         "--setParameterRanges",
-        parameter_ranges_argument(scheme.all_pois, poi_min, poi_max),
+        parameter_ranges_argument(scheme.all_pois, scheme.poi_ranges),
         "--cminDefaultMinimizerStrategy",
         str(args.cmin_default_minimizer_strategy),
         "--trackParameters",
@@ -902,12 +1028,16 @@ def build_fit_job(
             "fit_pdf_slug": fit_pdf_display.slug,
             "fit_pdf_latex": fit_pdf_display.latex,
             "fit_pdf_family": None if target_pdf is None else target_pdf.family,
+            "fit_pdf_scan_order": None if target_pdf is None else target_pdf.scan_order,
+            "fit_pdf_selection_role": None if target_pdf is None else target_pdf.selection_role,
             "target_pdf_index": None if target_pdf is None else target_pdf.index,
             "target_pdf": None if target_pdf is None else target_pdf.name,
             "target_pdf_label": fit_pdf_display.text,
             "target_pdf_slug": fit_pdf_display.slug,
             "target_pdf_latex": fit_pdf_display.latex,
             "target_pdf_family": None if target_pdf is None else target_pdf.family,
+            "target_pdf_scan_order": None if target_pdf is None else target_pdf.scan_order,
+            "target_pdf_selection_role": None if target_pdf is None else target_pdf.selection_role,
             "free_floating_pois": list(scheme.all_pois),
             "scanned_pois": list(scanned_pois),
             "profiled_pois": list(profiled_pois),
@@ -922,9 +1052,19 @@ def build_fit_job(
             "pseudo_datasets": strategy_dataset_count(dataset_strategy, args),
             "requested_poi_min": args.poi_min,
             "requested_poi_max": args.poi_max,
-            "poi_range_policy": "fixed requested range",
+            "global_poi_min": args.poi_min,
+            "global_poi_max": args.poi_max,
+            "h_poi_min": effective_boson_poi_range(args, "H")[0],
+            "h_poi_max": effective_boson_poi_range(args, "H")[1],
+            "z_poi_min": effective_boson_poi_range(args, "Z")[0],
+            "z_poi_max": effective_boson_poi_range(args, "Z")[1],
+            "poi_ranges": {poi: list(scheme.poi_ranges[poi]) for poi in scheme.all_pois},
+            "target_poi_min": poi_min,
+            "target_poi_max": poi_max,
+            "poi_range_policy": "H/Z-specific requested ranges",
             "poi_min": poi_min,
             "poi_max": poi_max,
+            "tracked_error_boundary_fallback": bool(args.tracked_error_boundary_fallback),
             "quick": bool(args.quick),
             "cmin_default_minimizer_strategy": int(args.cmin_default_minimizer_strategy),
             "cmin_strategy_explicit": bool(args.cmin_strategy_explicit),
@@ -1138,8 +1278,46 @@ def result_successful(result: dict[str, Any]) -> bool:
     return int(result.get("returncode", 1)) == 0
 
 
+def resolve_stored_path(path_value: Any, repo_relative_value: Any = None) -> Path | None:
+    path = Path(str(path_value)) if path_value else None
+    if path is not None and path.exists():
+        return path
+    if repo_relative_value:
+        candidate = REPO_ROOT / str(repo_relative_value)
+        if candidate.exists() or path is None:
+            return candidate
+    return path
+
+
+def result_cwd(result: dict[str, Any]) -> Path:
+    cwd = resolve_stored_path(result.get("cwd"), result.get("cwd_repo_relative"))
+    if cwd is None:
+        raise KeyError("result is missing cwd and cwd_repo_relative")
+    return cwd
+
+
+def localize_result_paths(result: dict[str, Any]) -> dict[str, Any]:
+    cwd = result_cwd(result)
+    result["cwd"] = str(cwd.resolve())
+    result["cwd_repo_relative"] = repo_relative(cwd)
+    for key in (
+        "command_path",
+        "stdout_path",
+        "stderr_path",
+        "summary_json_path",
+        "summary_html_path",
+    ):
+        repo_key = f"{key}_repo_relative"
+        path = resolve_stored_path(result.get(key), result.get(repo_key))
+        if path is None:
+            continue
+        result[key] = str(path.resolve())
+        result[repo_key] = repo_relative(path)
+    return result
+
+
 def result_output_path(result: dict[str, Any], expected_name: str | None = None) -> Path | None:
-    cwd = Path(result["cwd"])
+    cwd = result_cwd(result)
     root_files = [cwd / name for name in result.get("produced_root_files", [])]
     if expected_name is not None:
         for root_file in root_files:
@@ -1149,7 +1327,7 @@ def result_output_path(result: dict[str, Any], expected_name: str | None = None)
 
 
 def first_root_file(result: dict[str, Any], prefix: str) -> Path | None:
-    cwd = Path(result["cwd"])
+    cwd = result_cwd(result)
     for root_name in result.get("produced_root_files", []):
         if root_name.startswith(prefix):
             return cwd / root_name
@@ -1235,11 +1413,10 @@ def make_truth_pdf(index: int, pdf_name: str, state_metadata: dict[str, Any] | N
         state_metadata.get("readable_label"),
     )
     selection_role = state_metadata.get("selection_role")
-    display = pdf_state_display(
+    display = concise_pdf_display(
         index=index,
         family=family,
         order=order,
-        selection_role=selection_role,
         name=pdf_name,
         source_model_name=state_metadata.get("source_model_name"),
         workspace_label=state_metadata.get("workspace_label"),
@@ -1248,9 +1425,9 @@ def make_truth_pdf(index: int, pdf_name: str, state_metadata: dict[str, Any] | N
         index=index,
         name=pdf_name,
         family=family,
-        label=str(state_metadata.get("display_label") or display.text),
-        slug=str(state_metadata.get("display_slug") or display.slug),
-        latex=str(state_metadata.get("display_latex") or display.latex),
+        label=display.text,
+        slug=f"pdf{index}_{display.slug}",
+        latex=display.latex,
         scan_order=order,
         selection_role=None if selection_role is None else str(selection_role),
     )
@@ -1328,6 +1505,43 @@ def leaf_value(tree: Any, name: str) -> float | None:
         return None
 
 
+def finite_positive_float(value: Any) -> float | None:
+    try:
+        numeric = abs(float(value))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric) or numeric <= 0.0:
+        return None
+    return numeric
+
+
+def endpoint_is_close_to_bound(endpoint: Any, bound: float | None, span: float | None) -> bool:
+    if endpoint is None or bound is None:
+        return False
+    try:
+        endpoint_value = float(endpoint)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(endpoint_value):
+        return False
+    tolerance = max(1e-6, 1e-9 * abs(float(span or 0.0)))
+    return math.isclose(endpoint_value, float(bound), rel_tol=1e-9, abs_tol=tolerance)
+
+
+def endpoint_hits_poi_range(
+    lower_endpoint: Any,
+    upper_endpoint: Any,
+    poi_min: float | None,
+    poi_max: float | None,
+) -> bool:
+    span = None if poi_min is None or poi_max is None else abs(float(poi_max) - float(poi_min))
+    return endpoint_is_close_to_bound(lower_endpoint, poi_min, span) or endpoint_is_close_to_bound(
+        upper_endpoint,
+        poi_max,
+        span,
+    )
+
+
 def extract_pull_values(
     fit_root_path: Path,
     poi: str,
@@ -1336,6 +1550,9 @@ def extract_pull_values(
     pdf_index_name: str,
     fit_algo: str,
     scanned_pois: list[str] | None = None,
+    poi_min: float | None = None,
+    poi_max: float | None = None,
+    tracked_error_boundary_fallback: bool = True,
 ) -> dict[str, Any]:
     from statistical_test_fit.root_runtime import configure_root
 
@@ -1474,12 +1691,37 @@ def extract_pull_values(
                 if use_profile_endpoints and lower_value is not None and upper_value is not None:
                     lo_err = abs(float(r_hat) - float(lower_value))
                     hi_err = abs(float(upper_value) - float(r_hat))
-                    sigma = 0.5 * (lo_err + hi_err)
+                    endpoint_sigma = 0.5 * (lo_err + hi_err)
+                    tracked_sigma = finite_positive_float(tracked_error)
+                    endpoint_hits_range = endpoint_hits_poi_range(
+                        lower_value,
+                        upper_value,
+                        poi_min,
+                        poi_max,
+                    )
+                    endpoint_suspicious = bool(
+                        tracked_sigma is not None
+                        and math.isfinite(endpoint_sigma)
+                        and endpoint_sigma > TRACKED_ERROR_BOUNDARY_FALLBACK_RATIO * tracked_sigma
+                    )
+                    sigma = endpoint_sigma
                     record["lo_err"] = lo_err
                     record["hi_err"] = hi_err
+                    record["endpoint_sigma"] = endpoint_sigma
+                    record["endpoint_hits_range"] = endpoint_hits_range
+                    record["endpoint_suspicious_vs_tracked_error"] = endpoint_suspicious
+                    if tracked_error_boundary_fallback and tracked_sigma is not None and (
+                        endpoint_hits_range or endpoint_suspicious
+                    ):
+                        sigma = tracked_sigma
+                        sigma_source = "tracked_error_boundary_fallback"
+                        record["boundary_fallback_reason"] = (
+                            "range_boundary" if endpoint_hits_range else "endpoint_vs_tracked_error"
+                        )
                 if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
-                    if tracked_error is not None:
-                        sigma = abs(float(tracked_error))
+                    tracked_sigma = finite_positive_float(tracked_error)
+                    if tracked_sigma is not None:
+                        sigma = tracked_sigma
                         sigma_source = "tracked_error"
                 if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
                     record["skip_reason"] = "invalid_error"
@@ -1723,6 +1965,9 @@ def analyze_fit_result(result: dict[str, Any], args: argparse.Namespace) -> dict
                 metadata.get("scanned_pois")
                 or metadata.get("all_pois", [metadata["target_poi"]])
             ),
+            poi_min=finite_float_or_none(metadata.get("poi_min", args.poi_min)),
+            poi_max=finite_float_or_none(metadata.get("poi_max", args.poi_max)),
+            tracked_error_boundary_fallback=bool(args.tracked_error_boundary_fallback),
         )
     if analysis.get("status") == "ok":
         pulls = [float(value) for value in analysis.get("pulls", [])]
@@ -1764,7 +2009,7 @@ def analyze_fit_result(result: dict[str, Any], args: argparse.Namespace) -> dict
         else:
             plot = make_pull_distribution_plot(
                 pulls,
-                Path(result["cwd"]),
+                result_cwd(result),
                 (
                     f"{metadata.get('scheme')} {metadata.get('target_poi')} "
                     f"truth={metadata.get('truth_pdf_label')} "
@@ -1962,6 +2207,21 @@ def scatter_plot_tile_html(plot: dict[str, Any], run_dir: Path) -> str:
     """
 
 
+def result_summary_href(result: dict[str, Any], run_dir: Path) -> str | None:
+    path = resolve_stored_path(
+        result.get("summary_html_path"),
+        result.get("summary_html_path_repo_relative"),
+    )
+    if path is None:
+        return None
+    return href_relative_to(run_dir, path)
+
+
+def result_summary_link(result: dict[str, Any], run_dir: Path) -> str:
+    href = result_summary_href(result, run_dir)
+    return html_link("summary", href) if href else "-"
+
+
 def scatter_plot_grid_section(title: str, plots: list[dict[str, Any]], run_dir: Path) -> str:
     if not plots:
         return ""
@@ -2032,7 +2292,9 @@ def make_job_html_summary(result: dict[str, Any]) -> str:
 
 
 def write_job_summary(result: dict[str, Any]) -> None:
-    cwd = Path(result["cwd"])
+    cwd = result_cwd(result)
+    result["cwd"] = str(cwd.resolve())
+    result["cwd_repo_relative"] = repo_relative(cwd)
     result["summary_json_path"] = str((cwd / "summary.json").resolve())
     result["summary_json_path_repo_relative"] = repo_relative(cwd / "summary.json")
     result["summary_html_path"] = str((cwd / "summary.html").resolve())
@@ -2112,13 +2374,8 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
     raw_target = str(metadata.get("target_label") or metadata.get("target_poi") or "")
     scheme_display = poi_scheme_display(raw_scheme)
     target_display = signal_target_display(raw_target)
-    truth_display = pdf_state_display(
-        index=metadata.get("truth_pdf_index"),
-        family=metadata.get("truth_pdf_family"),
-        order=metadata.get("truth_pdf_scan_order"),
-        selection_role=metadata.get("truth_pdf_selection_role"),
-        name=metadata.get("truth_pdf"),
-    )
+    truth_display = truth_pdf_display_from_metadata(metadata)
+    target_pdf_display = target_pdf_display_from_experiment(metadata)
     return {
         "experiment_index": index,
         "job_id": result.get("job_id"),
@@ -2138,9 +2395,9 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "float_other_pois": metadata.get("float_other_pois"),
         "truth_pdf_index": metadata.get("truth_pdf_index"),
         "truth_pdf": metadata.get("truth_pdf"),
-        "truth_pdf_label": metadata.get("truth_pdf_label") or truth_display.text,
+        "truth_pdf_label": truth_display.text,
         "truth_pdf_slug": metadata.get("truth_pdf_slug") or truth_display.slug,
-        "truth_pdf_latex": metadata.get("truth_pdf_latex") or truth_display.latex,
+        "truth_pdf_latex": truth_display.latex,
         "truth_pdf_family": metadata.get("truth_pdf_family"),
         "truth_pdf_scan_order": metadata.get("truth_pdf_scan_order"),
         "truth_pdf_selection_role": metadata.get("truth_pdf_selection_role"),
@@ -2148,16 +2405,20 @@ def experiment_summary_from_fit(result: dict[str, Any], index: int) -> dict[str,
         "fit_pdf_mode": metadata.get("fit_pdf_mode"),
         "fit_pdf_index": metadata.get("fit_pdf_index"),
         "fit_pdf": metadata.get("fit_pdf"),
-        "fit_pdf_label": metadata.get("fit_pdf_label"),
+        "fit_pdf_label": target_pdf_display.text,
         "fit_pdf_slug": metadata.get("fit_pdf_slug"),
-        "fit_pdf_latex": metadata.get("fit_pdf_latex"),
+        "fit_pdf_latex": target_pdf_display.latex,
         "fit_pdf_family": metadata.get("fit_pdf_family"),
+        "fit_pdf_scan_order": metadata.get("fit_pdf_scan_order"),
+        "fit_pdf_selection_role": metadata.get("fit_pdf_selection_role"),
         "target_pdf_index": metadata.get("target_pdf_index"),
         "target_pdf": metadata.get("target_pdf"),
-        "target_pdf_label": metadata.get("target_pdf_label"),
+        "target_pdf_label": target_pdf_display.text,
         "target_pdf_slug": metadata.get("target_pdf_slug"),
-        "target_pdf_latex": metadata.get("target_pdf_latex"),
+        "target_pdf_latex": target_pdf_display.latex,
         "target_pdf_family": metadata.get("target_pdf_family"),
+        "target_pdf_scan_order": metadata.get("target_pdf_scan_order"),
+        "target_pdf_selection_role": metadata.get("target_pdf_selection_role"),
         "injected_r": metadata.get("injected_r"),
         "injection_mode": metadata.get("injection_mode"),
         "dataset_strategy": metadata.get("dataset_strategy", "toys"),
@@ -2223,27 +2484,28 @@ def finite_float_or_none(value: Any) -> float | None:
 
 
 def fit_target_pdf_label(experiment: dict[str, Any]) -> str:
-    mode = normalize_pdf_target_strategy(experiment.get("fit_pdf_mode", "floating"))
-    if mode == "fixed":
-        label = experiment.get("target_pdf_label") or experiment.get("fit_pdf_label")
-        index = experiment.get("target_pdf_index")
-        if label:
-            return str(label)
-        if index is not None:
-            return f"pdf{index}"
-        return "fixed"
-    return floating_pdf_display().text
+    return target_pdf_display_from_experiment(experiment).text
+
+
+def job_truth_pdf_label(metadata: dict[str, Any]) -> str:
+    if first_present(metadata.get("truth_pdf_index"), metadata.get("truth_pdf"), metadata.get("truth_pdf_label")) is None:
+        return "-"
+    return truth_pdf_display_from_metadata(metadata).text
+
+
+def job_target_pdf_label(metadata: dict[str, Any]) -> str:
+    if metadata.get("fit_pdf_mode") is not None:
+        return target_pdf_display_from_experiment(metadata).text
+    label = first_present(metadata.get("target_pdf_label"), metadata.get("fit_pdf_label"))
+    if label is None:
+        return "-"
+    if "floating" in str(label).lower() and "pdfindex" in str(label).lower():
+        return profiled_pdf_display().text
+    return concise_pdf_display(name=label, source_model_name=label).text
 
 
 def fit_target_pdf_plot_label(experiment: dict[str, Any]) -> str:
-    mode = normalize_pdf_target_strategy(experiment.get("fit_pdf_mode", "floating"))
-    if mode == "fixed":
-        return str(
-            experiment.get("target_pdf_latex")
-            or experiment.get("fit_pdf_latex")
-            or fit_target_pdf_label(experiment)
-        )
-    return floating_pdf_display().latex
+    return target_pdf_display_from_experiment(experiment).latex
 
 
 def fit_target_pdf_sort_key(experiment: dict[str, Any]) -> tuple[int, int, str]:
@@ -2624,7 +2886,7 @@ def make_scatter_plot(
         "experiment_map": str(map_path.resolve()),
         "experiment_map_repo_relative": repo_relative(map_path),
         "annotate_outliers": annotate_outliers,
-        "note": ("" if label == "Global" else f"Filtered to {label}. ") + "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Point color shows truth PDF, marker shape shows injected signal strength, and point area shows fitted sigma for toy fits. Fixed and floating target PDF fits are separate points. Asimov closure points use fixed area." + annotation_note,
+        "note": ("" if label == "Global" else f"Filtered to {label}. ") + "X axis shows index. Shaded bands and top labels group points by scheme and target POI. Point color shows truth PDF, marker shape shows injected signal strength, and point area shows fitted sigma for toy fits. Fixed and profiled target PDF fits are separate points. Asimov closure points use fixed area." + annotation_note,
     }
 
 
@@ -2965,7 +3227,7 @@ def truth_pdf_axis_key(experiment: dict[str, Any]) -> tuple[int, str]:
         index = int(experiment.get("truth_pdf_index"))
     except (TypeError, ValueError):
         index = 1_000_000
-    label = str(experiment.get("truth_pdf_latex") or experiment.get("truth_pdf_label") or f"pdf{index}")
+    label = truth_pdf_display_from_metadata(experiment).latex
     return index, label
 
 
@@ -2978,7 +3240,7 @@ def target_pdf_axis_key(experiment: dict[str, Any]) -> tuple[int, int, str]:
         except (TypeError, ValueError):
             pdf_index = 1_000_000
         return 0, pdf_index, fit_target_pdf_plot_label(experiment)
-    return 1, 1_000_000, floating_pdf_display().latex
+    return 1, 1_000_000, profiled_pdf_display().latex
 
 
 def summary_heatmap_row_key(experiment: dict[str, Any]) -> tuple[str, str, str, str, float, int, str]:
@@ -3165,6 +3427,7 @@ def make_pdf_target_summary_heatmap(
             )
 
     annotation_fontsize = 8 if len(row_axis) <= 80 else 6 if len(row_axis) <= 180 else 4
+    annotation_fontsize *= 2
     annotate_cells = len(row_axis) * len(target_axis) <= 4500
     column_is_asimov = [row_key[0] == "asimov" for row_key in row_axis]
     has_asimov_columns = any(column_is_asimov)
@@ -3176,8 +3439,10 @@ def make_pdf_target_summary_heatmap(
                     continue
                 metric_value = plot_matrix[row, column]
                 sigma_value = plot_sigma_matrix[row, column]
-                if np.isfinite(sigma_value):
-                    text = f"{float(sigma_value):.2f}"
+                if np.isfinite(metric_value) and np.isfinite(sigma_value):
+                    text = "$\\mu={:.2f}\\,/\\,\\sigma={:.2f}$".format(
+                        float(metric_value), float(sigma_value)
+                    )
                 else:
                     text = "-"
                 text_color = "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * color_scale_max else "#111827"
@@ -3187,15 +3452,6 @@ def make_pdf_target_summary_heatmap(
     colorbar = fig.colorbar(image, ax=ax, shrink=0.92, extend="both")
     colorbar.set_label(colorbar_label, fontsize=11)
     colorbar.set_ticks([color_scale_min, -0.5, 0.0, 0.5, color_scale_max])
-    cell_text_note = None
-    if annotate_cells and has_annotated_columns:
-        cell_text_note = "Cell text: fitted sigma for toy columns only." if has_asimov_columns else "Cell text: fitted sigma."
-    elif has_annotated_columns:
-        cell_text_note = "Cell text omitted because the summary heatmap is dense; see values JSON for fitted sigma."
-    if cell_text_note is not None and np.any(plot_failed_matrix):
-        cell_text_note += f" Failed cells are {failed_color}."
-    if cell_text_note is not None:
-        fig.text(0.01, 0.01, cell_text_note, ha="left", va="bottom", fontsize=9, color="#475569")
     fig.savefig(png_path, dpi=180)
     fig.savefig(pdf_path)
     plt.close(fig)
@@ -3203,9 +3459,9 @@ def make_pdf_target_summary_heatmap(
     if not has_annotated_columns:
         annotation = "none"
     elif annotate_cells and has_asimov_columns:
-        annotation = "fitted sigma for non-Asimov columns"
+        annotation = "mu and sigma values for non-Asimov columns"
     elif annotate_cells:
-        annotation = "fitted sigma"
+        annotation = "mu and sigma values"
     else:
         annotation = "see values_json"
 
@@ -3248,7 +3504,7 @@ def make_pdf_target_summary_heatmap(
         "plot_pdf_repo_relative": repo_relative(pdf_path),
         "values_json": str(values_path.resolve()),
         "values_json_repo_relative": repo_relative(values_path),
-        "note": f"Single summary heatmap over all tested combinations. Columns are grouped by dataset strategy, POI scheme, target POI, injected r, and truth PDF; rows show target PDFs. Cell color uses a fixed -1 to 1 scale for toy fitted pull mean or Asimov closure pull. Failed cells are filled {failed_color} and are not part of the colorbar. Asimov columns have no cell text.",
+        "note": f"Single summary heatmap over all tested combinations. Columns are grouped by dataset strategy, POI scheme, target POI, injected r, and truth PDF; rows show target PDFs. Cell color uses a fixed -1 to 1 scale for toy fitted pull mean or Asimov closure pull. Failed cells are filled {failed_color} and are not part of the colorbar.",
     }
     values_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
@@ -3364,27 +3620,27 @@ def make_pdf_target_heatmap(
                 fit_failed = bool(failed_matrix[row, column])
                 if fit_failed:
                     text = "FAILED"
-                elif np.isfinite(sigma_value):
-                    text = f"{float(sigma_value):.2f}"
+                elif np.isfinite(metric_value) and np.isfinite(sigma_value):
+                    text = "$\\mu={:.2f}\\,/\\,\\sigma={:.2f}$".format(
+                        float(metric_value), float(sigma_value)
+                    )
                 else:
                     text = "-"
                 text_color = "#991b1b" if fit_failed else "white" if np.isfinite(metric_value) and abs(float(metric_value)) > 0.55 * color_scale_max else "#111827"
-                ax.text(column, row, text, ha="center", va="center", color=text_color, fontsize=10, fontweight="bold")
+                ax.text(column, row, text, ha="center", va="center", color=text_color, fontsize=20, fontweight="bold")
 
     colorbar_label = "Asimov closure pull" if dataset_strategy == "asimov" else "fitted pull mean"
     colorbar = fig.colorbar(image, ax=ax, shrink=0.92, extend="both")
     colorbar.set_label(colorbar_label, fontsize=11)
     colorbar.set_ticks([color_scale_min, -0.5, 0.0, 0.5, color_scale_max])
-    if annotate_cells:
-        fig.text(0.01, 0.01, "Cell text: fitted sigma", ha="left", va="bottom", fontsize=9, color="#475569")
     fig.savefig(png_path, dpi=180)
     fig.savefig(pdf_path)
     plt.close(fig)
 
     note = (
-        "Rows show truth PDFs, columns show target PDFs. Cell color is Asimov closure pull on a fixed -1 to 1 scale. Asimov heatmaps omit all cell text."
+        "Rows show truth PDFs, columns show target PDFs. Cell color is Asimov closure pull on a fixed -1 to 1 scale."
         if dataset_strategy == "asimov"
-        else "Rows show truth PDFs, columns show target PDFs. Cell color is the fitted pull mean on a fixed -1 to 1 scale. Cell text is the fitted sigma rounded to two decimals; failed fits are marked FAILED."
+        else "Rows show truth PDFs, columns show target PDFs. Cell color is the fitted pull mean on a fixed -1 to 1 scale. Cell text is $\\mu$ (fitted pull mean) / $\\sigma$ (fitted sigma); failed fits are marked FAILED."
     )
 
     payload = {
@@ -3395,7 +3651,7 @@ def make_pdf_target_heatmap(
         "points": len([record for record in cell_records if record.get("metric") is not None]),
         "cells": len(cell_records),
         "metric": colorbar_label,
-        "annotation": "none" if dataset_strategy == "asimov" else "fitted sigma",
+        "annotation": "none" if dataset_strategy == "asimov" else "mu and sigma values",
         "color_scale": {"min": color_scale_min, "max": color_scale_max},
         "truth_axis": [{"index": index, "label": axis_label} for index, axis_label in truth_axis],
         "target_axis": [
@@ -3693,6 +3949,10 @@ def load_existing_run_results(run_dir: Path) -> list[dict[str, Any]]:
         except Exception:
             continue
         if isinstance(payload, dict) and payload.get("job_id") and payload.get("method"):
+            try:
+                localize_result_paths(payload)
+            except Exception:
+                pass
             results.append(payload)
     return results
 
@@ -3770,10 +4030,30 @@ def infer_plot_only_args(
         )
     args.pdf_target_strategies = selected_pdf_target_strategies(args)
     args.poi_min = float(
-        first_metadata_value(fit_results, "requested_poi_min", existing_summary.get("requested_poi_min", args.poi_min))
+        first_metadata_value(
+            fit_results,
+            "global_poi_min",
+            existing_summary.get("global_poi_min", existing_summary.get("requested_poi_min", args.poi_min)),
+        )
     )
     args.poi_max = float(
-        first_metadata_value(fit_results, "requested_poi_max", existing_summary.get("requested_poi_max", args.poi_max))
+        first_metadata_value(
+            fit_results,
+            "global_poi_max",
+            existing_summary.get("global_poi_max", existing_summary.get("requested_poi_max", args.poi_max)),
+        )
+    )
+    args.h_poi_min = finite_float_or_none(
+        first_metadata_value(fit_results, "h_poi_min", existing_summary.get("h_poi_min", args.h_poi_min))
+    )
+    args.h_poi_max = finite_float_or_none(
+        first_metadata_value(fit_results, "h_poi_max", existing_summary.get("h_poi_max", args.h_poi_max))
+    )
+    args.z_poi_min = finite_float_or_none(
+        first_metadata_value(fit_results, "z_poi_min", existing_summary.get("z_poi_min", args.z_poi_min))
+    )
+    args.z_poi_max = finite_float_or_none(
+        first_metadata_value(fit_results, "z_poi_max", existing_summary.get("z_poi_max", args.z_poi_max))
     )
     args.quick = bool(first_metadata_value(fit_results, "quick", existing_summary.get("quick", args.quick)))
     args.cmin_default_minimizer_strategy = int(
@@ -3852,11 +4132,30 @@ def infer_schemes_for_plot_only(
         existing_scheme = existing_schemes.get(scheme_name, {})
         all_pois = list(workspace_metadata.get("pois") or existing_scheme.get("pois") or [])
         poi_maps = tuple(workspace_metadata.get("poi_maps") or existing_scheme.get("poi_maps") or [])
+        poi_ranges: dict[str, PoiRange] = {}
+        for poi, raw_range in (existing_scheme.get("poi_ranges") or {}).items():
+            if not isinstance(raw_range, dict):
+                continue
+            lower = finite_float_or_none(raw_range.get("min"))
+            upper = finite_float_or_none(raw_range.get("max"))
+            if lower is not None and upper is not None:
+                poi_ranges[str(poi)] = (lower, upper)
         targets: list[PoiTarget] = []
         for result in results:
             metadata = result.get("metadata") or {}
             if metadata.get("scheme") != scheme_name or not metadata.get("target_poi"):
                 continue
+            for poi, raw_range in (metadata.get("poi_ranges") or {}).items():
+                lower: float | None = None
+                upper: float | None = None
+                if isinstance(raw_range, dict):
+                    lower = finite_float_or_none(raw_range.get("min"))
+                    upper = finite_float_or_none(raw_range.get("max"))
+                elif isinstance(raw_range, (list, tuple)) and len(raw_range) == 2:
+                    lower = finite_float_or_none(raw_range[0])
+                    upper = finite_float_or_none(raw_range[1])
+                if lower is not None and upper is not None:
+                    poi_ranges[str(poi)] = (lower, upper)
             target = PoiTarget(
                 label=str(metadata.get("target_label", metadata["target_poi"])),
                 poi=str(metadata["target_poi"]),
@@ -3881,6 +4180,7 @@ def infer_schemes_for_plot_only(
                 poi_maps=poi_maps,
                 targets=tuple(targets),
                 all_poi_names=tuple(ordered_unique(all_pois)),
+                poi_ranges=poi_ranges,
             )
         )
     return tuple(schemes)
@@ -3899,20 +4199,20 @@ def infer_truth_pdf_metadata_for_plot_only(
         if metadata.get("truth_pdf_index") is None:
             continue
         index = int(metadata["truth_pdf_index"])
-        display = pdf_state_display(
+        display = concise_pdf_display(
             index=index,
             family=metadata.get("truth_pdf_family"),
             order=metadata.get("truth_pdf_scan_order"),
-            selection_role=metadata.get("truth_pdf_selection_role"),
             name=metadata.get("truth_pdf"),
+            source_model_name=metadata.get("truth_pdf_label"),
         )
         truths[index] = {
             "index": index,
             "name": str(metadata.get("truth_pdf", "")),
             "family": str(metadata.get("truth_pdf_family", "")),
-            "label": str(metadata.get("truth_pdf_label") or display.text),
+            "label": display.text,
             "slug": str(metadata.get("truth_pdf_slug") or display.slug),
-            "latex": str(metadata.get("truth_pdf_latex") or display.latex),
+            "latex": display.latex,
             "scan_order": metadata.get("truth_pdf_scan_order"),
             "selection_role": metadata.get("truth_pdf_selection_role"),
         }
@@ -4022,6 +4322,7 @@ def write_run_summary(
     scatter_plot_variations: dict[str, list[dict[str, Any]]] | None = None,
     heatmap_plots: list[dict[str, Any]] | None = None,
 ) -> None:
+    boson_poi_ranges = effective_boson_poi_ranges(args)
     fit_results = [result for result in results if result.get("method") == "MultiDimFit"]
     experiments = [experiment_summary_from_fit(result, index) for index, result in enumerate(fit_results, start=1)]
     bias_flags = [experiment for experiment in experiments if experiment.get("bias_flag") is True]
@@ -4059,11 +4360,23 @@ def write_run_summary(
         "fit_pdf_mode": ",".join(args.pdf_target_strategies),
         "fit_pdf_index": None,
         "pdf_index_name": args.pdf_index_name,
-        "poi_range_policy": "fixed requested range",
+        "poi_range_policy": "H/Z-specific requested ranges",
         "requested_poi_min": args.poi_min,
         "requested_poi_max": args.poi_max,
+        "global_poi_min": args.poi_min,
+        "global_poi_max": args.poi_max,
+        "h_poi_min": boson_poi_ranges["H"][0],
+        "h_poi_max": boson_poi_ranges["H"][1],
+        "z_poi_min": boson_poi_ranges["Z"][0],
+        "z_poi_max": boson_poi_ranges["Z"][1],
+        "poi_ranges_by_boson": {
+            boson: {"min": poi_range[0], "max": poi_range[1]}
+            for boson, poi_range in boson_poi_ranges.items()
+        },
         "poi_min": args.poi_min,
         "poi_max": args.poi_max,
+        "tracked_error_boundary_fallback": bool(args.tracked_error_boundary_fallback),
+        "tracked_error_boundary_fallback_ratio": TRACKED_ERROR_BOUNDARY_FALLBACK_RATIO,
         "quick": bool(args.quick),
         "cmin_default_minimizer_strategy": int(args.cmin_default_minimizer_strategy),
         "cmin_strategy_explicit": bool(args.cmin_strategy_explicit),
@@ -4094,6 +4407,13 @@ def write_run_summary(
                     }
                     for target in scheme.targets
                 ],
+                "poi_ranges": {
+                    poi: {
+                        "min": scheme_poi_range(args, scheme, poi)[0],
+                        "max": scheme_poi_range(args, scheme, poi)[1],
+                    }
+                    for poi in scheme.all_pois
+                },
             }
             for scheme in schemes
         ],
@@ -4131,10 +4451,14 @@ def write_run_summary(
         ["Default injections", format_injection_values(args.injections)],
         ["Injections by scheme", format_injections_by_scheme(scheme_injection_map)],
         ["Injection mode", args.injection_mode],
-        ["Requested POI range", f"[{format_number(args.poi_min)}, {format_number(args.poi_max)}]"],
-        ["Job POI range policy", "fixed requested range"],
+        ["Requested POI ranges", format_boson_poi_ranges(args)],
+        ["Job POI range policy", "H/Z-specific requested ranges"],
         ["Fit method", f"MultiDimFit --algo {FIT_ALGO}"],
         ["Fit POI scan", "target POI only (-P target) with other signal POIs floating"],
+        [
+            "Tracked-error boundary fallback",
+            "enabled" if args.tracked_error_boundary_fallback else "disabled",
+        ],
         ["PDF target strategy", args.pdf_target_strategy],
         ["Fit PDF modes", ", ".join(args.pdf_target_strategies)],
         ["Quick mode", "enabled" if args.quick else "disabled"],
@@ -4261,19 +4585,17 @@ def write_run_summary(
             html_escape(result.get("metadata", {}).get("dataset_strategy", "-")),
             html_escape(result.get("metadata", {}).get("scheme_label", result.get("metadata", {}).get("scheme", "-"))),
             html_escape(result.get("metadata", {}).get("target_display_label", result.get("metadata", {}).get("target_poi", "-"))),
-            html_escape(result.get("metadata", {}).get("truth_pdf_label", "-")),
-            html_escape(result.get("metadata", {}).get("target_pdf_label", result.get("metadata", {}).get("fit_pdf_label", "-"))),
+            html_escape(job_truth_pdf_label(result.get("metadata", {}))),
+            html_escape(job_target_pdf_label(result.get("metadata", {}))),
             html_escape(result.get("metadata", {}).get("injected_r", "-")),
             html_escape(result.get("duration", "-")),
-            html_link("summary", href_relative_to(run_dir, Path(result.get("summary_html_path", ""))))
-            if result.get("summary_html_path")
-            else "-",
+            result_summary_link(result, run_dir),
         ]
         for result in results
     ]
-    policy_note = """
+    policy_note = f"""
       <p>Pseudo-dataset generation freezes <code>pdfindex</code> to the requested truth PDF and uses <code>--bypassFrequentistFit</code>, so generated toys and Asimov datasets are based on pre-fit model values and do not use observed data to determine nuisance values. In target-only injection mode, non-tested POIs are set to zero and frozen during generation.</p>
-      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. The <code>--pdf-target-strategy</code> option controls whether <code>pdfindex</code> floats/profiled, is fixed to each target PDF index, or both. Job-level POI ranges use the fixed requested range. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable. Asimov fits report r closure and the closure pull, and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0 unless <code>--cmin-strategy</code> is explicitly set.</p>
+      <p>The toy strategy uses <code>-t N</code>; the Asimov strategy uses <code>-t -1</code>. Fitting uses <code>MultiDimFit --algo singles -P &lt;target POI&gt; --floatOtherPOIs 1</code> with all scheme POIs in <code>--redefineSignalPOIs</code>. The <code>--pdf-target-strategy</code> option controls whether <code>pdfindex</code> floats/profiled, is fixed to each target PDF index, or both. Job-level POI ranges use the requested H/Z-specific ranges. Toy pull denominators use the target POI profile endpoint rows from <code>--algo singles</code>, with <code>trackedError_&lt;poi&gt;</code> as a fallback if endpoints are unusable, hit the POI range boundary, or are more than <code>{TRACKED_ERROR_BOUNDARY_FALLBACK_RATIO:g}</code> times larger than <code>trackedError_&lt;poi&gt;</code>. Asimov fits report r closure and the closure pull, and do not run a pull-width check. By default, fits use <code>--robustFit 1</code> and <code>--cminDefaultMinimizerStrategy 2</code>; <code>--quick</code> disables robust fitting and uses strategy 0 unless <code>--cmin-strategy</code> is explicitly set.</p>
     """
     body = f"""
     <h1>Bias Study Run</h1>
@@ -4337,7 +4659,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Run a Combine pseudo-dataset bias study for non-resonant-background PDF choices "
             "using GenerateOnly and MultiDimFit."
-        )
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.set_defaults(cmin_strategy_explicit=False)
     parser.add_argument(
@@ -4422,13 +4745,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--poi-min",
         type=float,
         default=DEFAULT_POI_MIN,
-        help="Lower bound used when defining POIs and running GenerateOnly/MultiDimFit jobs.",
+        help="Default lower bound used when defining POIs and running GenerateOnly/MultiDimFit jobs.",
     )
     parser.add_argument(
         "--poi-max",
         type=float,
         default=DEFAULT_POI_MAX,
-        help="Upper bound used when defining POIs and running GenerateOnly/MultiDimFit jobs.",
+        help="Default upper bound used when defining POIs and running GenerateOnly/MultiDimFit jobs.",
+    )
+    parser.add_argument(
+        "--h-poi-min",
+        type=float,
+        default=None,
+        help="H-signal lower POI bound. Inherits --poi-min when unset.",
+    )
+    parser.add_argument(
+        "--h-poi-max",
+        type=float,
+        default=None,
+        help="H-signal upper POI bound. Inherits --poi-max when unset.",
+    )
+    parser.add_argument(
+        "--z-poi-min",
+        type=float,
+        default=None,
+        help="Z-signal lower POI bound. Inherits --poi-min when unset.",
+    )
+    parser.add_argument(
+        "--z-poi-max",
+        type=float,
+        default=None,
+        help="Z-signal upper POI bound. Inherits --poi-max when unset.",
     )
     parser.add_argument(
         "--injection-mode",
@@ -4513,12 +4860,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PULL_RANGE,
         help="Comma-separated pull histogram range, e.g. -5,5.",
     )
-    parser.add_argument("--pull-bins", type=int, default=DEFAULT_PULL_BINS)
+    parser.add_argument(
+        "--pull-bins",
+        type=int,
+        default=DEFAULT_PULL_BINS,
+        help="Number of bins in pull histograms.",
+    )
     parser.add_argument(
         "--min-fit-entries",
         type=int,
         default=DEFAULT_MIN_FIT_ENTRIES,
         help="Minimum usable toy entries required before fitting the pull histogram to a normal function.",
+    )
+    parser.add_argument(
+        "--disable-tracked-error-boundary-fallback",
+        dest="tracked_error_boundary_fallback",
+        action="store_false",
+        default=True,
+        help=(
+            "Disable the default fallback from profile-endpoint errors to trackedError_<poi> when "
+            "MultiDimFit endpoint rows hit the POI range boundary or are much larger than trackedError."
+        ),
     )
     parser.add_argument(
         "--bias-pull-threshold",
@@ -4578,6 +4940,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--poi-min and --poi-max must be finite")
     if args.poi_max <= args.poi_min:
         raise ValueError("--poi-max must be greater than --poi-min")
+    for option_name in ("h_poi_min", "h_poi_max", "z_poi_min", "z_poi_max"):
+        value = getattr(args, option_name)
+        if value is not None and not math.isfinite(float(value)):
+            raise ValueError(f"--{option_name.replace('_', '-')} must be finite when provided")
+    for boson in ("H", "Z"):
+        poi_min, poi_max = effective_boson_poi_range(args, boson)
+        if poi_max <= poi_min:
+            raise ValueError(f"--{boson.lower()}-poi-max must be greater than --{boson.lower()}-poi-min")
     if len(args.pull_range) != 2 or args.pull_range[1] <= args.pull_range[0]:
         raise ValueError("--pull-range must contain two increasing values")
     if args.pull_bins <= 0:
@@ -4611,8 +4981,8 @@ def main() -> int:
     log(f"POI schemes: {', '.join(scheme_label(scheme.name) for scheme in schemes)}")
     log(f"Default injections: {format_injection_values(args.injections)}")
     log(f"Injections by scheme: {format_injections_by_scheme(scheme_injection_map)}")
-    log(f"Requested POI range: [{format_number(args.poi_min)}, {format_number(args.poi_max)}]")
-    log("Job POI ranges use the fixed requested range.")
+    log(f"Requested POI ranges: {format_boson_poi_ranges(args)}")
+    log("Job POI ranges use the H/Z-specific requested ranges.")
     log(f"Dataset strategies: {', '.join(args.dataset_strategies)}")
     log(f"PDF target strategies: {', '.join(args.pdf_target_strategies)}")
     if "toys" in args.dataset_strategies:

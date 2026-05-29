@@ -43,7 +43,8 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Create a workflow-ready input directory where MC ROOT files have "
             "their weight branch redefined as the product of the nominal scale factors."
-        )
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--input-dir",

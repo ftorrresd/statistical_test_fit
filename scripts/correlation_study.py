@@ -24,19 +24,40 @@ def main():
         description=(
             "Fit m_mumugamma signal shapes in m_mumu windows after merging "
             "the three Upsilon states per boson process."
-        )
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--nbins", type=int, default=60)
-    parser.add_argument("--workers", type=int, default=None)
-    parser.add_argument("--windows", type=int, default=10)
+    parser.add_argument(
+        "--nbins",
+        type=int,
+        default=60,
+        help="Number of bins for m_mumugamma signal-shape fits.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Parallel worker processes; use all available CPUs when unset.",
+    )
+    parser.add_argument("--windows", type=int, default=10, help="Number of m_mumu windows to fit.")
     parser.add_argument(
         "--m-mumu-hist-bins",
         type=int,
         default=None,
         help="Bins for the m_mumu background histogram in the summary plot.",
     )
-    parser.add_argument("--m-mumu-min", type=float, default=DEFAULT_M_MUMU_LOWER)
-    parser.add_argument("--m-mumu-max", type=float, default=DEFAULT_M_MUMU_UPPER)
+    parser.add_argument(
+        "--m-mumu-min",
+        type=float,
+        default=DEFAULT_M_MUMU_LOWER,
+        help="Lower edge of the m_mumu scan range.",
+    )
+    parser.add_argument(
+        "--m-mumu-max",
+        type=float,
+        default=DEFAULT_M_MUMU_UPPER,
+        help="Upper edge of the m_mumu scan range.",
+    )
     parser.add_argument(
         "--processes",
         nargs="+",
@@ -44,9 +65,21 @@ def main():
         default=list(SIGNAL_PROCESSES),
         help="Signal boson processes to fit. Defaults to H and Z.",
     )
-    parser.add_argument("--plot-dir", default=PLOT_DIR)
-    parser.add_argument("--output-json", default=RESULTS_JSON)
-    parser.add_argument("--summary-plot", default=SUMMARY_PLOT)
+    parser.add_argument(
+        "--plot-dir",
+        default=PLOT_DIR,
+        help="Directory where per-window plots are written.",
+    )
+    parser.add_argument(
+        "--output-json",
+        default=RESULTS_JSON,
+        help="Path to write the correlation-study JSON summary.",
+    )
+    parser.add_argument(
+        "--summary-plot",
+        default=SUMMARY_PLOT,
+        help="Path to write the combined summary plot.",
+    )
     parser.add_argument(
         "--exclude-summary-windows",
         nargs="*",

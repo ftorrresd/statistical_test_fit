@@ -35,10 +35,21 @@ else:
         from statistical_test_fit.root_runtime import configure_root
 
         parser = argparse.ArgumentParser(
-            description="Signal RooFit modeling for H/Z -> Upsilon(nS) + photon."
+            description="Signal RooFit modeling for H/Z -> Upsilon(nS) + photon.",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         )
-        parser.add_argument("--nbins", type=int, default=60)
-        parser.add_argument("--workers", type=int, default=None)
+        parser.add_argument(
+            "--nbins",
+            type=int,
+            default=60,
+            help="Number of bins for diagnostic plots.",
+        )
+        parser.add_argument(
+            "--workers",
+            type=int,
+            default=None,
+            help="Parallel worker processes; use all available CPUs when unset.",
+        )
         parser.add_argument(
             "--process",
             choices=("all", "H", "Z"),

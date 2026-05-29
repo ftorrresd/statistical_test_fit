@@ -51,13 +51,14 @@ class FitToRun(Enum):
 def main():
     # Set up the argument parser
     parser = argparse.ArgumentParser(
-        description="Background-only RooFit with a blinded signal region."
+        description="Background-only RooFit with a blinded signal region.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--fits-to-run",
         type=FitToRun.arg_type,
         default=FitToRun.ALL,
-        help="Choose a run configuration (pseudodata): 1d, 2d, all (default), data or none.",
+        help="Choose a run configuration (pseudodata): 1d, 2d, or all.",
     )
     parser.add_argument(
         "--events", type=int, default=10000, help="N events to generate (unextended)"
@@ -65,8 +66,14 @@ def main():
     parser.add_argument(
         "--cheb", type=str, default="-0.2,0.2,-0.1", help="Chebychev coeffs c1,c2,..."
     )
-    parser.add_argument("-s", "--seed", type=int)
-    parser.add_argument("--nbins", type=int, default=60)
+    parser.add_argument(
+        "-s",
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for pseudodata generation.",
+    )
+    parser.add_argument("--nbins", type=int, default=60, help="Number of bins for diagnostic plots.")
     parser.add_argument(
         "--strict-mode",
         action="store_true",

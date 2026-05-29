@@ -54,7 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Remove files produced by the local workflows and bundling steps without "
             "touching inputs, source code, or external reference material."
-        )
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--dry-run",
