@@ -62,6 +62,7 @@ class Section:
     grid_groups: list["GridGroup"]
     notes: list[str]
     warnings: list[str]
+    description_tex: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class RenderedSection:
     grid_groups: list["RenderedGridGroup"]
     notes: list[str]
     warnings: list[str]
+    description_tex: str = ""
 
 
 @dataclass(frozen=True)
@@ -453,18 +455,9 @@ def dedupe_artifacts(artifacts: Iterable[Artifact]) -> list[Artifact]:
 
 
 def collect_supported_artifacts(root: Path, output_dir: Path) -> list[Artifact]:
-    if not root.exists() or not root.is_dir():
-        return []
-    artifacts: list[Artifact] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        if is_relative_to(path, output_dir):
-            continue
-        artifact = artifact_from_path(path, reason="found under input directory")
-        if artifact is not None:
-            artifacts.append(artifact)
-    return dedupe_artifacts(artifacts)
+    """Deprecated — appendix is no longer auto-populated from directory scans.
+    Kept for reference; no longer called in the document build pipeline."""
+    del output_dir
 
 
 def resolve_payload_path(value: Any, section_dir: Path) -> Path | None:
@@ -1362,6 +1355,7 @@ def make_section(
     output_dir: Path,
     selector: Any,
     grid_builder: Any | None = None,
+    description_tex: str = "",
 ) -> Section:
     warnings: list[str] = []
     notes: list[str] = []
@@ -1369,7 +1363,6 @@ def make_section(
         warnings.append(f"Input directory does not exist: {repo_relative(source_dir)}")
         return Section(key, title, source_dir, [], [], [], notes, warnings)
 
-    all_artifacts = collect_supported_artifacts(source_dir, output_dir)
     main_artifacts = dedupe_artifacts(selector(source_dir, warnings))
     grid_groups = grid_builder(source_dir, warnings) if grid_builder is not None else []
     main_keys = {artifact_group_key(artifact) for artifact in main_artifacts}
@@ -1385,33 +1378,12 @@ def make_section(
     ]
     main_grid_groups = [group for group in grid_groups if group.placement == "main"]
     appendix_grid_groups = [group for group in grid_groups if group.placement != "main"]
-    appendix_artifacts = [
-        artifact
-        for artifact in all_artifacts
-        if artifact_group_key(artifact) not in main_keys
-        and artifact_group_key(artifact) not in grid_keys
-    ]
-    if key.startswith("bias-study"):
-        appendix_artifacts = filter_bias_appendix_artifacts(
-            source_dir,
-            appendix_artifacts,
-            grid_groups,
-            warnings,
-        )
-    if key == "statistical-model":
-        appendix_artifacts = filter_statistical_model_appendix_artifacts(appendix_artifacts)
-    if key == "non-resonant-background-model":
-        appendix_artifacts = [
-            a for a in appendix_artifacts
-            if "/control/" not in str(a.source)
-        ]
-    if key == "limits":
-        appendix_artifacts = []
+    appendix_artifacts: list[Artifact] = []
     if not main_artifacts and not main_grid_groups:
         notes.append("No summary-level supported plots or table fragments were found.")
     if not appendix_artifacts and not appendix_grid_groups:
         notes.append("No additional supported appendix plots or table fragments were found.")
-    return Section(key, title, source_dir, main_artifacts, appendix_artifacts, grid_groups, notes, warnings)
+    return Section(key, title, source_dir, main_artifacts, appendix_artifacts, grid_groups, notes, warnings, description_tex)
 
 
 def latest_limits_run(warnings: list[str]) -> Path:
@@ -1443,6 +1415,9 @@ def latest_bias_run(strategy: str, warnings: list[str]) -> Path:
     return (REPO_ROOT / "bias_study" / f"missing_{strategy}_run").resolve()
 
 
+MAX_ASSET_NAME_LENGTH = 120
+
+
 def asset_name(source: Path, source_root: Path, used_names: set[str]) -> str:
     try:
         rel = source.resolve().relative_to(source_root.resolve())
@@ -1450,31 +1425,60 @@ def asset_name(source: Path, source_root: Path, used_names: set[str]) -> str:
     except ValueError:
         base = source.name
     suffix = "".join(source.suffixes) if source.suffixes else source.suffix
+    suffix_lower = suffix.lower()
+    suffix_len = len(suffix_lower)
+    max_stem_len = MAX_ASSET_NAME_LENGTH - suffix_len
     if suffix and base.endswith(suffix):
-        stem = base[: -len(suffix)]
+        raw_stem = base[: -len(suffix)]
     else:
-        stem = source.stem
-    candidate = f"{slugify(stem)}{suffix.lower()}"
+        raw_stem = source.stem
+    stem = slugify(raw_stem)
+    if len(stem) > max_stem_len:
+        import hashlib
+        fingerprint = hashlib.shake_128(raw_stem.encode(), usedforsecurity=False).hexdigest(4)
+        keep = max(8, max_stem_len - len(fingerprint) - 1)
+        stem = f"{stem[:keep]}_{fingerprint}"
+    candidate = f"{stem}{suffix_lower}"
     if candidate not in used_names:
         used_names.add(candidate)
         return candidate
     counter = 2
     while True:
-        numbered = f"{slugify(stem)}_{counter}{suffix.lower()}"
+        numbered = f"{slugify(raw_stem)}_{counter}{suffix_lower}"
+        if len(numbered) > MAX_ASSET_NAME_LENGTH:
+            numbered = f"{stem}_{counter}{suffix_lower}"
         if numbered not in used_names:
             used_names.add(numbered)
             return numbered
         counter += 1
 
 
-def materialize_section(section: Section, output_dir: Path) -> RenderedSection:
-    section_asset_dir = output_dir / "assets" / section.key
-    section_asset_dir.mkdir(parents=True, exist_ok=True)
+MAX_FILES_PER_DIR = 150
+
+
+class AssetDir:
+    def __init__(self, output_dir: Path):
+        self._output_dir = output_dir
+        self._counter = 0
+        self._dir_index = 1
+        self._current_dir: Path | None = None
+
+    def next_path(self, name: str) -> Path:
+        if self._current_dir is None or self._counter >= MAX_FILES_PER_DIR:
+            self._dir_index += 1 if self._current_dir is not None else 0
+            self._current_dir = self._output_dir / f"assets_summary_docs_{self._dir_index}"
+            self._current_dir.mkdir(parents=True, exist_ok=True)
+            self._counter = 0
+        self._counter += 1
+        return self._current_dir / name
+
+
+def materialize_section(section: Section, output_dir: Path, asset_dir: AssetDir) -> RenderedSection:
     used_names: set[str] = set()
 
     def materialize(artifact: Artifact) -> RenderedArtifact:
         name = asset_name(artifact.source, section.source_dir, used_names)
-        target = section_asset_dir / name
+        target = asset_dir.next_path(name)
         shutil.copy2(artifact.source, target)
         return RenderedArtifact(
             source=artifact.source,
@@ -1513,6 +1517,7 @@ def materialize_section(section: Section, output_dir: Path) -> RenderedSection:
         grid_groups=[materialize_grid_group(group) for group in section.grid_groups],
         notes=section.notes,
         warnings=section.warnings,
+        description_tex=section.description_tex,
     )
 
 
@@ -1569,25 +1574,33 @@ def render_grid_group(group: RenderedGridGroup) -> str:
     cell_width = max(0.1, min(0.96 / columns - 0.01, 0.96))
     body = [rf"\subsection{{{latex_escape_caption(group.title)}}}"]
     for index, group_items in enumerate(chunks(sorted(group.items, key=lambda item: item.sort_key), max_items), start=1):
-        row_tex = []
-        for row_items in chunks(group_items, columns):
-            row_cells = []
-            for item in row_items:
-                row_cells.append(
-                    rf"""\begin{{subfigure}}[t]{{{cell_width:.2f}\textwidth}}
+        if len(group_items) == 2 and columns == 2:
+            grid_tex = (
+                rf"\includegraphics[width=0.45\textwidth]{{{latex_path(group_items[0].artifact.asset_relative)}}}"
+                + rf"\hspace*{{1.cm}}"
+                + rf"\includegraphics[width=0.45\textwidth]{{{latex_path(group_items[1].artifact.asset_relative)}}}"
+            )
+        else:
+            row_tex = []
+            for row_items in chunks(group_items, columns):
+                row_cells = []
+                for item in row_items:
+                    row_cells.append(
+                        rf"""\begin{{subfigure}}[t]{{{cell_width:.2f}\textwidth}}
 \centering
 \includegraphics[width=\linewidth,height={group.image_height},keepaspectratio]{{{latex_path(item.artifact.asset_relative)}}}
 \caption{{{latex_escape_caption(item.label)}}}
 \end{{subfigure}}"""
-                )
-            row_tex.append("%\n\\hfill\n".join(row_cells))
-        grid_tex = "\n\\par\\medskip\n".join(row_tex)
+                    )
+                row_tex.append("%\n\\hfill\n".join(row_cells))
+            grid_tex = "\n\\par\\medskip\n".join(row_tex)
         caption_text = group.caption if index == 1 else f"{group.caption} (continued {index})"
         body.append(
             rf"""
 \begin{{figure}}[{group.figure_spec}]
-\centering
+\begin{{center}}
 {grid_tex}
+\end{{center}}
 \caption{{{latex_escape_caption(sentence_text(caption_text))}}}
 \end{{figure}}
 \FloatBarrier
@@ -1607,6 +1620,8 @@ def render_notes(section: RenderedSection) -> str:
 
 def render_section(section: RenderedSection) -> str:
     body = [rf"\section{{{latex_escape_text(section.title)}}}"]
+    if section.description_tex:
+        body.append(section.description_tex)
     main_grid_groups = [group for group in section.grid_groups if group.placement == "main"]
     notes = render_notes(section)
     if notes:
@@ -1884,6 +1899,22 @@ def main() -> int:
             output_dir=output_dir,
             selector=select_signal_artifacts,
             grid_builder=build_signal_grid_groups,
+            description_tex=(
+                r"The signal processes $H\to\Upsilon(nS)\gamma$ and $Z\to\Upsilon(nS)\gamma$ are "
+                r"modeled using simulated Monte Carlo samples. For each signal process and Upsilon state "
+                r"($1S$, $2S$, $3S$), parametric shapes are extracted from fits to the dimuon invariant "
+                r"mass $m_{\mu\mu}$ and the boson invariant mass $m_{\mu\mu\gamma}$ distributions. "
+                r"The $m_{\mu\mu}$ distribution is parameterized with a Double Crystal Ball (DCB) "
+                r"function to capture the detector resolution and the radiative tail. The "
+                r"$m_{\mu\mu\gamma}$ distribution is modeled with a Crystal Ball convolved with a "
+                r"Gaussian resolution function. \\[4pt]"
+                r"\noindent Signal samples are generated at next-to-leading order (NLO) in QCD: "
+                r"$Z\to\Upsilon\gamma$ events are simulated with \textsc{MadGraph5\_aMC@NLO}, and "
+                r"$gg\to H\to\Upsilon\gamma$ events with \textsc{Powheg} + \textsc{Pythia8}, "
+                r"using the NNPDF\,3.1 parton distribution functions and the CUETP8M1 tune for the "
+                r"underlying event. All signal shape parameters are extracted from the simulated "
+                r"samples and fixed in the final simultaneous fit to collision data."
+            ),
         ),
         make_section(
             key="resonant-background-modeling",
@@ -1892,6 +1923,36 @@ def main() -> int:
             output_dir=output_dir,
             selector=select_resonant_artifacts,
             grid_builder=build_resonant_grid_groups,
+            description_tex=(
+                r"Resonant backgrounds arise from standard-model processes that produce a genuine "
+                r"$\Upsilon(nS)$ meson in association with a photon, but whose production mechanism "
+                r"differs from the Higgs or Z boson decays under study. The dominant resonant "
+                r"backgrounds are $Z\gamma$ production where the Z boson decays to a muon pair "
+                r"($Z\to\mu\mu\gamma$, with a small tail from $\tau\tau\gamma$), and Higgs boson "
+                r"Dalitz decays $H\to\Upsilon\gamma$ via an intermediate virtual photon. "
+                r"\\[4pt]"
+                r"\noindent The resonant $Z$ background shape is modeled using a parametric fit to "
+                r"simulated $Z\gamma$ events in the $m_{\mu\mu\gamma}$ and $m_{\mu\mu}$ distributions, "
+                r"stored as a RooKeysPdf template in the workspace. The Higgs Dalitz background is "
+                r"similarly modeled from simulated $H\to\Upsilon\gamma$ samples and stored as a "
+                r"RooKeysPdf template. The $Z$ boson plus photon ($Z\gamma$) contribution provides "
+                r"the largest resonant background, while the Dalitz contribution is subdominant but "
+                r"non-negligible in the H boson mass window. "
+                r"\\[4pt]"
+                r"\noindent Since both resonant backgrounds peak in the same boson-mass region "
+                r"as the signal, their normalizations are constrained using four dedicated control "
+                r"regions (CR1--CR4) enriched in $Z\to\mu\mu$ events. These control regions are "
+                r"defined in the $m_{\mu\mu}$--$m_{\mu\mu\gamma}$ plane around the Z boson peak, "
+                r"selecting dimuon candidates compatible with the Z resonance but with varying "
+                r"photon-quality or kinematic requirements, providing orthogonal samples that map "
+                r"the resonant background composition across the signal-selection phase space. "
+                r"A simultaneous fit to the observed data and the simulated $Z\gamma$ template "
+                r"in CR1--CR4 determines the normalization transfer factors that extrapolate "
+                r"the resonant background yields from the control regions into the signal region. "
+                r"The resonant background shape parameters are fixed from simulation and "
+                r"only the overall normalizations are allowed to float, subject to the "
+                r"control-region constraints, in the final simultaneous fit to data."
+            ),
         ),
         make_section(
             key="non-resonant-background-model",
@@ -1900,6 +1961,77 @@ def main() -> int:
             output_dir=output_dir,
             selector=select_non_resonant_artifacts,
             grid_builder=build_non_resonant_grid_groups,
+            description_tex=(
+                r"The non-resonant background comprises all standard-model processes that do not "
+                r"produce a genuine $\Upsilon(nS)$ meson, primarily continuum quarkonium production, "
+                r"Drell--Yan dimuon events, and multijet QCD processes where jets are misidentified "
+                r"as photons. This background is the dominant component in the analysis and is "
+                r"modeled directly from collision data using a two-dimensional (2D) parametric "
+                r"function in the $m_{\mu\mu}$--$m_{\mu\mu\gamma}$ plane. "
+                r"\\[4pt]"
+                r"\noindent The modeling strategy proceeds in two stages. First, a dedicated fit to "
+                r"the dimuon invariant mass distribution in a sideband region away from the H and Z "
+                r"boson mass windows determines the $\Upsilon(nS)$ resonance component of the "
+                r"background: three Crystal Ball functions (one per $\Upsilon(1S,2S,3S)$ state) on "
+                r"top of a smooth continuum. The fitted $\Upsilon(nS)$ yields and resolution "
+                r"parameters are then propagated into the 2D background model. "
+                r"\\[4pt]"
+                r"\noindent In the second stage, the 2D sideband distribution is described by a "
+                r"factorized parametric function"
+                r"\\[4pt]"
+                r"\begin{equation}"
+                r"B(m_{\mu\mu},\,m_{\mu\mu\gamma}) = P(m_{\mu\mu},\,m_{\mu\mu\gamma}) "
+                r"+ \sum_{n=1}^{3} \mathrm{CB}_n(m_{\mu\mu})\,G_n(m_{\mu\mu\gamma})"
+                r"\end{equation}"
+                r"\\[4pt]"
+                r"\noindent where $P$ is a smooth 2D polynomial describing the continuum and $\mathrm{CB}_n$ "
+                r"($G_n$) is a Crystal Ball (Gaussian) function for the $n$-th Upsilon state in the "
+                r"dimuon (boson) mass projection. Three families of 2D polynomial functions are "
+                r"tested as candidates for $P$: the Johnson $S_U$ distribution, Bernstein "
+                r"polynomials, and Chebyshev polynomials of the first kind. "
+                r"\\[4pt]"
+                r"\noindent Within each polynomial family, the optimal order is determined by "
+                r"fitting candidate models of increasing polynomial degree to the 2D sideband "
+                r"data. Each candidate fit must pass a set of quality checks before being "
+                r"considered further: the fit must converge (status $=0$), the covariance matrix "
+                r"must be accurately computed (covQual $\geq 3$), the estimated distance to the "
+                r"minimum must satisfy EDM $\leq 10^{-3}$, and the negative log-likelihood "
+                r"must be finite. "
+                r"\\[4pt]"
+                r"\noindent A two-step procedure selects the optimal order. First, the "
+                r"goodness-of-fit of each candidate is assessed via a binned 2D chi-squared "
+                r"test on the $m_{\mu\mu\gamma}$ projection over the sideband regions, yielding "
+                r"a $\chi^2$ and its associated $p$-value. Starting from the lowest tested "
+                r"order, the first model whose $\chi^2$ $p$-value exceeds 0.05 is designated "
+                r"as the starting point. Second, a likelihood ratio test (LRT) is performed "
+                r"between consecutive surviving models. For models $M_d$ and $M_{d+1}$ of "
+                r"successive orders $d$ and $d+1$, the test statistic"
+                r"\\[4pt]"
+                r"\begin{equation}"
+                r"q = 2\left[\mathrm{NLL}(M_d) - \mathrm{NLL}(M_{d+1})\right]"
+                r"\end{equation}"
+                r"\\[4pt]"
+                r"\noindent is distributed as a $\chi^2$ with "
+                r"$\Delta k = k_{d+1} - k_d$ degrees of freedom under the null hypothesis "
+                r"that $M_d$ is sufficient. If the LRT $p$-value exceeds 0.05, the simpler "
+                r"model $M_d$ is selected as the winner; otherwise the procedure advances to "
+                r"the next pair, and the most complex model becomes the winner if all "
+                r"successive tests reject the simpler alternative. The Johnson $S_U$, "
+                r"Bernstein, and Chebyshev families are independently optimized following "
+                r"this procedure, with a relaxed fallback that selects the best available "
+                r"model should no candidate pass the chi-squared threshold."
+                r"\\[4pt]"
+                r"\noindent The complete set of non-resonant background PDFs carried into the final "
+                r"simultaneous fit comprises seven configurations spanning three families: the "
+                r"Johnson $S_U$ (nominal model); the Bernstein polynomial of order~7 (selected "
+                r"model) flanked by orders~6 and~8 (below and above the selected order); and the "
+                r"Chebyshev polynomial of order~5 (selected model) flanked by orders~4 and~6 "
+                r"(below and above). The Johnson $S_U$ serves as the nominal background "
+                r"parameterization, while the Bernstein and Chebyshev families provide systematic "
+                r"envelope variations that probe the dependence of the result on the choice of "
+                r"background functional form. The non-resonant background normalization is left "
+                r"floating in the final simultaneous fit to data."
+            ),
         ),
         make_section(
             key="statistical-model",
@@ -1927,10 +2059,11 @@ def main() -> int:
     ]
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    assets_dir = output_dir / "assets"
-    if assets_dir.exists():
-        shutil.rmtree(assets_dir)
-    rendered_sections = [materialize_section(section, output_dir) for section in sections]
+    for stale in sorted(output_dir.glob("assets_summary_docs_*")):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+    asset_dir = AssetDir(output_dir)
+    rendered_sections = [materialize_section(section, output_dir, asset_dir) for section in sections]
 
     generated_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     document_path = output_dir / f"{args.output_name}.tex"
